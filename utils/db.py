@@ -214,6 +214,22 @@ def set_notes(conn: sqlite3.Connection, job_id: str, notes: str) -> None:
     conn.commit()
 
 
+def get_company_applications(
+    conn: sqlite3.Connection, company: str, exclude_id: str
+) -> list[dict]:
+    """Return previous applications at the same company (case-insensitive), excluding current job."""
+    rows = conn.execute(
+        """SELECT id, title, status, applied_at
+           FROM jobs
+           WHERE LOWER(company) = LOWER(?)
+             AND id != ?
+             AND status IN ('applied','interview_1','interview_2','offer','rejected')
+           ORDER BY applied_at DESC""",
+        (company, exclude_id),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def set_translated_jd(conn: sqlite3.Connection, job_id: str, text: str) -> None:
     conn.execute("UPDATE jobs SET translated_jd_text = ? WHERE id = ?", (text, job_id))
     conn.commit()

@@ -17,6 +17,7 @@ import yaml
 from utils.db import (
     init_db, upsert_job, update_status, set_follow_up, set_notes,
     add_interview_record, get_interview_records, delete_interview_record,
+    get_company_applications,
 )
 
 # ── Page config ────────────────────────────────────────────────────────────────
@@ -483,6 +484,19 @@ with right:
             st.subheader(f"{GRADE_ICON.get(grade, '')} {job['title']}")
             _translated_flag = "　🔤 JD 已自動翻譯（原文德語）" if job.get("translated_jd_text") else ""
             st.caption(f"{job['company']} · {job.get('location') or '—'} · {job['source']}{_translated_flag}")
+
+            # ── Duplicate application warning ─────────────────────────────
+            _prev = get_company_applications(conn, job["company"], job["id"])
+            if _prev:
+                _STATUS_ZH = {
+                    "applied": "已投遞", "interview_1": "一面", "interview_2": "二面",
+                    "offer": "Offer", "rejected": "已拒絕",
+                }
+                _prev_lines = "　".join(
+                    f"**{p['title']}**（{_STATUS_ZH.get(p['status'], p['status'])}）"
+                    for p in _prev
+                )
+                st.warning(f"⚠️ 你曾投遞過 **{job['company']}** 的其他職缺：{_prev_lines}")
 
             # ── Visa banner + deep analysis ───────────────────────────────
             visa = job.get("visa_restriction") or "unclear"
