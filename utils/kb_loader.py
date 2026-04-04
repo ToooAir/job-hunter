@@ -64,6 +64,9 @@ def build_kb(
         vectors.extend([e.embedding for e in resp.data])
         log.info("  embedded %d/%d chunks", min(start + BATCH, len(chunks)), len(chunks))
 
+    vector_size = len(vectors[0])
+    log.info("build_kb: embedding dimension = %d", vector_size)
+
     # ── 3. (Re)create Qdrant collection ───────────────────────────────────────
     COLLECTION = "candidate_kb"
     existing = {c.name for c in qdrant.get_collections().collections}
@@ -72,7 +75,7 @@ def build_kb(
 
     qdrant.create_collection(
         collection_name=COLLECTION,
-        vectors_config=VectorParams(size=1536, distance=Distance.COSINE),
+        vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
     )
 
     # ── 4. Upsert points ───────────────────────────────────────────────────────
