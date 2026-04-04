@@ -483,12 +483,43 @@ with right:
             st.subheader(f"{GRADE_ICON.get(grade, '')} {job['title']}")
             st.caption(f"{job['company']} · {job.get('location') or '—'} · {job['source']}")
 
-            # ── Visa warning ──────────────────────────────────────────────
+            # ── Visa banner + deep analysis ───────────────────────────────
             visa = job.get("visa_restriction") or "unclear"
-            if visa == "eu_only":
-                st.error("🚫 **EU Only / 需自備工作許可** — 投遞前請先確認 Chancenkarte 是否符合條件")
-            elif visa == "sponsored":
-                st.success("✅ **公司提供簽證協助** — Chancenkarte 友善")
+            _visa_analysis = job.get("visa_analysis")
+            _visa_banner_label = {
+                "eu_only":   "🚫 EU Only — 投遞前建議深度分析 Chancenkarte 相容性",
+                "sponsored": "✅ 公司提供簽證協助 — Chancenkarte 友善",
+                "open":      "🟢 無明確限制",
+                "unclear":   "⚪ 未提及簽證要求",
+            }.get(visa, visa)
+            _visa_expander_label = f"🛂 簽證相容性：{_visa_banner_label}" + ("  ✓" if _visa_analysis else "")
+
+            with st.expander(_visa_expander_label, expanded=(visa == "eu_only" and not _visa_analysis)):
+                if _visa_analysis:
+                    st.markdown(_visa_analysis)
+                else:
+                    if visa == "eu_only":
+                        st.warning("JD 含有工作許可限制字句，但 Chancenkarte 不一定被排除。點下方按鈕做深度分析。")
+                    elif visa == "sponsored":
+                        st.success("公司主動提供簽證協助，可安心投遞。")
+                    else:
+                        st.caption("點下方按鈕分析 JD 對 Chancenkarte 的相容性。")
+                if st.button(
+                    "🔍 深度分析 Chancenkarte 相容性" if not _visa_analysis else "🔄 重新分析",
+                    key=f"visa_{job['id']}",
+                    type="primary" if (visa == "eu_only" and not _visa_analysis) else "secondary",
+                ):
+                    import os
+                    from dotenv import load_dotenv
+                    from utils.visa_checker import analyze_visa_compatibility
+                    load_dotenv()
+                    with st.spinner("分析中…"):
+                        analyze_visa_compatibility(
+                            job["id"],
+                            db_path=os.getenv("DB_PATH", "./data/jobs.db"),
+                        )
+                    st.cache_data.clear()
+                    st.rerun()
 
             c1, c2, c3, c4, c5 = st.columns(5)
             c1.metric("Match Score",   job.get("match_score") or "—")
