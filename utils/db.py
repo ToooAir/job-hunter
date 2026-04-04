@@ -44,6 +44,7 @@ SCHEMA_COLUMNS = [
     ("company_research",   "TEXT"),
     ("salary_estimate",    "TEXT"),
     ("visa_analysis",      "TEXT"),
+    ("translated_jd_text", "TEXT"),
     ("status",             "TEXT NOT NULL DEFAULT 'un-scored'"),
 ]
 
@@ -210,6 +211,11 @@ def update_status(
 
 def set_notes(conn: sqlite3.Connection, job_id: str, notes: str) -> None:
     conn.execute("UPDATE jobs SET notes = ? WHERE id = ?", (notes, job_id))
+    conn.commit()
+
+
+def set_translated_jd(conn: sqlite3.Connection, job_id: str, text: str) -> None:
+    conn.execute("UPDATE jobs SET translated_jd_text = ? WHERE id = ?", (text, job_id))
     conn.commit()
 
 

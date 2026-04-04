@@ -6,6 +6,7 @@ RAG-augmented LLM scoring of un-scored jobs in the SQLite database.
 import json
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from datetime import datetime, timezone
@@ -15,7 +16,11 @@ import openai
 from dotenv import load_dotenv
 from pydantic import BaseModel, field_validator
 
-from utils.db import init_db, get_unscored_jobs, update_score, fetch_job_by_id, reset_to_unscored, mark_error, mark_expired, set_interview_brief
+from utils.db import (
+    init_db, get_unscored_jobs, update_score, fetch_job_by_id,
+    reset_to_unscored, mark_error, mark_expired,
+    set_interview_brief, set_translated_jd,
+)
 
 # ── Setup ──────────────────────────────────────────────────────────────────────
 
@@ -89,6 +94,55 @@ class ScoringResult(BaseModel):
         if last_punct >= MIN_CHARS:
             return candidate[: last_punct + 1].strip()
         return candidate  # fallback: word boundary (no sentence end found)
+
+
+# ── Language detection & translation ──────────────────────────────────────────
+
+# High-frequency German function words and job-ad vocabulary.
+# If >8% of tokens match, we treat the JD as German.
+_GERMAN_TOKENS = {
+    "und", "der", "die", "das", "ist", "für", "mit", "auf", "von", "zu",
+    "wir", "sie", "ihr", "ein", "eine", "einer", "eines", "einem", "einen",
+    "haben", "sein", "werden", "können", "müssen", "sollen", "wollen",
+    "bei", "als", "auch", "nach", "oder", "aber", "wie", "was", "wenn",
+    "nicht", "sich", "dem", "den", "des", "zur", "zum", "am", "im",
+    "arbeiten", "entwickeln", "suchen", "bieten", "erfahrung",
+    "kenntnisse", "anforderungen", "aufgaben", "qualifikationen",
+    "stelle", "bewerbung", "unternehmen", "team", "stelle",
+}
+_GERMAN_THRESHOLD = 0.08   # fraction of all tokens
+_MIN_TOKENS_FOR_DETECTION = 30
+
+
+def _detect_german(text: str) -> bool:
+    """Return True if the text is likely German based on token frequency."""
+    tokens = re.findall(r"\b\w+\b", (text or "").lower())
+    if len(tokens) < _MIN_TOKENS_FOR_DETECTION:
+        return False
+    german_count = sum(1 for t in tokens if t in _GERMAN_TOKENS)
+    return (german_count / len(tokens)) > _GERMAN_THRESHOLD
+
+
+def _translate_to_english(text: str, client) -> str | None:
+    """Translate German JD text to English. Returns translated text or None on failure."""
+    try:
+        resp = client.chat.completions.create(
+            model=chat_model(),
+            messages=[{
+                "role": "user",
+                "content": (
+                    "Translate the following German job description to English. "
+                    "Preserve all technical terms, job titles, and company names as-is. "
+                    "Output only the translated text, no commentary.\n\n"
+                    f"{text[:8000]}"
+                ),
+            }],
+            temperature=0.1,
+        )
+        return resp.choices[0].message.content.strip()
+    except Exception as exc:
+        log.warning("Translation failed: %s", exc)
+        return None
 
 
 def _parse_with_structured_output(
@@ -360,14 +414,36 @@ def score_jobs(
             qdrant_path,
         )
 
+    # ── German JD translation (pre-flight, before embedding) ─────────────────
+    translated_count = 0
+    for job in jobs:
+        if job.get("translated_jd_text"):
+            continue  # already translated in a previous run
+        if _detect_german(job.get("raw_jd_text") or ""):
+            log.info("German JD detected: %s @ %s — translating…", job["title"], job["company"])
+            translated = _translate_to_english(job["raw_jd_text"], client)
+            if translated:
+                set_translated_jd(conn, job["id"], translated)
+                job["translated_jd_text"] = translated
+                translated_count += 1
+            else:
+                log.warning("Translation failed for %s — scoring with original German text", job["id"])
+    if translated_count:
+        log.info("Translated %d German JD(s) to English", translated_count)
+
     # ── Batch-embed all JDs upfront (1 API call per 50 jobs vs 1 per job) ──────
+    # Use translated text when available so embeddings are in the same language as the KB.
     contexts: dict[str, str] = {}
     if kb_ready:
         try:
             from qdrant_client import QdrantClient
             qdrant = QdrantClient(path=qdrant_path)
             log.info("batch embedding %d JD(s) for RAG retrieval…", len(jobs))
-            vectors = _batch_embed([j["raw_jd_text"][:8000] for j in jobs], client)
+            effective_texts = [
+                (j.get("translated_jd_text") or j["raw_jd_text"])[:8000]
+                for j in jobs
+            ]
+            vectors = _batch_embed(effective_texts, client)
             for job, vec in zip(jobs, vectors):
                 contexts[job["id"]] = _qdrant_query(qdrant, vec, top_k=5)
         except Exception as exc:
@@ -377,9 +453,10 @@ def score_jobs(
 
     for job in jobs:
         context = contexts.get(job["id"], "(候選人背景資料未載入)")
+        effective_jd = job.get("translated_jd_text") or job["raw_jd_text"]
 
         system_prompt, user_prompt = build_prompt(
-            jd_text=job["raw_jd_text"],
+            jd_text=effective_jd,
             company=job["company"],
             title=job["title"],
             location=job.get("location") or "",

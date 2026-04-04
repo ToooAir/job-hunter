@@ -481,7 +481,8 @@ with right:
         else:
             grade = job.get("fit_grade") or "C"
             st.subheader(f"{GRADE_ICON.get(grade, '')} {job['title']}")
-            st.caption(f"{job['company']} · {job.get('location') or '—'} · {job['source']}")
+            _translated_flag = "　🔤 JD 已自動翻譯（原文德語）" if job.get("translated_jd_text") else ""
+            st.caption(f"{job['company']} · {job.get('location') or '—'} · {job['source']}{_translated_flag}")
 
             # ── Visa banner + deep analysis ───────────────────────────────
             visa = job.get("visa_restriction") or "unclear"
