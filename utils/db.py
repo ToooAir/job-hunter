@@ -45,6 +45,20 @@ SCHEMA_COLUMNS = [
 ]
 
 
+INTERVIEW_RECORD_COLUMNS = [
+    ("id",             "INTEGER PRIMARY KEY AUTOINCREMENT"),
+    ("job_id",         "TEXT NOT NULL"),
+    ("round",          "TEXT NOT NULL"),   # interview_1 | interview_2 | other
+    ("interview_date", "TEXT"),            # ISO date e.g. '2026-04-10'
+    ("interviewer",    "TEXT"),            # name / role
+    ("format",         "TEXT"),            # phone | video | onsite | technical
+    ("questions",      "TEXT"),            # free text
+    ("self_rating",    "INTEGER"),         # 1–5
+    ("impressions",    "TEXT"),            # free text
+    ("created_at",     "TEXT NOT NULL"),
+]
+
+
 def init_db(db_path: str) -> sqlite3.Connection:
     os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
     conn = sqlite3.connect(db_path, check_same_thread=False)
@@ -52,6 +66,9 @@ def init_db(db_path: str) -> sqlite3.Connection:
 
     col_defs = ",\n    ".join(f"{name} {typ}" for name, typ in SCHEMA_COLUMNS)
     conn.execute(f"CREATE TABLE IF NOT EXISTS jobs (\n    {col_defs}\n);")
+
+    ir_defs = ",\n    ".join(f"{name} {typ}" for name, typ in INTERVIEW_RECORD_COLUMNS)
+    conn.execute(f"CREATE TABLE IF NOT EXISTS interview_records (\n    {ir_defs}\n);")
     conn.commit()
 
     # Backfill any columns added after initial creation
@@ -195,6 +212,32 @@ def set_notes(conn: sqlite3.Connection, job_id: str, notes: str) -> None:
 
 def set_interview_brief(conn: sqlite3.Connection, job_id: str, brief: str) -> None:
     conn.execute("UPDATE jobs SET interview_brief = ? WHERE id = ?", (brief, job_id))
+    conn.commit()
+
+
+def add_interview_record(conn: sqlite3.Connection, record: dict) -> int:
+    """Insert one interview record. Returns the new row id."""
+    cols = ", ".join(record.keys())
+    placeholders = ", ".join("?" for _ in record)
+    cur = conn.execute(
+        f"INSERT INTO interview_records ({cols}) VALUES ({placeholders})",
+        list(record.values()),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def get_interview_records(conn: sqlite3.Connection, job_id: str) -> list[dict]:
+    """Return all interview records for a job, oldest first."""
+    rows = conn.execute(
+        "SELECT * FROM interview_records WHERE job_id = ? ORDER BY interview_date, created_at",
+        (job_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def delete_interview_record(conn: sqlite3.Connection, record_id: int) -> None:
+    conn.execute("DELETE FROM interview_records WHERE id = ?", (record_id,))
     conn.commit()
 
 

@@ -13,7 +13,10 @@ import pyperclip
 import streamlit as st
 import yaml
 
-from utils.db import init_db, upsert_job, update_status, set_follow_up, set_notes
+from utils.db import (
+    init_db, upsert_job, update_status, set_follow_up, set_notes,
+    add_interview_record, get_interview_records, delete_interview_record,
+)
 
 # ── Page config ────────────────────────────────────────────────────────────────
 
@@ -677,6 +680,75 @@ with right:
                     )
                 else:
                     st.caption("（尚未生成面試準備單 — 點「🔄 重新生成」手動產生）")
+
+            # ── Interview Records ────────────────────────────────────────────
+            if cur_status in ("interview_1", "interview_2", "offer", "rejected"):
+                st.divider()
+                st.markdown("**📋 面試記錄**")
+
+                records = get_interview_records(conn, job["id"])
+
+                # Display existing records
+                if records:
+                    ROUND_LABEL = {"interview_1": "第一輪", "interview_2": "第二輪", "other": "其他"}
+                    FORMAT_LABEL = {"phone": "☎️ 電話", "video": "💻 視訊", "onsite": "🏢 現場", "technical": "⌨️ 技術面試"}
+                    STAR = ["", "★☆☆☆☆", "★★☆☆☆", "★★★☆☆", "★★★★☆", "★★★★★"]
+                    for rec in records:
+                        label = ROUND_LABEL.get(rec["round"], rec["round"])
+                        date_str = rec.get("interview_date") or "—"
+                        with st.expander(f"{label}　{date_str}　{FORMAT_LABEL.get(rec.get('format',''), rec.get('format',''))}　{STAR[rec.get('self_rating') or 0]}", expanded=False):
+                            if rec.get("interviewer"):
+                                st.caption(f"面試官：{rec['interviewer']}")
+                            if rec.get("questions"):
+                                st.markdown("**被問到的問題**")
+                                st.markdown(rec["questions"])
+                            if rec.get("impressions"):
+                                st.markdown("**感想**")
+                                st.markdown(rec["impressions"])
+                            if st.button("🗑️ 刪除此記錄", key=f"del_rec_{rec['id']}", type="secondary"):
+                                delete_interview_record(conn, rec["id"])
+                                st.cache_data.clear()
+                                st.rerun()
+
+                # Add new record form
+                with st.expander("➕ 新增面試記錄", expanded=not records):
+                    with st.form(key=f"interview_record_form_{job['id']}"):
+                        _default_round = cur_status if cur_status in ("interview_1", "interview_2") else "other"
+                        _round_options = ["interview_1", "interview_2", "other"]
+                        _round_labels  = ["第一輪", "第二輪", "其他"]
+                        ir_round = st.selectbox(
+                            "輪次",
+                            options=_round_options,
+                            format_func=lambda x: _round_labels[_round_options.index(x)],
+                            index=_round_options.index(_default_round),
+                        )
+                        ir_col1, ir_col2 = st.columns(2)
+                        with ir_col1:
+                            ir_date = st.date_input("面試日期", value=datetime.now(timezone.utc).date())
+                        with ir_col2:
+                            ir_format = st.selectbox(
+                                "形式",
+                                options=["video", "phone", "onsite", "technical"],
+                                format_func=lambda x: {"video": "💻 視訊", "phone": "☎️ 電話", "onsite": "🏢 現場", "technical": "⌨️ 技術面試"}[x],
+                            )
+                        ir_interviewer = st.text_input("面試官（姓名 / 職稱）", placeholder="e.g. Sarah, Engineering Manager")
+                        ir_questions = st.text_area("被問到的問題", height=120, placeholder="- Tell me about yourself\n- How do you handle …")
+                        ir_rating = st.slider("自我感覺", min_value=1, max_value=5, value=3, help="1 = 很差，5 = 很好")
+                        ir_impressions = st.text_area("感想 / 注意事項", height=80, placeholder="公司文化感受、下一步注意事項…")
+                        if st.form_submit_button("💾 儲存記錄", use_container_width=True, type="primary"):
+                            add_interview_record(conn, {
+                                "job_id":         job["id"],
+                                "round":          ir_round,
+                                "interview_date": ir_date.isoformat(),
+                                "interviewer":    ir_interviewer or None,
+                                "format":         ir_format,
+                                "questions":      ir_questions or None,
+                                "self_rating":    ir_rating,
+                                "impressions":    ir_impressions or None,
+                                "created_at":     utcnow_iso(),
+                            })
+                            st.cache_data.clear()
+                            st.rerun()
 
             # ── Notes ────────────────────────────────────────────────────────
             st.divider()
