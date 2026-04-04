@@ -1,0 +1,36 @@
+services:
+
+  # ── Phase 1 + 2 daily scheduler ──────────────────────────────────────────────
+  pipeline:
+    build: .
+    image: job-hunter-app:latest        # tag the built image so dashboard can reuse it
+    command: python scheduler.py 7 30   # arg1=hour arg2=minute (container local time)
+    env_file: .env
+    volumes:
+      - ./data:/app/data                 # SQLite DB
+      - ./qdrant_data:/app/qdrant_data   # Qdrant vectors
+      - ./candidate_kb:/app/candidate_kb # résumé KB — edit locally, no rebuild needed
+      - ./config:/app/config             # search_targets.yaml
+      - ./logs:/app/logs
+    restart: unless-stopped
+
+  # ── Phase 3 Streamlit dashboard ──────────────────────────────────────────────
+  dashboard:
+    image: job-hunter-app:latest        # reuses the image built by pipeline — no second build
+    command: >
+      streamlit run phase3_dashboard.py
+      --server.address=0.0.0.0
+      --server.headless=true
+      --server.port=8501
+    env_file: .env
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data
+      - ./qdrant_data:/app/qdrant_data
+      - ./candidate_kb:/app/candidate_kb
+      - ./config:/app/config
+      - ./logs:/app/logs
+    restart: unless-stopped
+    depends_on:
+      - pipeline

@@ -1,0 +1,78 @@
+# 職缺評分與分級規則
+# Copy this file to grading_rules.md and fill in your own profile.
+
+## 步驟一：語言要求判定（jd_language_req）
+
+掃描 JD 全文，填入以下其中一個值：
+
+en_required（英語工作環境，優先推薦）
+  → 出現：English, English-speaking, no German required,
+           office/working language is English, language: English
+
+de_plus（德語加分，仍可接受）
+  → 出現：German is a plus, German preferred, German nice to have,
+           Deutsch von Vorteil, Deutschkenntnisse von Vorteil
+
+de_required（需要流利德語，本週跳過）
+  → 出現：C1, C2, fluent German, verhandlungssicher Deutsch,
+           fließend Deutsch, Kundenkontakt, auf Deutsch
+
+unknown（無明確語言要求）
+
+## 步驟二：match_score（0–100）
+
+評估候選人技術背景與職缺的匹配程度：
+- 核心加分技術：<YOUR_CORE_TECH_STACK e.g. Python, Node.js, FastAPI, Docker, CI/CD>
+- 候選人經歷：<YOUR_EXPERIENCE e.g. 4+ years Backend Engineer with Tech Lead experience>
+- 候選人語言：<YOUR_LANGUAGES e.g. English fluent, German A2>
+- 地點加分：<YOUR_TARGET_LOCATIONS e.g. Hamburg or Remote / Hybrid>
+
+## 步驟三：visa_restriction
+
+掃描 JD，填入以下其中一個值：
+
+open（無限制或歡迎國際人才）
+  → 無限制字眼，或出現：international team, diverse backgrounds, global team,
+           relocation package, open to international candidates
+
+eu_only（需自備工作許可 / 僅限 EU 公民）
+  → 出現：EU citizens only, must have right to work in Germany,
+           valid work permit required, eligible to work without sponsorship,
+           no visa sponsorship, Arbeitserlaubnis erforderlich, EU-Bürger bevorzugt,
+           Aufenthaltstitel, legally authorized to work
+
+sponsored（公司主動提供簽證協助）
+  → 出現：visa sponsorship provided, we sponsor work permits,
+           support with visa, relocation support including visa,
+           help with work authorization
+
+unclear（未提及任何簽證相關資訊）
+
+## 步驟四：salary_range
+
+從 JD 擷取薪資資訊（若有）。直接複製原文中的數字區間或薪資描述，例如：
+"€60,000–€80,000/year"、"60k–80k EUR"、"TVöD E13"、"bis zu 90.000 € brutto"。
+若 JD 未提及薪資，填入空字串 ""。
+
+## 步驟五：contract_type
+
+填入以下其中一個值：
+
+permanent（正職 Festanstellung）
+  → 出現：Festanstellung, unbefristete Stelle, permanent position,
+           full-time employee, unbefristet
+
+contract（短期合約）
+  → 出現：befristet, temporary, fixed-term, limited contract, Werkvertrag
+
+freelance（自由接案）
+  → 出現：freelance, Freiberufler, contractor, self-employed, consulting role
+
+unknown（未提及）
+
+## Cover Letter（English, 200–400 words, end on a complete sentence）
+
+Para 1 (2–3 sentences): role applied + core motivation
+Para 2 (3–4 sentences): 1–2 relevant technical achievements with concrete results
+Para 3 (1–2 sentences): company interest + polite close
+Tone: formal but direct. Avoid clichés like "I am a passionate developer".

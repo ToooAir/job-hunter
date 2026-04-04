@@ -1,0 +1,10 @@
+# Visa Status
+# Copy this file to visa_status.md and fill in your own situation.
+# This is used by the LLM to assess visa_restriction compatibility and
+# to personalise cover letters for eu_only vs. sponsored roles.
+
+- Current visa type: <e.g. EU Blue Card / Chancenkarte / Skilled Worker Visa / EU citizen>
+- Work authorization status: <e.g. eligible for immediate start / requires employer sponsorship>
+- Availability: <e.g. can start immediately / 3-month notice period>
+- Current location: <City, Country>
+- Nationality: <Country>

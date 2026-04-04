@@ -1,0 +1,127 @@
+# Copy this file to search_targets.yaml and customise for your own job search.
+# All keyword lists support partial matching against job titles.
+
+arbeitnow:
+  keywords:
+    - "Software Engineer"
+    - "Backend Engineer"
+    - "Backend Developer"
+    - "Full Stack Engineer"
+    - "AI Engineer"
+    - "Python"
+    - "Node.js"
+    - "DevOps Engineer"
+    - "Platform Engineer"
+    # German equivalents (some DE companies use German titles even on English platforms)
+    - "Softwareentwickler"
+    - "Backend-Entwickler"
+  locations: ["Hamburg", "Berlin", "Remote", "Germany"]
+  remote_filter: true
+  max_pages: 5
+
+englishjobs:
+  base_url: "https://englishjobs.de/in/hamburg"  # change city as needed
+  keywords: ["Software", "Backend", "Engineer", "Python", "Node", "AI"]
+  max_pages: 3
+
+germantechjobs:
+  base_url: "https://germantechjobs.de/jobs/{keyword}/{location}"
+  keywords: ["Software-Engineer", "Backend-Developer", "Python", "Node-js"]
+  locations: ["Hamburg", "Remote"]
+
+bundesagentur:
+  keywords:
+    - "Software Engineer"
+    - "Backend Engineer"
+    - "Python Developer"
+    - "DevOps Engineer"
+    - "Softwareentwickler"
+    - "Backend-Entwickler"
+  location: "Hamburg"   # primary city
+  radius_km: 50
+  include_remote: true
+  size: 100
+
+remotive:
+  categories:
+    - "software-dev"
+    - "devops-sysadmin"
+    - "data"
+  keywords:
+    - "python"
+    - "backend"
+    - "node"
+    - "engineer"
+    - "fastapi"
+    - "typescript"
+  limit: 100
+
+relocateme:
+  base_url: "https://relocate.me/international-jobs/{category}"
+  categories:
+    - "backend"
+    - "devops"
+    - "python"
+    - "javascript"
+    - "full-stack"
+
+jobicy:
+  tags:
+    - "python"
+    - "backend"
+    - "typescript"
+    - "devops"
+    - "cloud"
+  count: 50
+  exclude_geo: ["USA Only", "US Only", "United States Only", "North America Only"]
+
+greenhouse:
+  # Public Job Board API — no auth required.
+  # Verify a slug at: https://job-boards.greenhouse.io/{slug}
+  # 404 slugs are silently skipped at runtime — safe to leave stale entries.
+  keywords:
+    - "software engineer"
+    - "backend"
+    - "python"
+    - "node"
+    - "devops"
+    - "fullstack"
+    - "ai engineer"
+    - "platform engineer"
+  companies:
+    # Add company slugs for firms you want to track directly.
+    # Examples of well-known companies using Greenhouse:
+    - contentful
+    - adjust
+    - mambu
+    - hellofresh
+    - sumup
+    # Add more: https://job-boards.greenhouse.io/{slug}
+
+lever:
+  # Public Postings API — no auth required.
+  # Verify a slug at: https://jobs.lever.co/{slug}
+  # 404 slugs are silently skipped at runtime.
+  keywords:
+    - "software engineer"
+    - "backend"
+    - "python"
+    - "node"
+    - "devops"
+    - "fullstack"
+    - "ai engineer"
+  companies:
+    # Add company slugs for firms you want to track directly.
+    # Examples of well-known companies using Lever:
+    - trade-republic
+    - billie
+    - raisin
+    - forto
+    # Add more: https://jobs.lever.co/{slug}
+
+linkedin_search_urls:
+  # These open in your browser via the Dashboard's LinkedIn search buttons.
+  # Customise keywords and location as needed.
+  - "https://www.linkedin.com/jobs/search/?keywords=Software+Engineer&location=Hamburg%2C+Germany&f_WT=2%2C3"
+  - "https://www.linkedin.com/jobs/search/?keywords=Backend+Engineer&location=Hamburg%2C+Germany&f_WT=2%2C3"
+  - "https://www.linkedin.com/jobs/search/?keywords=AI+Engineer&location=Hamburg%2C+Germany&f_WT=2%2C3"

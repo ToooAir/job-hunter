@@ -1,0 +1,21 @@
+# Python runtime artifacts
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Data directories — always mounted as volumes; never bake into image
+data/
+qdrant_data/
+logs/
+
+# User content — mounted as volumes; keep résumé data out of image
+candidate_kb/
+config/
+
+# Secrets
+.env
+
+# macOS
+.DS_Store

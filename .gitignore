@@ -1,0 +1,26 @@
+# ── Secrets ───────────────────────────────────────────────────────────────────
+.env
+
+# ── Personal config (copy from *.example and fill in your own info) ───────────
+config/grading_rules.md
+config/search_targets.yaml
+
+# ── Personal data ─────────────────────────────────────────────────────────────
+candidate_kb/*.md
+!candidate_kb/*.md.example
+
+# ── Runtime data ──────────────────────────────────────────────────────────────
+data/
+qdrant_data/
+logs/
+
+# ── Python ────────────────────────────────────────────────────────────────────
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+
+# ── macOS ─────────────────────────────────────────────────────────────────────
+.DS_Store
