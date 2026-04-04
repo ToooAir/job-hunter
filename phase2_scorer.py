@@ -114,13 +114,16 @@ _GERMAN_THRESHOLD = 0.08   # fraction of all tokens
 _MIN_TOKENS_FOR_DETECTION = 30
 
 
-def _detect_german(text: str) -> bool:
+def _detect_german(text: str, job_id: str = "") -> bool:
     """Return True if the text is likely German based on token frequency."""
     tokens = re.findall(r"\b\w+\b", (text or "").lower())
     if len(tokens) < _MIN_TOKENS_FOR_DETECTION:
         return False
     german_count = sum(1 for t in tokens if t in _GERMAN_TOKENS)
-    return (german_count / len(tokens)) > _GERMAN_THRESHOLD
+    ratio = german_count / len(tokens)
+    is_german = ratio > _GERMAN_THRESHOLD
+    log.debug("german_detect job=%s tokens=%d german=%.1f%% → %s", job_id, len(tokens), ratio * 100, is_german)
+    return is_german
 
 
 def _translate_to_english(text: str, client) -> str | None:
@@ -168,8 +171,15 @@ def _parse_with_json_mode(
 ) -> ScoringResult:
     """Fallback: JSON mode + manual Pydantic parse (for custom endpoints)."""
     json_instruction = (
-        "\n\nRespond ONLY with valid JSON matching this schema: "
-        "{jd_language_req, match_score, fit_grade, top_3_reasons, cover_letter_draft}"
+        "\n\nRespond ONLY with a valid JSON object with exactly these fields:\n"
+        '{"jd_language_req": "en_required"|"de_plus"|"de_required"|"unknown", '
+        '"visa_restriction": "open"|"eu_only"|"sponsored"|"unclear", '
+        '"salary_range": "<string extracted from JD, or empty string>", '
+        '"contract_type": "permanent"|"contract"|"freelance"|"unknown", '
+        '"match_score": <integer 0-100>, '
+        '"fit_grade": "A"|"B"|"C", '
+        '"top_3_reasons": ["<reason1>", "<reason2>", "<reason3>"], '
+        '"cover_letter_draft": "<full cover letter as a plain string, no nested keys>"}'
     )
     rate_limit()
     response = client.chat.completions.create(
@@ -182,7 +192,11 @@ def _parse_with_json_mode(
         temperature=0.3,
     )
     raw = response.choices[0].message.content
-    return ScoringResult.model_validate_json(raw)
+    try:
+        return ScoringResult.model_validate_json(raw)
+    except Exception:
+        log.error("JSON parse failed. Raw LLM response:\n%s", raw)
+        raise
 
 
 def _call_llm(
@@ -216,7 +230,8 @@ def check_kb_ready(qdrant_path: str) -> bool:
             return False
         info = qdrant.get_collection(COLLECTION)
         return (info.points_count or 0) > 0
-    except Exception:
+    except Exception as exc:
+        log.warning("check_kb_ready failed: %s", exc)
         return False
 
 
@@ -424,7 +439,7 @@ def score_jobs(
     for job in jobs:
         if job.get("translated_jd_text"):
             continue  # already translated in a previous run
-        if _detect_german(job.get("raw_jd_text") or ""):
+        if _detect_german(job.get("raw_jd_text") or "", job_id=job["id"]):
             log.info("German JD detected: %s @ %s — translating…", job["title"], job["company"])
             translated = _translate_to_english(job["raw_jd_text"], client)
             if translated:
@@ -538,6 +553,8 @@ def score_jobs(
         )
         scored.append(result)
 
+    failed = len(jobs) - len(scored)
+    log.info("完成：%d 筆成功，%d 筆失敗（error）", len(scored), failed)
     conn.close()
     return scored
 

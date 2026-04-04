@@ -101,6 +101,13 @@ def utcnow() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
 
 
+def _warn_empty_jd(record: dict) -> None:
+    jd_len = len(record.get("raw_jd_text") or "")
+    if jd_len < 100:
+        log.warning("short/empty JD (%d chars): %s @ %s [%s]",
+                    jd_len, record.get("title"), record.get("company"), record.get("source"))
+
+
 def expiry(days: int) -> str:
     """Return an ISO-8601 UTC timestamp `days` from now — used as expires_at."""
     return (datetime.now(timezone.utc) + timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%S")
@@ -163,6 +170,7 @@ def scrape_arbeitnow(
                 "status":      "un-scored",
             }
 
+            _warn_empty_jd(record)
             if upsert_job(conn, record):
                 added += 1
             else:
@@ -222,6 +230,8 @@ def scrape_englishjobs(
             soup = BeautifulSoup(resp.text, "html.parser")
             cards = _parse_englishjobs_listing(soup, base_url)
             if not cards:
+                if page == 1:
+                    log.warning("englishjobs kw=%r: page 1 returned 0 cards — selector may be broken (url=%s)", keyword, search_url)
                 break
 
             for card in cards:
@@ -255,7 +265,8 @@ def scrape_englishjobs(
                     "status":      "un-scored",
                 }
 
-                if upsert_job(conn, record):
+                _warn_empty_jd(record)
+            if upsert_job(conn, record):
                     added += 1
                 else:
                     skipped += 1
@@ -362,7 +373,8 @@ def scrape_germantechjobs(
                     "status":      "un-scored",
                 }
 
-                if upsert_job(conn, record):
+                _warn_empty_jd(record)
+            if upsert_job(conn, record):
                     added += 1
                 else:
                     skipped += 1
@@ -467,7 +479,8 @@ def scrape_bundesagentur(
                     "status":      "un-scored",
                 }
 
-                if upsert_job(conn, record):
+                _warn_empty_jd(record)
+            if upsert_job(conn, record):
                     added += 1
                 else:
                     skipped += 1
@@ -526,6 +539,7 @@ def scrape_remotive(
                 "status":      "un-scored",
             }
 
+            _warn_empty_jd(record)
             if upsert_job(conn, record):
                 added += 1
             else:
@@ -580,6 +594,8 @@ def scrape_relocateme(
 
         soup = BeautifulSoup(resp.text, "html.parser")
         cards = _parse_relocateme_listing(soup)
+        if not cards:
+            log.warning("relocateme category=%r: 0 cards — selector may be broken (url=%s)", category, url)
         log.info("relocateme category=%r: %d cards", category, len(cards))
 
         for card in cards:
@@ -615,6 +631,7 @@ def scrape_relocateme(
                 "expires_at":  expiry(60),
                 "status":      "un-scored",
             }
+            _warn_empty_jd(record)
             if upsert_job(conn, record):
                 added += 1
             else:
@@ -671,6 +688,7 @@ def scrape_jobicy(
                 "status":      "un-scored",
             }
 
+            _warn_empty_jd(record)
             if upsert_job(conn, record):
                 added += 1
             else:
@@ -740,6 +758,7 @@ def scrape_greenhouse(
                 "status":      "un-scored",
             }
 
+            _warn_empty_jd(record)
             if upsert_job(conn, record):
                 added += 1
             else:
@@ -821,6 +840,7 @@ def scrape_lever(
                 "status":      "un-scored",
             }
 
+            _warn_empty_jd(record)
             if upsert_job(conn, record):
                 added += 1
             else:
@@ -832,6 +852,9 @@ def scrape_lever(
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    run_start = datetime.now(timezone.utc)
+    log.info("=== Phase 1 開始 %s ===", run_start.strftime("%Y-%m-%dT%H:%M:%S"))
+
     conn = init_db(DB_PATH)
 
     with open("config/search_targets.yaml", encoding="utf-8") as f:
@@ -924,9 +947,12 @@ if __name__ == "__main__":
         results["lever"] = (0, 0)
 
     for source, (added, skipped) in results.items():
-        log.info("%s: 新增 %d 筆，略過 %d 筆（重複）", source, added, skipped)
+        log.info("  %-16s 新增 %3d 筆，略過 %3d 筆（重複）", source, added, skipped)
 
     total_added = sum(v[0] for v in results.values())
-    log.info("總計新增 %d 筆 | DB: %s", total_added, DB_PATH)
+    total_skipped = sum(v[1] for v in results.values())
+    elapsed = (datetime.now(timezone.utc) - run_start).seconds
+    log.info("=== Phase 1 完成 | 新增 %d 筆，略過 %d 筆 | 耗時 %ds | DB: %s ===",
+             total_added, total_skipped, elapsed, DB_PATH)
 
     conn.close()
