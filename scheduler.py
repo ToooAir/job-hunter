@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 from datetime import date, datetime
+from pathlib import Path
 
 logging.basicConfig(
     level=logging.INFO,
@@ -21,14 +22,19 @@ SCHEDULE_HOUR = int(sys.argv[1]) if len(sys.argv) > 1 else 7
 SCHEDULE_MIN  = int(sys.argv[2]) if len(sys.argv) > 2 else 30
 
 
+LOG_FILE = Path(__file__).parent / "logs" / "pipeline.log"
+
+
 def run_pipeline() -> None:
     log.info("════ Pipeline start ════")
-    for phase in ("phase1_ingestor.py", "phase2_scorer.py"):
-        log.info("Running %s", phase)
-        result = subprocess.run([sys.executable, phase])
-        if result.returncode != 0:
-            log.error("%s exited with code %d — aborting pipeline", phase, result.returncode)
-            break
+    LOG_FILE.parent.mkdir(exist_ok=True)
+    with open(LOG_FILE, "a") as lf:
+        for phase in ("phase1_ingestor.py", "phase2_scorer.py"):
+            log.info("Running %s", phase)
+            result = subprocess.run([sys.executable, phase], stdout=lf, stderr=lf)
+            if result.returncode != 0:
+                log.error("%s exited with code %d — aborting pipeline", phase, result.returncode)
+                break
     log.info("════ Pipeline done  ════")
 
 

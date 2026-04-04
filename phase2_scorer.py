@@ -310,7 +310,7 @@ def retrieve_context(
     rate_limit()
     emb_resp = client.embeddings.create(
         model=emb_model(),
-        input=jd_text[:8000],
+        input=jd_text[:6000],
     )
     return _qdrant_query(qdrant, emb_resp.data[0].embedding, top_k)
 
@@ -609,8 +609,10 @@ def regenerate_cover_letter(
         conn.close()
         return None
 
+    effective_jd = (job.get("translated_jd_text") or job["raw_jd_text"])[:6000]
+
     context = (
-        retrieve_context(job["raw_jd_text"], qdrant_path, top_k=3)
+        retrieve_context(effective_jd, qdrant_path, top_k=3)
         if check_kb_ready(qdrant_path)
         else "(候選人背景資料未載入)"
     )
@@ -631,9 +633,10 @@ Avoid clichés like "I am a passionate developer". Output the letter text only �
 Company: {job['company']} | Title: {job['title']} | Location: {job.get('location') or '—'}
 
 ## Job Description
-{job['raw_jd_text'][:6000]}"""
+{effective_jd}"""
 
     client = make_client()
+    rate_limit()
     try:
         resp = client.chat.completions.create(
             model=chat_model(),
@@ -707,8 +710,10 @@ def generate_brief_for_job(
         log.warning("generate_brief_for_job: job %s not found", job_id)
         return None
 
+    effective_jd = (job.get("translated_jd_text") or job.get("raw_jd_text") or "")[:6000]
+
     context = (
-        retrieve_context(job["raw_jd_text"], qdrant_path, top_k=3)
+        retrieve_context(effective_jd, qdrant_path, top_k=3)
         if check_kb_ready(qdrant_path)
         else "(候選人背景資料未載入 — 請先執行 utils.kb_loader)"
     )
@@ -717,11 +722,12 @@ def generate_brief_for_job(
         company=job["company"],
         title=job["title"],
         location=job.get("location") or "—",
-        jd_text=(job["raw_jd_text"] or "")[:6000],
+        jd_text=effective_jd,
         context=context,
     )
 
     client = make_client()
+    rate_limit()
     try:
         resp = client.chat.completions.create(
             model=chat_model(),

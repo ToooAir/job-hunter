@@ -5,8 +5,14 @@
 set -euo pipefail
 
 PROJ_DIR="$(cd "$(dirname "$0")" && pwd)"
-PYTHON="$PROJ_DIR/.venv/bin/python"
 LOG_DIR="$PROJ_DIR/logs"
+
+# Use venv python if available (local dev), otherwise fall back to system python (Docker)
+if [ -f "$PROJ_DIR/.venv/bin/python" ]; then
+    PYTHON="$PROJ_DIR/.venv/bin/python"
+else
+    PYTHON="$(command -v python3 || command -v python)"
+fi
 
 cd "$PROJ_DIR"
 
