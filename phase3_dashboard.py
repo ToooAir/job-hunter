@@ -536,6 +536,36 @@ with right:
             if word_count > 400:
                 st.warning("⚠️ Cover Letter 超過 400 字，建議壓縮後再複製")
 
+            # Tone regeneration
+            _tone_col, _btn_col = st.columns([3, 2])
+            with _tone_col:
+                _tone = st.selectbox(
+                    "語氣",
+                    options=["formal", "startup", "concise"],
+                    format_func=lambda x: {
+                        "formal":  "🏛️ Formal — 正式企業風格",
+                        "startup": "🚀 Startup — 直接有個性",
+                        "concise": "✂️ Concise — 200 字以內，精準",
+                    }[x],
+                    key=f"tone_{job['id']}",
+                    label_visibility="collapsed",
+                )
+            with _btn_col:
+                if st.button("🔄 重新生成 Cover Letter", use_container_width=True, key=f"regen_cl_{job['id']}"):
+                    import os
+                    from dotenv import load_dotenv
+                    from phase2_scorer import regenerate_cover_letter
+                    load_dotenv()
+                    with st.spinner(f"以 {_tone} 語氣重新生成中…"):
+                        regenerate_cover_letter(
+                            job["id"],
+                            tone=_tone,
+                            db_path=os.getenv("DB_PATH", "./data/jobs.db"),
+                            qdrant_path=os.getenv("QDRANT_PATH", "./qdrant_data"),
+                        )
+                    st.cache_data.clear()
+                    st.rerun()
+
             if edited_cl.strip():
                 import io
                 from docx import Document as DocxDocument

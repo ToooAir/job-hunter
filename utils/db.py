@@ -210,6 +210,11 @@ def set_notes(conn: sqlite3.Connection, job_id: str, notes: str) -> None:
     conn.commit()
 
 
+def update_cover_letter(conn: sqlite3.Connection, job_id: str, text: str) -> None:
+    conn.execute("UPDATE jobs SET cover_letter_draft = ? WHERE id = ?", (text, job_id))
+    conn.commit()
+
+
 def set_interview_brief(conn: sqlite3.Connection, job_id: str, brief: str) -> None:
     conn.execute("UPDATE jobs SET interview_brief = ? WHERE id = ?", (brief, job_id))
     conn.commit()

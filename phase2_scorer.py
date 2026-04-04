@@ -473,6 +473,92 @@ def score_single_job(
     return results[0] if results else None
 
 
+# ── Cover Letter Regenerator ──────────────────────────────────────────────────
+
+TONE_INSTRUCTIONS: dict[str, str] = {
+    "formal": (
+        "Tone: formal and professional, suitable for a traditional corporate environment. "
+        "Use precise language and well-structured paragraphs. Avoid contractions."
+    ),
+    "startup": (
+        "Tone: direct and conversational, suitable for a startup or modern tech company. "
+        "Show genuine personality. Skip pleasantries — get to the point quickly. "
+        "Contractions are fine. Avoid buzzwords and clichés."
+    ),
+    "concise": (
+        "Tone: extremely concise. The letter must be under 200 words. "
+        "Every sentence must justify its existence. No filler phrases. "
+        "Lead with impact, not preamble."
+    ),
+}
+
+
+def regenerate_cover_letter(
+    job_id: str,
+    tone: str,
+    db_path: str = DB_PATH,
+    qdrant_path: str = QDRANT_PATH,
+) -> str | None:
+    """Regenerate cover letter for a job with the given tone. Persists and returns the new text."""
+    if tone not in TONE_INSTRUCTIONS:
+        log.error("Unknown tone: %s", tone)
+        return None
+
+    conn = init_db(db_path)
+    job = fetch_job_by_id(conn, job_id)
+    if job is None:
+        conn.close()
+        return None
+
+    context = (
+        retrieve_context(job["raw_jd_text"], qdrant_path)
+        if check_kb_ready(qdrant_path)
+        else "(候選人背景資料未載入)"
+    )
+
+    _rules_path = Path(__file__).parent / "config" / "grading_rules.md"
+    grading_rules = _rules_path.read_text(encoding="utf-8")
+
+    tone_instruction = TONE_INSTRUCTIONS[tone]
+    system_prompt = f"""You are a professional cover letter writer.
+Write a cover letter (English, 200–400 words, end on a complete sentence) for the candidate below.
+{tone_instruction}
+Para 1 (2–3 sentences): role applied + core motivation.
+Para 2 (3–4 sentences): 1–2 relevant technical achievements with concrete results.
+Para 3 (1–2 sentences): company interest + polite close.
+Avoid clichés like "I am a passionate developer". Output the letter text only — no subject line, no date."""
+
+    user_prompt = f"""## Candidate Background
+{context}
+
+## Job
+Company: {job['company']} | Title: {job['title']} | Location: {job.get('location') or '—'}
+
+## Job Description
+{job['raw_jd_text'][:6000]}"""
+
+    client = make_client()
+    try:
+        resp = client.chat.completions.create(
+            model=chat_model(),
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user",   "content": user_prompt},
+            ],
+            temperature=0.5,
+        )
+        new_cl = resp.choices[0].message.content.strip()
+        from utils.db import update_cover_letter
+        update_cover_letter(conn, job_id, new_cl)
+        conn.close()
+        log.info("cover letter regenerated (%s tone) for job %s", tone, job_id)
+        return new_cl
+    except Exception as exc:
+        log.error("Failed to regenerate cover letter for %s: %s", job_id, exc)
+        conn.close()
+        return None
+
+
 # ── Interview Brief Generator ──────────────────────────────────────────────────
 
 BRIEF_PROMPT_TEMPLATE = """\
