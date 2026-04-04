@@ -501,8 +501,45 @@ with right:
                               "freelance": "🔧 Freelance", "unknown": "— unknown"}
             c5.metric("Contract",      CONTRACT_LABEL.get(job.get("contract_type") or "unknown", "—"))
 
+            # ── Salary ───────────────────────────────────────────────────────
+            _salary_estimate = job.get("salary_estimate")
+            _salary_label = "💰 薪資估計" + ("  ✓" if _salary_estimate else "")
             if job.get("salary_range"):
-                st.caption(f"💰 薪資：{job['salary_range']}")
+                _salary_label += f"　（JD 標示：{job['salary_range']}）"
+            with st.expander(_salary_label, expanded=False):
+                if _salary_estimate:
+                    st.markdown(_salary_estimate)
+                else:
+                    if job.get("salary_range"):
+                        st.caption(f"JD 標示薪資：{job['salary_range']}")
+                    st.caption("尚未生成薪資估計。")
+                _s_col1, _s_col2, _s_col3, _s_col4 = st.columns(4)
+                with _s_col1:
+                    if st.button(
+                        "💰 生成薪資估計" if not _salary_estimate else "🔄 重新估計",
+                        key=f"salary_{job['id']}",
+                        use_container_width=True,
+                        type="primary" if not _salary_estimate else "secondary",
+                    ):
+                        import os
+                        from dotenv import load_dotenv
+                        from utils.salary_estimator import estimate_salary
+                        load_dotenv()
+                        with st.spinner("估算中…"):
+                            estimate_salary(
+                                job["id"],
+                                db_path=os.getenv("DB_PATH", "./data/jobs.db"),
+                            )
+                        st.cache_data.clear()
+                        st.rerun()
+                with _s_col2:
+                    _q = requests.utils.quote(f"{job['company']} {job['title']} salary Germany")
+                    st.link_button("Glassdoor", f"https://www.glassdoor.com/Search/results.htm?keyword={_q}", use_container_width=True)
+                with _s_col3:
+                    st.link_button("Kununu", f"https://www.kununu.com/de/search?term={requests.utils.quote(job['company'])}", use_container_width=True)
+                with _s_col4:
+                    _lq = requests.utils.quote(job["company"])
+                    st.link_button("Levels.fyi", f"https://www.levels.fyi/companies/{_lq}/salaries/", use_container_width=True)
 
             # ── Company Research ──────────────────────────────────────────────
             _research = job.get("company_research")
