@@ -4,8 +4,10 @@ services:
   pipeline:
     build: .
     image: job-hunter-app:latest        # tag the built image so dashboard can reuse it
-    command: python scheduler.py 7 30   # arg1=hour arg2=minute (container local time)
+    command: python scheduler.py 7 30   # arg1=hour arg2=minute (Europe/Berlin local time)
     env_file: .env
+    environment:
+      - TZ=Europe/Berlin
     volumes:
       - ./data:/app/data                 # SQLite DB
       - ./qdrant_data:/app/qdrant_data   # Qdrant vectors

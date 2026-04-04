@@ -27,7 +27,8 @@ def run_pipeline() -> None:
         log.info("Running %s", phase)
         result = subprocess.run([sys.executable, phase])
         if result.returncode != 0:
-            log.error("%s exited with code %d", phase, result.returncode)
+            log.error("%s exited with code %d — aborting pipeline", phase, result.returncode)
+            break
     log.info("════ Pipeline done  ════")
 
 
@@ -37,10 +38,13 @@ log.info("Scheduler ready — will run daily at %02d:%02d", SCHEDULE_HOUR, SCHED
 log.info("Container time: %s", datetime.now().isoformat())
 
 while True:
-    now = datetime.now()
-    if (now.hour == SCHEDULE_HOUR
-            and now.minute == SCHEDULE_MIN
-            and now.date() != last_run):
-        run_pipeline()
-        last_run = now.date()
+    try:
+        now = datetime.now()
+        if (now.hour == SCHEDULE_HOUR
+                and now.minute == SCHEDULE_MIN
+                and now.date() != last_run):
+            run_pipeline()
+            last_run = now.date()
+    except Exception as exc:
+        log.error("Scheduler loop error: %s", exc)
     time.sleep(30)
