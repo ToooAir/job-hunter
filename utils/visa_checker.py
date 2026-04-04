@@ -57,6 +57,38 @@ def _scan_keywords(jd_text: str) -> dict:
     return {"exclude": found_exclude, "sponsor": found_sponsor}
 
 
+def _extract_visa_context(jd_text: str, max_chars: int = 2000) -> str:
+    """Return only sentences containing visa-related keywords (±1 sentence context).
+
+    Falls back to the first 2000 chars of the JD if no keywords are found,
+    so the LLM always has *something* to reason about.
+    """
+    text = jd_text or ""
+    if not text:
+        return ""
+
+    # Split into sentences on . ! ? or newlines
+    sentences = re.split(r"(?<=[.!?])\s+|\n+", text)
+    sentences = [s.strip() for s in sentences if s.strip()]
+
+    all_patterns = _EXCLUDE_PATTERNS + _SPONSOR_PATTERNS
+    hit_indices: set[int] = set()
+    for i, sent in enumerate(sentences):
+        for pat in all_patterns:
+            if re.search(pat, sent, re.IGNORECASE):
+                # ±1 sentence context
+                hit_indices.update([max(0, i - 1), i, min(len(sentences) - 1, i + 1)])
+                break
+
+    if not hit_indices:
+        return text[:max_chars]
+
+    # Reconstruct in original order, deduplicated
+    selected = [sentences[i] for i in sorted(hit_indices)]
+    result = " ".join(selected)
+    return result[:max_chars]
+
+
 # ── Prompt ─────────────────────────────────────────────────────────────────────
 
 _PROMPT = """\
@@ -100,8 +132,8 @@ Current visa_restriction classification: {visa_restriction}
 Keywords found in JD — restrictive: {exclude_keywords}
 Keywords found in JD — sponsor-friendly: {sponsor_keywords}
 
-Full JD:
-{jd_text}
+Relevant JD passages (visa-related context only):
+{visa_context}
 """
 
 
@@ -116,6 +148,7 @@ def analyze_visa_compatibility(job_id: str, db_path: str) -> str | None:
 
     jd_text = job.get("raw_jd_text") or ""
     keywords = _scan_keywords(jd_text)
+    visa_context = _extract_visa_context(jd_text)
 
     prompt = _PROMPT.format(
         company=job["company"],
@@ -123,7 +156,7 @@ def analyze_visa_compatibility(job_id: str, db_path: str) -> str | None:
         visa_restriction=job.get("visa_restriction") or "unclear",
         exclude_keywords=", ".join(keywords["exclude"]) or "（無）",
         sponsor_keywords=", ".join(keywords["sponsor"]) or "（無）",
-        jd_text=jd_text[:6000],
+        visa_context=visa_context,
     )
 
     client = make_client()

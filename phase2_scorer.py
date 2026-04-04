@@ -135,7 +135,7 @@ def _translate_to_english(text: str, client) -> str | None:
                     "Translate the following German job description to English. "
                     "Preserve all technical terms, job titles, and company names as-is. "
                     "Output only the translated text, no commentary.\n\n"
-                    f"{text[:8000]}"
+                    f"{text[:4000]}"
                 ),
             }],
             temperature=0.1,
@@ -458,7 +458,7 @@ def score_jobs(
 
     for job in jobs:
         context = contexts.get(job["id"], "(候選人背景資料未載入)")
-        effective_jd = job.get("translated_jd_text") or job["raw_jd_text"]
+        effective_jd = (job.get("translated_jd_text") or job["raw_jd_text"])[:6000]
 
         system_prompt, user_prompt = build_prompt(
             jd_text=effective_jd,
@@ -593,13 +593,10 @@ def regenerate_cover_letter(
         return None
 
     context = (
-        retrieve_context(job["raw_jd_text"], qdrant_path)
+        retrieve_context(job["raw_jd_text"], qdrant_path, top_k=3)
         if check_kb_ready(qdrant_path)
         else "(候選人背景資料未載入)"
     )
-
-    _rules_path = Path(__file__).parent / "config" / "grading_rules.md"
-    grading_rules = _rules_path.read_text(encoding="utf-8")
 
     tone_instruction = TONE_INSTRUCTIONS[tone]
     system_prompt = f"""You are a professional cover letter writer.
@@ -694,7 +691,7 @@ def generate_brief_for_job(
         return None
 
     context = (
-        retrieve_context(job["raw_jd_text"], qdrant_path)
+        retrieve_context(job["raw_jd_text"], qdrant_path, top_k=3)
         if check_kb_ready(qdrant_path)
         else "(候選人背景資料未載入 — 請先執行 utils.kb_loader)"
     )

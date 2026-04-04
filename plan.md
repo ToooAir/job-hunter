@@ -1,49 +1,62 @@
-⏺ 基於目前的流程，我看到幾個方向：
+ ---
+  1. 評分 JD 未截斷（高影響）
+
+  score_jobs() 裡 effective_jd 傳給 build_prompt 時沒有截斷：
+
+  effective_jd = job.get("translated_jd_text") or job["raw_jd_text"]
+  system_prompt, user_prompt = build_prompt(jd_text=effective_jd, ...)
+
+  raw_jd_text 沒有 [:N] 限制，長 JD 可能 3000–5000 tokens。其他函式（brief、CL regen）都有截 6000
+  chars，唯獨評分沒有。
+  建議：加 [:6000]，每筆可省 ~300–1,500 tokens。
 
   ---
-  現有流程的摩擦點
+  2. regenerate_cover_letter 有死碼
 
-  1. 投遞後的追蹤很薄弱
-  目前只有 follow_up_at 日期和 notes 欄位。德國公司回覆週期常常 3–6
-  週，中間你完全不知道對方狀態。可以做「標準化面試記錄」：每輪面試後填幾個欄位（
-  面試官、問了什麼題、自我感覺）存進 DB，最後有一份完整的求職日誌。
+  _rules_path = Path(__file__).parent / "config" / "grading_rules.md"
+  grading_rules = _rules_path.read_text(encoding="utf-8")  # 讀了
+  # ... 但 grading_rules 從未插入 prompt，直接被丟棄
 
-  2. Cover Letter 是一次性產物
-  現在生成後就只能手動編輯。但每家公司的 tone 不同，有的偏 formal、有的偏
-  startup casual。可以加「重新生成（指定語氣）」的按鈕，讓你選 formal / startup
-  / concise 再生成一版。
-
-  3. 沒有公司研究
-  投遞前對公司幾乎一無所知。可以在 dashboard 加一個「公司摘要」按鈕，自動抓
-  company LinkedIn / About 頁面，用 LLM 摘要成：成立時間、規模、產品、tech
-  stack、最近新聞。對面試準備也有用。
+  讀了 grading_rules.md 但沒用。刪 3 行。
 
   ---
-  德國求職特有的痛點
+  3. RAG top_k 全部固定為 5
 
-  4. 薪資談判幾乎沒有資料
-  德國 job ad 很多不列薪資，你靠 salary_range 欄位只能收集到少數資料。可以整合
-  Levels.fyi / Glassdoor / Kununu 的薪資資料（或用 LLM 從 JD
-  推估市場區間），讓你在談判前有個 anchor。
+  retrieve_context 預設 top_k=5，所有 on-demand 函式都沿用。
 
-  5. Chancenkarte 簽證相容性判斷太粗糙
-  目前只有 eu_only / open / sponsored / unclear 四個值，但實際上 Chancenkarte
-  在「eu_only」的情況下不一定不行——取決於公司的理解。可以讓 LLM
-  給出更細的分析：「JD 說 right to work required，但沒有明確排除
-  Chancenkarte，建議投遞時主動說明」。
+  - 評分：需要 5 chunk，因為要覆蓋技術棧、經歷、簽證等不同維度 — 合理
+  - interview brief：只需「你的相關亮點」，3 chunk 夠用，省 ~400–600 tokens
+  - CL regen：同上，3 chunk 足夠
 
-  6. 德文 JD 翻譯
-  Bundesagentur 的 JD 很多是德文，你現在的 grading
-  是用英文規則去評德文文字，準確度會打折。可以在 pre-flight
-  加一步：偵測語言，如果是德文就先翻譯再評分。
+  建議：brief 和 CL regen 的 retrieve_context 改 top_k=3。
 
   ---
-  效率類
+  4. 評分 + CL 合一（結構性問題）
 
-  7. A 級職缺 email 通知
-  目前要手動開 dashboard 才知道有新 A 級職缺。可以在 scheduler 跑完 Phase 2
-  後，如果有新 A 級職缺就發一封摘要 email（或 Telegram bot）。
+  目前一次 LLM call 同時產出：分類欄位 + match_score + top_3_reasons + cover_letter_draft。
 
-  8. 重複投遞防護
-  目前只防 URL 重複，但同一家公司可能用不同 URL 重新發同一個職位。可以在
-  dashboard 顯示「你曾投遞過這家公司的類似職位」的提醒。
+  CL 輸出佔了 300–600 tokens，但 C 級職缺你不會用。若拆成兩個 call：
+  - Call 1：只輸出 JSON 分類（~80 tokens output）
+  - Call 2：只對 A/B 級生成 CL
+
+  假設 C 級佔 40%，可省 40% 的 CL 輸出 token。但 Mistral 1 RPS 下 A/B 級每筆要多 1 秒，得權衡。
+
+  ---
+  5. 簽證分析傳整份 JD（中影響）
+
+  visa_checker 把完整 JD（6000 chars）傳給 LLM，但 regex pre-scan
+  其實已經把相關關鍵字抓出來了。可以只傳包含關鍵字的上下文段落，而非整份 JD，估計可省 ~1,000–2,000
+   tokens。
+
+  ---
+  6. 翻譯截斷過寬
+
+  _translate_to_english 截到 8000 chars（~2,000 tokens）。德文 JD 的關鍵資訊幾乎都在前半段，截到
+  4000 chars 就夠，省 ~500 tokens。
+
+  ---
+  7. grading_rules.md 全文注入每筆評分
+
+  ~500–700 tokens 的規則文件在 100 筆職缺裡重複 100 次。這個無法避免（除非用支援 system prompt
+  caching 的 provider），但可以確保 grading_rules.md 保持精簡，不要加廢話。
+
