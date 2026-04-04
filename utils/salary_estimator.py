@@ -9,7 +9,7 @@ link buttons in the dashboard — not scraped (require auth).
 import logging
 
 from utils.db import init_db, fetch_job_by_id, set_salary_estimate
-from utils.llm import make_client, chat_model
+from utils.llm import make_client, chat_model, rate_limit
 
 log = logging.getLogger(__name__)
 
@@ -71,6 +71,7 @@ def estimate_salary(job_id: str, db_path: str) -> str | None:
     )
 
     client = make_client()
+    rate_limit()
     try:
         resp = client.chat.completions.create(
             model=chat_model(),

@@ -29,7 +29,7 @@ load_dotenv()
 DB_PATH     = os.getenv("DB_PATH", "./data/jobs.db")
 QDRANT_PATH = os.getenv("QDRANT_PATH", "./qdrant_data")
 
-from utils.llm import make_client, chat_model, emb_model, LLM_PROVIDER
+from utils.llm import make_client, chat_model, emb_model, LLM_PROVIDER, NO_STRUCTURED_OUTPUT_PROVIDERS, rate_limit
 
 logging.basicConfig(
     level=logging.INFO,
@@ -126,6 +126,7 @@ def _detect_german(text: str) -> bool:
 def _translate_to_english(text: str, client) -> str | None:
     """Translate German JD text to English. Returns translated text or None on failure."""
     try:
+        rate_limit()
         resp = client.chat.completions.create(
             model=chat_model(),
             messages=[{
@@ -149,6 +150,7 @@ def _parse_with_structured_output(
     client: openai.OpenAI, system_prompt: str, user_prompt: str
 ) -> ScoringResult:
     """Use OpenAI/Azure Structured Outputs (.parse). Raises if unsupported."""
+    rate_limit()
     response = client.beta.chat.completions.parse(
         model=chat_model(),
         messages=[
@@ -169,6 +171,7 @@ def _parse_with_json_mode(
         "\n\nRespond ONLY with valid JSON matching this schema: "
         "{jd_language_req, match_score, fit_grade, top_3_reasons, cover_letter_draft}"
     )
+    rate_limit()
     response = client.chat.completions.create(
         model=chat_model(),
         messages=[
@@ -189,7 +192,7 @@ def _call_llm(
     Try Structured Outputs first; fall back to JSON mode for custom endpoints
     that don't implement the /parse extension.
     """
-    if LLM_PROVIDER == "custom":
+    if LLM_PROVIDER in NO_STRUCTURED_OUTPUT_PROVIDERS:
         return _parse_with_json_mode(client, system_prompt, user_prompt)
     try:
         return _parse_with_structured_output(client, system_prompt, user_prompt)
@@ -271,6 +274,7 @@ def _batch_embed(texts: list[str], client, batch_size: int = 50) -> list[list[fl
     vectors: list[list[float]] = []
     for start in range(0, len(texts), batch_size):
         batch = texts[start : start + batch_size]
+        rate_limit()
         resp = client.embeddings.create(model=emb_model(), input=batch)
         vectors.extend([e.embedding for e in resp.data])
         log.info("  embedded %d/%d JDs", min(start + batch_size, len(texts)), len(texts))
@@ -288,6 +292,7 @@ def retrieve_context(
     client = make_client()
     qdrant = QdrantClient(path=qdrant_path)
 
+    rate_limit()
     emb_resp = client.embeddings.create(
         model=emb_model(),
         input=jd_text[:8000],
