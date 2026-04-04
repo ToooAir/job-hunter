@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pandas as pd
 import pyperclip
+import requests
 import streamlit as st
 import yaml
 
@@ -502,6 +503,39 @@ with right:
 
             if job.get("salary_range"):
                 st.caption(f"💰 薪資：{job['salary_range']}")
+
+            # ── Company Research ──────────────────────────────────────────────
+            _research = job.get("company_research")
+            with st.expander("🔍 公司研究" + ("  ✓" if _research else ""), expanded=False):
+                if _research:
+                    st.markdown(_research)
+                else:
+                    st.caption("尚未生成公司研究報告。")
+                _r_col1, _r_col2 = st.columns(2)
+                with _r_col1:
+                    if st.button(
+                        "🔍 生成公司研究" if not _research else "🔄 重新生成",
+                        key=f"research_{job['id']}",
+                        use_container_width=True,
+                        type="primary" if not _research else "secondary",
+                    ):
+                        import os
+                        from dotenv import load_dotenv
+                        from utils.company_researcher import research_company
+                        load_dotenv()
+                        with st.spinner(f"正在研究 {job['company']}…"):
+                            research_company(
+                                job["id"],
+                                db_path=os.getenv("DB_PATH", "./data/jobs.db"),
+                            )
+                        st.cache_data.clear()
+                        st.rerun()
+                with _r_col2:
+                    st.link_button(
+                        "🌐 Kununu 評價",
+                        f"https://www.kununu.com/de/search?term={requests.utils.quote(job['company'])}",
+                        use_container_width=True,
+                    )
 
             # Top 3 reasons
             st.markdown("**📌 評分理由**")
