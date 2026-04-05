@@ -267,9 +267,9 @@ def scrape_englishjobs(
 
                 _warn_empty_jd(record)
             if upsert_job(conn, record):
-                    added += 1
-                else:
-                    skipped += 1
+                added += 1
+            else:
+                skipped += 1
 
             log.info(
                 "englishjobs kw=%r page=%d: added=%d skipped=%d",
@@ -375,9 +375,9 @@ def scrape_germantechjobs(
 
                 _warn_empty_jd(record)
             if upsert_job(conn, record):
-                    added += 1
-                else:
-                    skipped += 1
+                added += 1
+            else:
+                skipped += 1
 
             log.info(
                 "germantechjobs kw=%r loc=%r: added=%d skipped=%d",
@@ -481,9 +481,9 @@ def scrape_bundesagentur(
 
                 _warn_empty_jd(record)
             if upsert_job(conn, record):
-                    added += 1
-                else:
-                    skipped += 1
+                added += 1
+            else:
+                skipped += 1
 
     return added, skipped
 
