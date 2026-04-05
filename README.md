@@ -1,6 +1,61 @@
-# Job Automation
+# Job Hunter
 
-A self-hosted job search pipeline: scrape → AI score → review & apply. Three phases connect job discovery, LLM-based grading with cover letter generation, and a Streamlit dashboard for managing your pipeline.
+![Python](https://img.shields.io/badge/Python-3.12-blue?logo=python&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)
+![Streamlit](https://img.shields.io/badge/Streamlit-dashboard-FF4B4B?logo=streamlit&logoColor=white)
+![LLM](https://img.shields.io/badge/LLM-OpenAI%20%7C%20Mistral%20%7C%20Azure-412991?logo=openai&logoColor=white)
+![License](https://img.shields.io/badge/license-MIT-green)
+
+A self-hosted job search pipeline for the German tech market: scrape → AI score → review & apply.
+
+Built for international candidates job-hunting in Germany — with first-class support for **Chancenkarte holders**, German JD auto-translation, and visa compatibility analysis built in.
+
+> **Screenshot** — add a dashboard screenshot here after first run (`docs/screenshot.png`)
+
+---
+
+## Why I Built This
+
+Searching for a tech job in Germany as a non-EU candidate is a different problem from a regular job search:
+
+- Job listings are spread across 9+ platforms, many in German
+- Every JD needs a tailored cover letter — generic ones go straight to bin
+- Visa compatibility is unclear on most listings (Chancenkarte ≠ "no right to work")
+- Interviews take weeks; by the time you hear back, you've forgotten what the role was
+
+This tool automates the tedious parts (scraping, deduplication, scoring, cover letter drafting) so you can focus on the parts that actually matter: deciding which jobs to pursue and preparing for interviews.
+
+---
+
+## Features
+
+**Pipeline**
+- Scrapes 9 job sources daily on a schedule (APIs + HTML, auto-deduped by JD content hash)
+- Detects and auto-translates German JDs to English before scoring
+- RAG-augmented LLM scoring against your personal resume knowledge base
+- A/B/C grading with source bonus (Relocate.me, Greenhouse, Lever, Bundesagentur)
+- Cover letter generated per job, editable with 3 tone presets (Formal / Startup / Concise)
+
+**Chancenkarte & Visa**
+- Coarse visa classification on every job (`open` / `eu_only` / `sponsored` / `unclear`)
+- On-demand deep Chancenkarte compatibility analysis: scans JD for restrictive phrases, reasons about §20a AufenthG eligibility, suggests how to address visa status in cover letter and first contact
+
+**On-demand Analysis (per job, one click)**
+- Salary estimate with negotiation guidance (market range, opening price, floor)
+- Company research (scrapes about page + LLM summary: tech stack, culture, relocation stance)
+- Interview prep brief: role summary, key requirements, inferred pain points, your matched experience, 5 likely questions
+
+**Pipeline Tracking**
+- Full status flow: `scored → applied → interview_1 → interview_2 → offer / rejected`
+- Structured interview records per round (date, format, questions, self-rating, impressions)
+- Follow-up reminders (auto-set 7 days after applying, customisable)
+- Duplicate application warning (flags if you've applied to the same company before)
+- Stats dashboard: grade distribution, source yield table, application funnel, weekly trend
+
+**Flexibility**
+- Works with OpenAI, Mistral AI (free tier), Azure OpenAI, or any local/custom LLM endpoint
+- Fully Dockerised — one `docker compose up -d` to run
+- All personal data (resume, keys, DB) stays local, never leaves your machine
 
 ---
 
@@ -8,11 +63,12 @@ A self-hosted job search pipeline: scrape → AI score → review & apply. Three
 
 ```
 Phase 1 (Ingestor)   →   Phase 2 (Scorer)   →   Phase 3 (Dashboard)
-9 sources scraped        LLM grades each job      Review, edit CL, apply
-into SQLite              + generates cover letter  track interview pipeline
+9 sources scraped        RAG + LLM grades         Review, edit CL, apply,
+into SQLite              each job, generates       track interviews,
+auto-deduped             cover letter + scores     on-demand AI analysis
 ```
 
-**Phase 1** pulls from 9 sources (aggregator APIs, ATS boards, job portals) and deduplicates by JD content hash. **Phase 2** scores each unscored job against your candidate knowledge base using RAG + LLM, generates a cover letter, and grades A/B/C. German-language JDs are automatically translated to English before scoring. **Phase 3** is a Streamlit dashboard where you review jobs, edit cover letters, run on-demand analysis, and track your pipeline from application through offer.
+**Phase 1** pulls from 9 sources and deduplicates by JD content hash (chars 50–550, skipping platform boilerplate). **Phase 2** detects German JDs, translates them, scores against your candidate knowledge base via RAG, and grades A/B/C. **Phase 3** is a Streamlit dashboard for reviewing, editing, applying, and tracking your full interview pipeline.
 
 ---
 
@@ -171,6 +227,66 @@ docker compose exec pipeline python utils/kb_loader.py
 ```
 
 Phase 2 warns you if the knowledge base is stale relative to your `candidate_kb/` files.
+
+### Using AI to generate your config files
+
+The quality of scoring and cover letters depends almost entirely on how well these files are written. Use the prompts below with any LLM (Claude, ChatGPT, etc.) to generate a solid first draft.
+
+**`candidate_kb/resume_bullets.md`**
+
+Paste your CV or LinkedIn experience, then send:
+
+```
+Convert my work experience below into STAR-format bullet points for a RAG knowledge base.
+Requirements:
+- Each bullet must include a specific measurable outcome (%, time saved, scale, etc.)
+- Include all relevant technology names exactly as they appear in job postings
+- Group by role with company name and date range
+- Be specific — avoid vague phrases like "improved performance" or "worked on backend"
+
+[paste your CV / LinkedIn experience here]
+```
+
+**`candidate_kb/projects.md`**
+
+```
+Summarise my key projects below for a RAG knowledge base used to write cover letters.
+For each project include: what it does, the tech stack (exact library/framework names),
+scale or impact metrics, and your specific contribution.
+
+[paste your project descriptions here]
+```
+
+**`candidate_kb/visa_status.md`**
+
+```
+Write a short RAG knowledge base entry describing my work authorisation status.
+Include: visa type and what it permits, location preference and flexibility,
+language skills (level for each), availability date, and willingness to relocate.
+
+My situation: [describe your visa, location, languages, availability]
+```
+
+**`config/grading_rules.md`**
+
+```
+I am customising a job-scoring system. Help me fill in the candidate profile section
+of the grading rules below.
+
+My profile:
+- Current role / years of experience: [e.g. Backend Engineer, 5 years]
+- Core tech stack: [e.g. Python, FastAPI, Node.js, GCP, Docker]
+- Target roles in Germany: [e.g. Backend Engineer, AI Engineer, Platform Engineer]
+- Language skills: [e.g. English fluent, German A2]
+- Location preference: [e.g. Hamburg or Remote]
+- Visa situation: [e.g. Chancenkarte holder, need sponsorship for long-term]
+
+Replace the candidate profile section in this file with specific, concrete values:
+
+[paste the current contents of config/grading_rules.md]
+```
+
+> After generating the files, read through them and correct anything the LLM invented or got wrong. The RAG system is only as accurate as the facts you put in.
 
 ---
 
