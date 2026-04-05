@@ -10,7 +10,7 @@
 
 為在德國求職的國際人才打造 — 內建 **Chancenkarte 持有者**專屬分析、德文 JD 自動翻譯，以及簽證相容性檢查。
 
-> **截圖** — 首次啟動後請在此放入 Dashboard 截圖（`docs/screenshot.png`）
+![Dashboard screenshot](docs/screenshot.png)
 
 ---
 
@@ -55,6 +55,7 @@
 **靈活性**
 - 支援 OpenAI、Mistral AI（有免費方案）、Azure OpenAI，或任何本地/自訂 LLM 端點
 - 完整 Docker 化 — 一行 `docker compose up -d` 即可啟動
+- 儀表板支援 **English / 中文** 切換 — Sidebar 即時切換，無需重啟
 - 所有個人資料（履歷、API Key、資料庫）留在本地，不上傳任何外部服務
 
 ---

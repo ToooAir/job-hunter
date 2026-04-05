@@ -10,7 +10,7 @@ A self-hosted job search pipeline for the German tech market: scrape → AI scor
 
 Built for international candidates job-hunting in Germany — with first-class support for **Chancenkarte holders**, German JD auto-translation, and visa compatibility analysis built in.
 
-> **Screenshot** — add a dashboard screenshot here after first run (`docs/screenshot.png`)
+![Dashboard screenshot](docs/screenshot.png)
 
 ---
 
@@ -55,6 +55,7 @@ This tool automates the tedious parts (scraping, deduplication, scoring, cover l
 **Flexibility**
 - Works with OpenAI, Mistral AI (free tier), Azure OpenAI, or any local/custom LLM endpoint
 - Fully Dockerised — one `docker compose up -d` to run
+- Dashboard UI supports **English / 中文** — toggle in the sidebar, no restart needed
 - All personal data (resume, keys, DB) stays local, never leaves your machine
 
 ---
