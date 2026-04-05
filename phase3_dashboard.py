@@ -547,6 +547,18 @@ with right:
                               "freelance": "🔧 Freelance", "unknown": "— unknown"}
             c5.metric("Contract",      CONTRACT_LABEL.get(job.get("contract_type") or "unknown", "—"))
 
+            # ── Full JD ──────────────────────────────────────────────────────
+            with st.expander("📄 完整 JD 原文", expanded=False):
+                _translated = job.get("translated_jd_text")
+                if _translated:
+                    _jd_tab1, _jd_tab2 = st.tabs(["英文（已翻譯）", "德文（原文）"])
+                    with _jd_tab1:
+                        st.text(_translated)
+                    with _jd_tab2:
+                        st.text(job.get("raw_jd_text") or "")
+                else:
+                    st.text(job.get("raw_jd_text") or "（無 JD 內容）")
+
             # ── Salary ───────────────────────────────────────────────────────
             _salary_estimate = job.get("salary_estimate")
             _salary_label = "💰 薪資估計" + ("  ✓" if _salary_estimate else "")
