@@ -36,15 +36,34 @@ def build_kb(
     chunks: list[dict] = []
     for md_file in sorted(Path(kb_dir).glob("*.md")):
         text = md_file.read_text(encoding="utf-8")
+        h1 = ""
+        h2 = ""
         for i, segment in enumerate(text.split("\n\n")):
             segment = segment.strip()
-            if len(segment) >= 20:
-                chunks.append(
-                    {
-                        "text": segment,
-                        "metadata": {"source": md_file.name, "chunk_index": i},
-                    }
-                )
+            if not segment:
+                continue
+            # A block may start with a heading followed by content on the same block
+            # (e.g. "## Company | Role\n- bullet1\n- bullet2").
+            # Split off the heading line and treat the rest as content.
+            lines = segment.splitlines()
+            if lines[0].startswith("# ") and not lines[0].startswith("## "):
+                h1 = lines[0].lstrip("# ").strip()
+                h2 = ""
+                content = "\n".join(lines[1:]).strip()
+            elif lines[0].startswith("## "):
+                h2 = lines[0].lstrip("# ").strip()
+                content = "\n".join(lines[1:]).strip()
+            else:
+                content = segment
+            if len(content) < 20:
+                continue
+            prefix = f"[{h1}: {h2}] " if h2 else (f"[{h1}] " if h1 else "")
+            chunks.append(
+                {
+                    "text": prefix + content,
+                    "metadata": {"source": md_file.name, "chunk_index": i, "section": h2 or h1},
+                }
+            )
 
     if not chunks:
         log.warning("build_kb: no chunks found in %s — knowledge base is empty", kb_dir)
