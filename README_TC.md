@@ -77,35 +77,46 @@ SQLite 自動去重          每筆職缺產出               追蹤面試流程
 
 ```
 job-hunter/
-├── .env                          # API Key（不納入版本控制）
-├── .env.example                  # 複製為 .env 後填入
+├── .env                              # API Key（不納入版本控制）
+├── .env.example                      # 複製為 .env 後填入
 ├── requirements.txt
 ├── Dockerfile
 ├── docker-compose.yml
-├── scheduler.py                  # 排程器（在 Docker 內運行）
-├── phase1_ingestor.py            # 爬取職缺（9 個來源）
-├── phase2_scorer.py              # LLM 評分 + Cover Letter + 面試準備單
-├── phase3_dashboard.py           # Streamlit 審閱儀表板
-├── check_api.py                  # LLM + Embedding API 連線快速檢查
+├── run_pipeline.sh                   # Shell 包裝器（launchd / 手動執行）
+├── scheduler.py                      # 排程器（在 Docker 內運行）
+├── phase1_ingestor.py                # 爬取職缺（9 個來源）
+├── phase2_scorer.py                  # LLM 評分 + Cover Letter + 面試準備單
+├── phase3_dashboard.py               # Streamlit 審閱儀表板（支援 EN / 中文）
+├── check_api.py                      # LLM + Embedding API 連線快速檢查
+├── LICENSE
+├── README.md
+├── README_TC.md                      # 繁體中文說明
 ├── config/
-│   ├── grading_rules.md          # 評分規則（注入為 LLM System Prompt）
-│   └── search_targets.yaml       # 關鍵字、地點、ATS 公司 slug
-├── candidate_kb/                 # 個人履歷知識庫
+│   ├── grading_rules.md              # 評分規則（注入為 LLM System Prompt）
+│   ├── grading_rules.md.example      # 範本 — 複製後自訂
+│   ├── search_targets.yaml           # 關鍵字、地點、ATS 公司 slug
+│   └── search_targets.yaml.example  # 範本 — 複製後自訂
+├── candidate_kb/                     # 個人履歷知識庫（RAG 來源）
 │   ├── resume_bullets.md
+│   ├── resume_bullets.md.example
 │   ├── projects.md
-│   └── visa_status.md
+│   ├── projects.md.example
+│   ├── visa_status.md
+│   └── visa_status.md.example
+├── docs/
+│   └── screenshot.png
 ├── data/
-│   └── jobs.db                   # SQLite 資料庫（不納入版本控制）
-├── qdrant_data/                  # 本地向量資料庫（不納入版本控制）
+│   └── jobs.db                       # SQLite 資料庫（不納入版本控制）
+├── qdrant_data/                      # 本地向量資料庫（不納入版本控制）
 ├── logs/
-│   └── pipeline.log              # 排程執行記錄
+│   └── pipeline.log                  # 排程執行記錄
 └── utils/
-    ├── db.py                     # SQLite 操作 + 狀態流轉
-    ├── kb_loader.py              # 從 candidate_kb/ 建立 Qdrant 知識庫
-    ├── llm.py                    # OpenAI / Mistral / Azure / 自訂端點工廠
-    ├── company_researcher.py     # 按需公司研究（爬網站 + LLM）
-    ├── salary_estimator.py       # 按需薪資估計 + 談判建議
-    └── visa_checker.py           # 按需 Chancenkarte 簽證相容性分析
+    ├── db.py                         # SQLite 操作 + 狀態流轉
+    ├── kb_loader.py                  # 從 candidate_kb/ 建立 Qdrant 知識庫
+    ├── llm.py                        # OpenAI / Mistral / Azure / 自訂端點工廠
+    ├── company_researcher.py         # 按需公司研究（爬網站 + LLM）
+    ├── salary_estimator.py           # 按需薪資估計 + 談判建議
+    └── visa_checker.py               # 按需 Chancenkarte 簽證相容性分析
 ```
 
 ---

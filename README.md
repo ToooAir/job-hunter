@@ -77,35 +77,46 @@ auto-deduped             cover letter + scores     on-demand AI analysis
 
 ```
 job-hunter/
-├── .env                          # API keys (not committed)
-├── .env.example                  # Copy → .env, fill in keys
+├── .env                              # API keys (not committed)
+├── .env.example                      # Copy → .env, fill in keys
 ├── requirements.txt
 ├── Dockerfile
 ├── docker-compose.yml
-├── scheduler.py                  # Stdlib scheduler (runs inside Docker)
-├── phase1_ingestor.py            # Scrape jobs (9 sources)
-├── phase2_scorer.py              # LLM score + cover letter + interview brief
-├── phase3_dashboard.py           # Streamlit review dashboard
-├── check_api.py                  # Quick LLM + embedding connectivity check
+├── run_pipeline.sh                   # Shell wrapper for launchd / manual runs
+├── scheduler.py                      # Stdlib scheduler (runs inside Docker)
+├── phase1_ingestor.py                # Scrape jobs (9 sources)
+├── phase2_scorer.py                  # LLM score + cover letter + interview brief
+├── phase3_dashboard.py               # Streamlit review dashboard (EN / 中文)
+├── check_api.py                      # Quick LLM + embedding connectivity check
+├── LICENSE
+├── README.md
+├── README_TC.md                      # Traditional Chinese README
 ├── config/
-│   ├── grading_rules.md          # Scoring rules injected as LLM system prompt
-│   └── search_targets.yaml       # Keywords, locations, ATS company slugs
-├── candidate_kb/                 # Your resume knowledge base
+│   ├── grading_rules.md              # Scoring rules injected as LLM system prompt
+│   ├── grading_rules.md.example      # Template — copy and customise
+│   ├── search_targets.yaml           # Keywords, locations, ATS company slugs
+│   └── search_targets.yaml.example  # Template — copy and customise
+├── candidate_kb/                     # Your resume knowledge base (RAG source)
 │   ├── resume_bullets.md
+│   ├── resume_bullets.md.example
 │   ├── projects.md
-│   └── visa_status.md
+│   ├── projects.md.example
+│   ├── visa_status.md
+│   └── visa_status.md.example
+├── docs/
+│   └── screenshot.png
 ├── data/
-│   └── jobs.db                   # SQLite database (not committed)
-├── qdrant_data/                  # Local vector store (not committed)
+│   └── jobs.db                       # SQLite database (not committed)
+├── qdrant_data/                      # Local vector store (not committed)
 ├── logs/
-│   └── pipeline.log              # Scheduler run history
+│   └── pipeline.log                  # Scheduler run history
 └── utils/
-    ├── db.py                     # SQLite helpers + status transitions
-    ├── kb_loader.py              # Build Qdrant knowledge base from candidate_kb/
-    ├── llm.py                    # OpenAI / Mistral / Azure / custom endpoint factory
-    ├── company_researcher.py     # On-demand company profile (scrape + LLM)
-    ├── salary_estimator.py       # On-demand salary estimate + negotiation tips
-    └── visa_checker.py           # On-demand Chancenkarte visa compatibility analysis
+    ├── db.py                         # SQLite helpers + status transitions
+    ├── kb_loader.py                  # Build Qdrant knowledge base from candidate_kb/
+    ├── llm.py                        # OpenAI / Mistral / Azure / custom endpoint factory
+    ├── company_researcher.py         # On-demand company profile (scrape + LLM)
+    ├── salary_estimator.py           # On-demand salary estimate + negotiation tips
+    └── visa_checker.py               # On-demand Chancenkarte visa compatibility analysis
 ```
 
 ---
