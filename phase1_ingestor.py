@@ -316,34 +316,44 @@ def _gtj_fetch_listing() -> list[dict] | None:
 
 
 def _gtj_fetch_jd_playwright(job_urls: list[str]) -> dict[str, str]:
-    """Batch-fetch JDs via Playwright. Returns {jobUrl: jd_text}."""
+    """Batch-fetch JDs via Playwright. Returns {jobUrl: jd_text}, or {} if unavailable."""
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
-        log.warning("germantechjobs: playwright not installed — JD will be empty")
+        log.warning("germantechjobs: playwright not installed — skipping JD fetch")
         return {}
 
     results: dict[str, str] = {}
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True)
-        page = browser.new_page()
-        page.set_extra_http_headers({"User-Agent": HEADERS["User-Agent"]})
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.set_extra_http_headers({"User-Agent": HEADERS["User-Agent"]})
 
-        for job_url_slug in job_urls:
-            url = f"{GTJ_BASE}/jobs/{job_url_slug}"
-            try:
-                page.goto(url, wait_until="networkidle", timeout=25000)
-                html = page.content()
-                soup = BeautifulSoup(html, "html.parser")
-                jd_el = soup.select_one("[class*='job-detail']") or soup.find("main") or soup.body
-                jd_text = jd_el.get_text(separator="\n", strip=True) if jd_el else ""
-                results[job_url_slug] = jd_text
-                time.sleep(0.8)
-            except Exception as exc:
-                log.warning("germantechjobs: Playwright error for %s — %s", url, exc)
-                results[job_url_slug] = ""
+            for job_url_slug in job_urls:
+                url = f"{GTJ_BASE}/jobs/{job_url_slug}"
+                try:
+                    page.goto(url, wait_until="networkidle", timeout=25000)
+                    html = page.content()
+                    soup = BeautifulSoup(html, "html.parser")
+                    jd_el = (
+                        soup.select_one("[class*='job-detail']")
+                        or soup.find("main")
+                        or soup.body
+                    )
+                    jd_text = jd_el.get_text(separator="\n", strip=True) if jd_el else ""
+                    results[job_url_slug] = jd_text
+                    time.sleep(0.8)
+                except Exception as exc:
+                    log.warning("germantechjobs: Playwright error for %s — %s", url, exc)
+                    results[job_url_slug] = ""
 
-        browser.close()
+            browser.close()
+    except Exception as exc:
+        # Browser not installed (playwright install chromium not run) or other launch failure
+        log.warning("germantechjobs: Playwright unavailable — %s", exc)
+        return {}
+
     return results
 
 
@@ -409,6 +419,11 @@ def scrape_germantechjobs(
     # ── Step 3: batch JD via Playwright ───────────────────────────────────────
     job_url_slugs = [j["jobUrl"] for j in to_fetch if j.get("jobUrl")]
     jd_map = _gtj_fetch_jd_playwright(job_url_slugs)
+
+    if not jd_map and job_url_slugs:
+        # Playwright completely unavailable — skip upsert to avoid title-only records
+        log.warning("germantechjobs: Playwright returned no JDs — skipping upsert")
+        return 0, 0
 
     # ── Step 4: upsert ────────────────────────────────────────────────────────
     for job in to_fetch:

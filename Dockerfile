@@ -4,7 +4,8 @@ WORKDIR /app
 
 # All parsers used are html.parser (stdlib) — no system packages needed.
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt \
+    && playwright install --with-deps chromium
 
 # Source code — copied last so code-only changes don't invalidate the pip layer.
 # Data directories (data/, qdrant_data/, candidate_kb/, config/) are excluded
