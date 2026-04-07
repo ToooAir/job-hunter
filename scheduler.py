@@ -35,6 +35,7 @@ _DOCKER_LOG_PATTERNS = (
     "[WARNING]",
     "[ERROR]",
     "===",           # phase start/end markers
+    "scraping ",     # phase1 per-source start indicator (e.g. "scraping wearedevelopers …")
     "新增",          # phase1 per-source + total summary (新增 X 筆，略過 Y 筆)
     "LLM provider",  # phase2 startup — which model is running
     "評分",          # phase2: 開始評分 N 筆 / 完成評分 / 沒有待評分

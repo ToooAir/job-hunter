@@ -1813,6 +1813,7 @@ if __name__ == "__main__":
     results: dict[str, tuple[int, int]] = {}
 
     # ── Arbeitnow ──
+    log.info("scraping arbeitnow …")
     an = config["arbeitnow"]
     results["arbeitnow"] = scrape_arbeitnow(
         conn,
@@ -1823,6 +1824,7 @@ if __name__ == "__main__":
     )
 
     # ── WeAreDevelopers ──
+    log.info("scraping wearedevelopers …")
     wad = config.get("wearedevelopers", {})
     if wad.get("keywords"):
         results["wearedevelopers"] = scrape_wearedevelopers(
@@ -1836,6 +1838,7 @@ if __name__ == "__main__":
         results["wearedevelopers"] = (0, 0)
 
     # ── EnglishJobs ──
+    log.info("scraping englishjobs …")
     ej = config["englishjobs"]
     results["englishjobs"] = scrape_englishjobs(
         conn,
@@ -1845,6 +1848,7 @@ if __name__ == "__main__":
     )
 
     # ── GermanTechJobs ──
+    log.info("scraping germantechjobs …")
     gtj = config.get("germantechjobs", {})
     results["germantechjobs"] = scrape_germantechjobs(
         conn,
@@ -1855,6 +1859,7 @@ if __name__ == "__main__":
     )
 
     # ── Bundesagentur ──
+    log.info("scraping bundesagentur …")
     ba = config["bundesagentur"]
     results["bundesagentur"] = scrape_bundesagentur(
         conn,
@@ -1866,6 +1871,7 @@ if __name__ == "__main__":
     )
 
     # ── Remotive ──
+    log.info("scraping remotive …")
     rm = config["remotive"]
     results["remotive"] = scrape_remotive(
         conn,
@@ -1875,6 +1881,7 @@ if __name__ == "__main__":
     )
 
     # ── Relocate.me ──
+    log.info("scraping relocateme …")
     rm2 = config["relocateme"]
     results["relocateme"] = scrape_relocateme(
         conn,
@@ -1883,6 +1890,7 @@ if __name__ == "__main__":
     )
 
     # ── Jobicy ──
+    log.info("scraping jobicy …")
     jc = config["jobicy"]
     results["jobicy"] = scrape_jobicy(
         conn,
@@ -1892,6 +1900,7 @@ if __name__ == "__main__":
     )
 
     # ── Ashby ──
+    log.info("scraping ashby …")
     ab = config.get("ashby", {})
     if ab.get("companies"):
         results["ashby"] = scrape_ashby(
@@ -1904,6 +1913,7 @@ if __name__ == "__main__":
         results["ashby"] = (0, 0)
 
     # ── Workable ──
+    log.info("scraping workable …")
     wb = config.get("workable", {})
     if wb.get("companies"):
         results["workable"] = scrape_workable(
@@ -1916,6 +1926,7 @@ if __name__ == "__main__":
         results["workable"] = (0, 0)
 
     # ── We Work Remotely ──
+    log.info("scraping weworkremotely …")
     wwr = config.get("weworkremotely", {})
     if wwr.get("feeds"):
         results["weworkremotely"] = scrape_weworkremotely(
@@ -1928,6 +1939,7 @@ if __name__ == "__main__":
         results["weworkremotely"] = (0, 0)
 
     # ── Greenhouse ──
+    log.info("scraping greenhouse …")
     gh = config.get("greenhouse", {})
     if gh.get("companies"):
         results["greenhouse"] = scrape_greenhouse(
@@ -1940,6 +1952,7 @@ if __name__ == "__main__":
         results["greenhouse"] = (0, 0)
 
     # ── Heise Jobs ──
+    log.info("scraping heise …")
     hj = config.get("heise", {})
     if hj.get("keywords"):
         results["heise"] = scrape_heise(
@@ -1953,6 +1966,7 @@ if __name__ == "__main__":
         results["heise"] = (0, 0)
 
     # ── Personio ──
+    log.info("scraping personio …")
     pn = config.get("personio", {})
     if pn.get("companies"):
         results["personio"] = scrape_personio(
@@ -1965,6 +1979,7 @@ if __name__ == "__main__":
         results["personio"] = (0, 0)
 
     # ── Welcome to the Jungle (WTTJ) ──
+    log.info("scraping wttj …")
     wttj = config.get("wttj", {})
     if wttj.get("keywords"):
         results["wttj"] = scrape_wttj(
@@ -1977,6 +1992,7 @@ if __name__ == "__main__":
         results["wttj"] = (0, 0)
 
     # ── Lever ──
+    log.info("scraping lever …")
     lv = config.get("lever", {})
     if lv.get("companies"):
         results["lever"] = scrape_lever(
