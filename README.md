@@ -18,7 +18,7 @@ Built for international candidates job-hunting in Germany — with first-class s
 
 Searching for a tech job in Germany as a non-EU candidate is a different problem from a regular job search:
 
-- Job listings are spread across 9+ platforms, many in German
+- Job listings are spread across 16+ platforms, many in German
 - Every JD needs a tailored cover letter — generic ones go straight to bin
 - Visa compatibility is unclear on most listings (Chancenkarte ≠ "no right to work")
 - Interviews take weeks; by the time you hear back, you've forgotten what the role was
@@ -30,7 +30,7 @@ This tool automates the tedious parts (scraping, deduplication, scoring, cover l
 ## Features
 
 **Pipeline**
-- Scrapes 9 job sources daily on a schedule (APIs + HTML, auto-deduped by JD content hash)
+- Scrapes 16 job sources daily on a schedule (APIs + HTML, auto-deduped by JD content hash)
 - Detects and auto-translates German JDs to English before scoring
 - RAG-augmented LLM scoring against your personal resume knowledge base
 - A/B/C grading with source bonus (Relocate.me, Greenhouse, Lever, Bundesagentur)
@@ -64,12 +64,12 @@ This tool automates the tedious parts (scraping, deduplication, scoring, cover l
 
 ```
 Phase 1 (Ingestor)   →   Phase 2 (Scorer)   →   Phase 3 (Dashboard)
-9 sources scraped        RAG + LLM grades         Review, edit CL, apply,
+16 sources scraped       RAG + LLM grades         Review, edit CL, apply,
 into SQLite              each job, generates       track interviews,
 auto-deduped             cover letter + scores     on-demand AI analysis
 ```
 
-**Phase 1** pulls from 9 sources and deduplicates by JD content hash (chars 50–550, skipping platform boilerplate). **Phase 2** detects German JDs, translates them, scores against your candidate knowledge base via RAG, and grades A/B/C. **Phase 3** is a Streamlit dashboard for reviewing, editing, applying, and tracking your full interview pipeline.
+**Phase 1** pulls from 16 sources and deduplicates by JD content hash (chars 50–550, skipping platform boilerplate). **Phase 2** detects German JDs, translates them, scores against your candidate knowledge base via RAG, and grades A/B/C. **Phase 3** is a Streamlit dashboard for reviewing, editing, applying, and tracking your full interview pipeline.
 
 ---
 
@@ -84,7 +84,7 @@ job-hunter/
 ├── docker-compose.yml
 ├── run_pipeline.sh                   # Shell wrapper for launchd / manual runs
 ├── scheduler.py                      # Stdlib scheduler (runs inside Docker)
-├── phase1_ingestor.py                # Scrape jobs (9 sources)
+├── phase1_ingestor.py                # Scrape jobs (16 sources)
 ├── phase2_scorer.py                  # LLM score + cover letter + interview brief
 ├── phase3_dashboard.py               # Streamlit review dashboard (EN / 中文)
 ├── check_api.py                      # Quick LLM + embedding connectivity check
@@ -307,12 +307,19 @@ Replace the candidate profile section in this file with specific, concrete value
 | Source | Method | Notes |
 |--------|--------|-------|
 | [Arbeitnow](https://www.arbeitnow.com) | JSON API | Stable; English and German roles |
+| [WeAreDevelopers](https://www.wearedevelopers.com) | Private REST API | Germany's largest dev job board; Germany + remote passes |
 | [EnglishJobs.de](https://englishjobs.de) | HTML scrape | English-only roles in Germany |
 | [Bundesagentur für Arbeit](https://api.arbeitsagentur.de) | REST API | Official German job register |
 | [Remotive](https://remotive.com) | JSON API | Remote-only, English |
 | [Relocate.me](https://relocate.me) | HTML scrape | Roles with relocation support |
 | [Jobicy](https://jobicy.com) | JSON API | Remote-only; geo exclusion filter |
+| [Ashby ATS](https://jobs.ashbyhq.com) | GraphQL API | Per-company board; no auth needed |
+| [Workable ATS](https://apply.workable.com) | REST API | Per-company board; built-in 429 backoff |
+| [We Work Remotely](https://weworkremotely.com) | RSS feed | Programming + DevOps/sysadmin feeds |
 | [Greenhouse ATS](https://boards-api.greenhouse.io) | JSON API | Per-company board; no auth needed |
+| [Heise Jobs](https://jobs.heise.de) | HTML scrape | German IT job board; SSR with cumulative pagination |
+| [Personio ATS](https://personio.de) | XML feed | Per-company feed at `{slug}.jobs.personio.de/xml` |
+| [Welcome to the Jungle](https://www.welcometothejungle.com) | Algolia API | EU startup jobs; English-only, remote-EU + Germany filter |
 | [Lever ATS](https://api.lever.co) | JSON API | Per-company board; no auth needed |
 | LinkedIn / StepStone / other | Manual via dashboard | Search buttons + manual job entry form |
 

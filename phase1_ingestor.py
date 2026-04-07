@@ -7,6 +7,7 @@ then upserts raw job listings into the SQLite database.
 import hashlib
 import logging
 import os
+import re
 import time
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urljoin, urlencode
@@ -280,110 +281,167 @@ def scrape_englishjobs(
 
 
 # ── Source 3: GermanTechJobs ───────────────────────────────────────────────────
+#
+# Previously skipped (JS SPA). Now uses:
+#   Step 1 — requests: GET https://germantechjobs.de/api/jobsLight
+#             Returns all 3000+ listings with title/company/city/technologies fields.
+#             No auth, no rate limit observed.
+#   Step 2 — Playwright (headless Chromium): render detail page per matched job
+#             JD selector: [class*="job-detail"] (confirmed ~5 KB HTML)
+#             URL: https://germantechjobs.de/jobs/{jobUrl}
+#
+# Filter logic (listing stage, no Playwright needed):
+#   - keyword match: job name OR technologies list
+#   - location match: cityCategory OR workplace=remote
+#   - language: "English" OR keyword forces English context
+
+GTJ_API = "https://germantechjobs.de/api/jobsLight"
+GTJ_BASE = "https://germantechjobs.de"
+GTJ_TARGET_CITIES = {
+    "Hamburg", "Berlin", "Munich", "Frankfurt", "Cologne", "Dusseldorf",
+    "Stuttgart", "Hanover", "Bremen", "Nuremberg", "Dresden", "Leipzig",
+    "Karlsruhe", "Dortmund", "Essen", "Heidelberg", "Mannheim", "Bonn",
+}
 
 
-def _parse_germantechjobs_listing(soup: BeautifulSoup) -> list[dict]:
-    """Extract job cards from a germantechjobs.de listing page."""
-    sel = GERMANTECHJOBS_SELECTORS
-    href_kw = sel["detail_href"]
-    cards = []
+def _gtj_fetch_listing() -> list[dict] | None:
+    resp = safe_get(GTJ_API)
+    if resp is None:
+        return None
+    try:
+        return resp.json()
+    except Exception as exc:
+        log.warning("germantechjobs: JSON parse error — %s", exc)
+        return None
 
-    items = soup.select(sel["card_primary"])
-    if not items:
-        items = [
-            a.find_parent("li") or a.find_parent("div")
-            for a in soup.find_all("a", href=lambda h: h and href_kw in h)
-            if a.find_parent("li") or a.find_parent("div")
-        ]
-        seen = set()
-        items = [x for x in items if x and id(x) not in seen and not seen.add(id(x))]
 
-    for item in items:
-        a_tag = item.find("a", href=lambda h: h and href_kw in h) if item else None
-        if not a_tag:
-            continue
-        href = a_tag.get("href", "")
-        detail_url = href if href.startswith("http") else urljoin(sel["base_domain"], href)
+def _gtj_fetch_jd_playwright(job_urls: list[str]) -> dict[str, str]:
+    """Batch-fetch JDs via Playwright. Returns {jobUrl: jd_text}."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        log.warning("germantechjobs: playwright not installed — JD will be empty")
+        return {}
 
-        title_el = item.find(["h2", "h3", "h4"]) or a_tag
-        title = title_el.get_text(strip=True)
+    results: dict[str, str] = {}
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_extra_http_headers({"User-Agent": HEADERS["User-Agent"]})
 
-        company_el = item.find(class_=lambda c: c and "company" in c)
-        company = company_el.get_text(strip=True) if company_el else ""
+        for job_url_slug in job_urls:
+            url = f"{GTJ_BASE}/jobs/{job_url_slug}"
+            try:
+                page.goto(url, wait_until="networkidle", timeout=25000)
+                html = page.content()
+                soup = BeautifulSoup(html, "html.parser")
+                jd_el = soup.select_one("[class*='job-detail']") or soup.find("main") or soup.body
+                jd_text = jd_el.get_text(separator="\n", strip=True) if jd_el else ""
+                results[job_url_slug] = jd_text
+                time.sleep(0.8)
+            except Exception as exc:
+                log.warning("germantechjobs: Playwright error for %s — %s", url, exc)
+                results[job_url_slug] = ""
 
-        location_el = item.find(class_=lambda c: c and "location" in c)
-        location = location_el.get_text(strip=True) if location_el else ""
-
-        cards.append(
-            {"title": title, "company": company, "location": location, "detail_url": detail_url}
-        )
-    return cards
+        browser.close()
+    return results
 
 
 def scrape_germantechjobs(
     conn,
-    base_url_template: str,
     keywords: list[str],
-    locations: list[str],
+    target_cities: set[str] | None = None,
+    include_remote: bool = True,
+    max_detail_fetches: int = 50,
 ) -> tuple[int, int]:
+    """
+    Scrape GermanTechJobs via its internal REST API + Playwright for JD.
+
+    Parameters
+    ----------
+    keywords        : Title/tech keyword filter (case-insensitive).
+    target_cities   : cityCategory values to accept (uses GTJ_TARGET_CITIES if None).
+    include_remote  : Also accept jobs with workplace='remote'.
+    max_detail_fetches : Playwright calls are slow (~1.5s each); cap to avoid long runs.
+    """
+    if target_cities is None:
+        target_cities = GTJ_TARGET_CITIES
+
     added = skipped = 0
-    seen_urls: set[str] = set()
+    kw_lower = [k.lower() for k in keywords]
 
-    for keyword in keywords:
-        for location in locations:
-            url = base_url_template.format(keyword=keyword, location=location)
-            resp = safe_get(url)
-            if resp is None:
-                continue
+    # ── Step 1: fetch listing ──────────────────────────────────────────────────
+    jobs_all = _gtj_fetch_listing()
+    if not jobs_all:
+        log.warning("germantechjobs: listing fetch failed")
+        return 0, 0
 
-            soup = BeautifulSoup(resp.text, "html.parser")
-            cards = _parse_germantechjobs_listing(soup)
+    log.info("germantechjobs: %d total listings", len(jobs_all))
 
-            for card in cards:
-                detail_url = card["detail_url"]
-                if detail_url in seen_urls:
-                    skipped += 1
-                    continue
-                seen_urls.add(detail_url)
+    # ── Step 2: filter ────────────────────────────────────────────────────────
+    matched = []
+    for job in jobs_all:
+        city: str = job.get("cityCategory") or ""
+        workplace: str = job.get("workplace") or ""
+        is_remote = workplace == "remote"
 
-                detail_resp = safe_get(detail_url)
-                if detail_resp is None:
-                    continue
+        if not (city in target_cities or (include_remote and is_remote)):
+            continue
 
-                detail_soup = BeautifulSoup(detail_resp.text, "html.parser")
-                jd_el = None
-                for kw in GERMANTECHJOBS_SELECTORS["jd_classes"]:
-                    jd_el = detail_soup.find(class_=lambda c, k=kw: c and k in c)
-                    if jd_el:
-                        break
-                jd_el = jd_el or detail_soup.find("article") or detail_soup.find("main") or detail_soup.body
-                raw_jd = jd_el.get_text(separator="\n", strip=True) if jd_el else ""
+        name: str = job.get("name") or ""
+        techs: list = job.get("technologies") or []
+        haystack = (name + " " + " ".join(techs)).lower()
+        if not any(kw in haystack for kw in kw_lower):
+            continue
 
-                record = {
-                    "id":          make_id(detail_url),
-                    "company":     card["company"],
-                    "title":       card["title"],
-                    "url":         detail_url,
-                    "source":      "germantechjobs",
-                    "source_tier": "auto",
-                    "location":    card["location"],
-                    "raw_jd_text": raw_jd,
-                    "fetched_at":  utcnow(),
-                    "expires_at":  expiry(45),
-                    "status":      "un-scored",
-                }
+        matched.append(job)
 
-                _warn_empty_jd(record)
-                if upsert_job(conn, record):
-                    added += 1
-                else:
-                    skipped += 1
+    log.info("germantechjobs: %d jobs matched filter", len(matched))
 
-            log.info(
-                "germantechjobs kw=%r loc=%r: added=%d skipped=%d",
-                keyword, location, added, skipped,
-            )
+    # Cap Playwright fetches to avoid very long runtimes
+    to_fetch = matched[:max_detail_fetches]
+    if len(matched) > max_detail_fetches:
+        log.warning(
+            "germantechjobs: capping Playwright fetches at %d (of %d matched)",
+            max_detail_fetches, len(matched),
+        )
 
+    # ── Step 3: batch JD via Playwright ───────────────────────────────────────
+    job_url_slugs = [j["jobUrl"] for j in to_fetch if j.get("jobUrl")]
+    jd_map = _gtj_fetch_jd_playwright(job_url_slugs)
+
+    # ── Step 4: upsert ────────────────────────────────────────────────────────
+    for job in to_fetch:
+        slug: str = job.get("jobUrl") or ""
+        if not slug:
+            continue
+
+        job_url = f"{GTJ_BASE}/jobs/{slug}"
+        raw_jd = jd_map.get(slug) or job.get("name") or ""
+        city: str = job.get("cityCategory") or ""
+        workplace: str = job.get("workplace") or ""
+
+        record = {
+            "id":          make_id(job_url),
+            "company":     job.get("company") or "",
+            "title":       job.get("name") or "",
+            "url":         job_url,
+            "source":      "germantechjobs",
+            "source_tier": "auto",
+            "location":    city if city else ("Remote" if workplace == "remote" else ""),
+            "raw_jd_text": raw_jd,
+            "fetched_at":  utcnow(),
+            "expires_at":  expiry(45),
+            "status":      "un-scored",
+        }
+
+        _warn_empty_jd(record)
+        if upsert_job(conn, record):
+            added += 1
+        else:
+            skipped += 1
+
+    log.info("germantechjobs: added=%d skipped=%d", added, skipped)
     return added, skipped
 
 
@@ -488,7 +546,171 @@ def scrape_bundesagentur(
     return added, skipped
 
 
-# ── Source 5: Remotive ─────────────────────────────────────────────────────────
+# ── Source 5: WeAreDevelopers ─────────────────────────────────────────────────
+#
+# Private (undocumented) REST API discovered via browser devtools.
+# GET https://wad-api.wearedevelopers.com/api/v2/jobs/search
+#   ?q=<keyword>&per_page=100&page=N          → Germany-located jobs
+#   ?q=<keyword>&remote=true&per_page=100&page=N → remote jobs
+# Max per_page = 200; 500 returns empty.
+# Detail endpoint: /v2/jobs/details?job_id=ID&job_slug=SLUG[&external=true]
+# job_type="job-listing" → external aggregated job (use external=true for detail)
+# job_type="job"         → WAD-native listing (detail needs company_id; skip detail)
+
+WAD_API = "https://wad-api.wearedevelopers.com/api"
+WAD_HEADERS = {
+    **HEADERS,
+    "Origin": "https://www.wearedevelopers.com",
+    "Referer": "https://www.wearedevelopers.com/",
+}
+
+# Post-filter: keep only jobs whose location mentions one of these
+WAD_DE_TERMS = [
+    "germany", "deutschland", "hamburg", "berlin", "munich", "münchen",
+    "frankfurt", "cologne", "köln", "düsseldorf", "stuttgart", "hannover",
+    "leipzig", "dresden", "nuremberg", "nürnberg", "dortmund", "essen",
+    "bremen", "heidelberg", "mannheim", "karlsruhe", "bonn",
+]
+
+
+def _wad_safe_get(path: str, params: dict) -> dict | None:
+    try:
+        resp = requests.get(
+            WAD_API + path, params=params, headers=WAD_HEADERS, timeout=10
+        )
+        resp.raise_for_status()
+        time.sleep(0.8)
+        return resp.json()
+    except Exception as exc:
+        log.warning("WAD GET failed: %s %s — %s", path, params, exc)
+        return None
+
+
+def _wad_jd(job_id: int, slug: str, external: bool) -> str:
+    """Fetch full JD from detail endpoint. Returns combined HTML-stripped text."""
+    params: dict = {"job_id": job_id, "job_slug": slug}
+    if external:
+        params["external"] = "true"
+    data = _wad_safe_get("/v2/jobs/details", params)
+    if not data:
+        return ""
+    parts = [
+        data.get("description") or "",
+        data.get("candidate_description") or "",
+        data.get("conditions_description") or "",
+    ]
+    return clean_html("\n".join(p for p in parts if p))
+
+
+def scrape_wearedevelopers(
+    conn,
+    keywords: list[str],
+    max_pages: int,
+    per_page: int,
+) -> tuple[int, int]:
+    added = skipped = 0
+    seen_ids: set[int] = set()
+    kw_lower = [k.lower() for k in keywords]
+
+    # Two passes: Germany-located jobs + remote jobs
+    passes = [
+        {"location": "Germany"},
+        {"remote": "true"},
+    ]
+
+    for base_params in passes:
+        pass_label = "Germany" if "location" in base_params else "remote"
+
+        for keyword in keywords:
+            for page in range(1, max_pages + 1):
+                params = {
+                    "q": keyword,
+                    "per_page": per_page,
+                    "page": page,
+                    **base_params,
+                }
+                data = _wad_safe_get("/v2/jobs/search", params)
+                if not data:
+                    break
+
+                jobs = data.get("data", [])
+                if not jobs:
+                    break
+
+                for job in jobs:
+                    job_id: int = job.get("id", 0)
+                    if not job_id or job_id in seen_ids:
+                        skipped += 1
+                        continue
+                    seen_ids.add(job_id)
+
+                    title: str = job.get("title", "")
+                    location: str = job.get("location") or ""
+                    is_remote: bool = job.get("remote", False)
+
+                    # Post-filter: must be remote OR in a German city
+                    loc_lower = location.lower()
+                    if not is_remote and not any(t in loc_lower for t in WAD_DE_TERMS):
+                        continue
+
+                    # Title must match at least one keyword
+                    if not any(kw in title.lower() for kw in kw_lower):
+                        continue
+
+                    external = job.get("job_type") == "job-listing"
+                    slug: str = job.get("slug", "")
+
+                    # Canonical WAD URL (used as unique key)
+                    if external:
+                        job_url = f"https://www.wearedevelopers.com/en/jobs/ext/{job_id}/{slug}"
+                    else:
+                        job_url = f"https://www.wearedevelopers.com/en/jobs/{job_id}/{slug}"
+
+                    # Fetch full JD (external only; native jobs need company_id we don't have)
+                    raw_jd = ""
+                    if external:
+                        raw_jd = _wad_jd(job_id, slug, external=True)
+                    if not raw_jd:
+                        # Fallback: combine skills list as minimal context
+                        skills = job.get("skills", [])
+                        raw_jd = f"{title}\n" + " ".join(skills) if skills else title
+
+                    company: str = job.get("company_name", "").strip()
+
+                    record = {
+                        "id":          make_id(job_url),
+                        "company":     company,
+                        "title":       title,
+                        "url":         job_url,
+                        "source":      "wearedevelopers",
+                        "source_tier": "auto",
+                        "location":    location or ("Remote" if is_remote else ""),
+                        "raw_jd_text": raw_jd,
+                        "fetched_at":  utcnow(),
+                        "expires_at":  expiry(45),
+                        "status":      "un-scored",
+                    }
+
+                    _warn_empty_jd(record)
+                    if upsert_job(conn, record):
+                        added += 1
+                    else:
+                        skipped += 1
+
+                log.info(
+                    "wearedevelopers kw=%r pass=%s page=%d: added=%d skipped=%d",
+                    keyword, pass_label, page, added, skipped,
+                )
+
+                # No more pages
+                pagination = data.get("pagination", {})
+                if page >= (pagination.get("last_page") or 1):
+                    break
+
+    return added, skipped
+
+
+# ── Source 6: Remotive ─────────────────────────────────────────────────────────
 
 REMOTIVE_API = "https://remotive.com/api/remote-jobs"
 
@@ -640,7 +862,371 @@ def scrape_relocateme(
     return added, skipped
 
 
-# ── Source 7: Jobicy ──────────────────────────────────────────────────────────
+# ── Source 7: Ashby ───────────────────────────────────────────────────────────
+#
+# Public GraphQL API (no auth required, discovered via browser devtools).
+# Endpoint: https://jobs.ashbyhq.com/api/non-user-graphql
+#
+# Step 1 – list all postings for a company:
+#   jobBoardWithTeams(organizationHostedJobsPageName: $slug)
+#   → { jobPostings { id title locationName workplaceType employmentType } }
+#
+# Step 2 – fetch full JD for each matched posting:
+#   jobPosting(organizationHostedJobsPageName: $slug, jobPostingId: $id)
+#   → { descriptionHtml }
+#
+# Canonical URL: https://jobs.ashbyhq.com/{slug}/{id}
+
+ASHBY_API = "https://jobs.ashbyhq.com/api/non-user-graphql"
+ASHBY_HEADERS = {
+    **HEADERS,
+    "Content-Type": "application/json",
+    "Origin": "https://jobs.ashbyhq.com",
+    "Referer": "https://jobs.ashbyhq.com/",
+}
+
+_ASHBY_BOARD_QUERY = """
+query AshbyJobBoard($org: String!) {
+  jobBoardWithTeams(organizationHostedJobsPageName: $org) {
+    jobPostings {
+      id
+      title
+      locationName
+      workplaceType
+      employmentType
+    }
+  }
+}
+"""
+
+_ASHBY_DETAIL_QUERY = """
+query AshbyJobPosting($org: String!, $id: String!) {
+  jobPosting(organizationHostedJobsPageName: $org, jobPostingId: $id) {
+    descriptionHtml
+  }
+}
+"""
+
+
+def _ashby_gql(query: str, variables: dict) -> dict | None:
+    try:
+        resp = requests.post(
+            ASHBY_API,
+            headers=ASHBY_HEADERS,
+            json={"query": query, "variables": variables},
+            timeout=12,
+        )
+        resp.raise_for_status()
+        time.sleep(0.6)
+        data = resp.json()
+        if data.get("errors"):
+            log.warning("ashby GQL errors: %s", data["errors"])
+            return None
+        return data.get("data")
+    except Exception as exc:
+        log.warning("ashby GQL failed: %s — %s", variables, exc)
+        return None
+
+
+def scrape_ashby(
+    conn,
+    companies: list[str],
+    keywords: list[str],
+) -> tuple[int, int]:
+    added = skipped = 0
+    kw_lower = [k.lower() for k in keywords]
+
+    # Workplace types we consider remote-eligible
+    remote_types = {"Remote", "Hybrid", None, ""}
+
+    for slug in companies:
+        data = _ashby_gql(_ASHBY_BOARD_QUERY, {"org": slug})
+        if not data:
+            continue
+
+        board = data.get("jobBoardWithTeams")
+        if not board:
+            log.warning("ashby %s: null board (slug may be wrong)", slug)
+            continue
+
+        postings = board.get("jobPostings", [])
+        log.info("ashby slug=%r: %d postings", slug, len(postings))
+
+        for posting in postings:
+            title: str = posting.get("title", "")
+            if not any(kw in title.lower() for kw in kw_lower):
+                continue
+
+            posting_id: str = posting.get("id", "")
+            if not posting_id:
+                continue
+
+            location: str = posting.get("locationName") or ""
+            workplace: str = posting.get("workplaceType") or ""
+
+            job_url = f"https://jobs.ashbyhq.com/{slug}/{posting_id}"
+
+            # Fetch full JD
+            detail_data = _ashby_gql(_ASHBY_DETAIL_QUERY, {"org": slug, "id": posting_id})
+            raw_jd = ""
+            if detail_data and detail_data.get("jobPosting"):
+                raw_jd = clean_html(detail_data["jobPosting"].get("descriptionHtml") or "")
+            if not raw_jd:
+                raw_jd = title
+
+            record = {
+                "id":          make_id(job_url),
+                "company":     slug,
+                "title":       title,
+                "url":         job_url,
+                "source":      "ashby",
+                "source_tier": "auto",
+                "location":    location or (workplace if workplace else ""),
+                "raw_jd_text": raw_jd,
+                "fetched_at":  utcnow(),
+                "expires_at":  expiry(60),
+                "status":      "un-scored",
+            }
+
+            _warn_empty_jd(record)
+            if upsert_job(conn, record):
+                added += 1
+            else:
+                skipped += 1
+
+    log.info("ashby: total added=%d skipped=%d", added, skipped)
+    return added, skipped
+
+
+# ── Source 8: Workable ────────────────────────────────────────────────────────
+#
+# Public REST API (no auth required, confirmed from JS bundle analysis).
+# Rate limit: aggressive (~30 req/min); scraper uses 2 s delay + exponential
+# backoff (30 / 60 / 120 s) on 429.
+#
+# Listing : POST https://apply.workable.com/api/v3/accounts/{slug}/jobs
+#             body: {"query":"","location":[],"department":[],"worktype":[],"remote":[]}
+#             → {"total": N, "results": [{shortcode, title, department, location, ...}]}
+#
+# Detail  : GET  https://apply.workable.com/api/v3/accounts/{slug}/jobs/{shortcode}
+#             → {shortcode, title, full_description, requirements, benefits, location, ...}
+#
+# Job URL : https://apply.workable.com/{slug}/j/{shortcode}
+# 404     : company not on Workable or slug wrong — skip silently.
+
+WORKABLE_BASE = "https://apply.workable.com"
+WORKABLE_LISTING_BODY = {
+    "query": "", "location": [], "department": [], "worktype": [], "remote": [],
+}
+
+
+def _workable_request(method: str, url: str, **kwargs) -> requests.Response | None:
+    """Shared HTTP helper for Workable with 429 backoff (10 / 30 / 90 s, 3 retries)."""
+    kwargs.setdefault("headers", HEADERS)
+    kwargs.setdefault("timeout", 12)
+    for attempt in range(3):
+        try:
+            resp = requests.request(method, url, **kwargs)
+            if resp.status_code == 429:
+                wait = 10 * (3 ** attempt)   # 10 → 30 → 90s
+                log.warning("workable 429 %s — waiting %ds (attempt %d/3)", url, wait, attempt + 1)
+                time.sleep(wait)
+                continue
+            return resp
+        except Exception as exc:
+            log.warning("workable request %s: %s", url, exc)
+            return None
+    log.warning("workable: exhausted retries on 429 for %s — skipping", url)
+    return None
+
+
+def _workable_post(slug: str) -> list[dict] | None:
+    """Fetch all job listings for a company slug. Returns list or None on error."""
+    url = f"{WORKABLE_BASE}/api/v3/accounts/{slug}/jobs"
+    resp = _workable_request(
+        "POST", url,
+        headers={**HEADERS, "Content-Type": "application/json"},
+        json=WORKABLE_LISTING_BODY,
+    )
+    if resp is None:
+        return None
+    if resp.status_code == 404:
+        return None
+    if not resp.ok:
+        log.warning("workable %s: HTTP %d", slug, resp.status_code)
+        return None
+    time.sleep(2.0)
+    try:
+        return resp.json().get("results", [])
+    except Exception:
+        return None
+
+
+def _workable_detail(slug: str, shortcode: str) -> str:
+    """Fetch full JD for one job. Returns plain text or empty string."""
+    url = f"{WORKABLE_BASE}/api/v3/accounts/{slug}/jobs/{shortcode}"
+    resp = _workable_request("GET", url)
+    if resp is None or not resp.ok:
+        return ""
+    time.sleep(2.0)
+    try:
+        data = resp.json()
+        parts = [
+            data.get("full_description") or "",
+            data.get("requirements") or "",
+            data.get("benefits") or "",
+        ]
+        return clean_html("\n".join(p for p in parts if p))
+    except Exception:
+        return ""
+
+
+def scrape_workable(
+    conn,
+    companies: list[str],
+    keywords: list[str],
+) -> tuple[int, int]:
+    added = skipped = 0
+    kw_lower = [k.lower() for k in keywords]
+
+    for slug in companies:
+        jobs = _workable_post(slug)
+        if jobs is None:
+            log.warning("workable %s: 404 or fetch failed — skipping", slug)
+            continue
+
+        log.info("workable slug=%r: %d listings", slug, len(jobs))
+
+        for job in jobs:
+            title: str = job.get("title", "")
+            if not any(kw in title.lower() for kw in kw_lower):
+                continue
+
+            shortcode: str = job.get("shortcode", "")
+            if not shortcode:
+                continue
+
+            loc: dict = job.get("location") or {}
+            location = ", ".join(filter(None, [loc.get("city"), loc.get("country")]))
+
+            job_url = f"{WORKABLE_BASE}/{slug}/j/{shortcode}"
+
+            raw_jd = _workable_detail(slug, shortcode)
+            if not raw_jd:
+                raw_jd = title
+
+            record = {
+                "id":          make_id(job_url),
+                "company":     job.get("company", {}).get("name", slug) if isinstance(job.get("company"), dict) else slug,
+                "title":       title,
+                "url":         job_url,
+                "source":      "workable",
+                "source_tier": "auto",
+                "location":    location,
+                "raw_jd_text": raw_jd,
+                "fetched_at":  utcnow(),
+                "expires_at":  expiry(45),
+                "status":      "un-scored",
+            }
+
+            _warn_empty_jd(record)
+            if upsert_job(conn, record):
+                added += 1
+            else:
+                skipped += 1
+
+    log.info("workable: total added=%d skipped=%d", added, skipped)
+    return added, skipped
+
+
+# ── Source 9: We Work Remotely ────────────────────────────────────────────────
+#
+# Public RSS feeds — no auth, no pagination, full JD in <description>.
+# Title format: "Company Name: Job Title"
+# Region field: typically "Anywhere in the World" (all remote)
+#
+# Feed URLs (confirmed working):
+#   /remote-jobs.rss                              — all categories (~700 items)
+#   /categories/remote-programming-jobs.rss       — programming (~25 items)
+#   /categories/remote-devops-sysadmin-jobs.rss   — devops (~40 items)
+
+import xml.etree.ElementTree as ET  # stdlib, no extra dep
+
+
+def scrape_weworkremotely(
+    conn,
+    feed_urls: list[str],
+    keywords: list[str],
+) -> tuple[int, int]:
+    added = skipped = 0
+    kw_lower = [k.lower() for k in keywords]
+    seen_urls: set[str] = set()
+
+    for feed_url in feed_urls:
+        resp = safe_get(feed_url)
+        if resp is None:
+            continue
+
+        try:
+            root = ET.fromstring(resp.text)
+        except ET.ParseError as exc:
+            log.warning("weworkremotely: XML parse error %s — %s", feed_url, exc)
+            continue
+
+        items = root.findall("channel/item")
+        log.info("weworkremotely feed=%r: %d items", feed_url.split("/")[-1], len(items))
+
+        for item in items:
+            raw_title: str = item.findtext("title") or ""
+            job_url: str = item.findtext("link") or item.findtext("guid") or ""
+
+            if not job_url or job_url in seen_urls:
+                continue
+            seen_urls.add(job_url)
+
+            # Title format: "Company: Role" — split on first colon
+            if ":" in raw_title:
+                company, title = raw_title.split(":", 1)
+                company = company.strip()
+                title = title.strip()
+            else:
+                company = ""
+                title = raw_title.strip()
+
+            # Keyword filter on title
+            if not any(kw in title.lower() for kw in kw_lower):
+                continue
+
+            region: str = item.findtext("region") or "Remote"
+            desc_html: str = item.findtext("description") or ""
+            raw_jd = clean_html(desc_html) if desc_html else title
+
+            pub_date: str = item.findtext("pubDate") or ""
+
+            record = {
+                "id":          make_id(job_url),
+                "company":     company,
+                "title":       title,
+                "url":         job_url,
+                "source":      "weworkremotely",
+                "source_tier": "auto",
+                "location":    region,
+                "raw_jd_text": raw_jd,
+                "fetched_at":  utcnow(),
+                "expires_at":  expiry(30),
+                "status":      "un-scored",
+            }
+
+            _warn_empty_jd(record)
+            if upsert_job(conn, record):
+                added += 1
+            else:
+                skipped += 1
+
+    return added, skipped
+
+
+# ── Source 10: Jobicy ─────────────────────────────────────────────────────────
 
 JOBICY_API = "https://jobicy.com/api/v2/remote-jobs"
 
@@ -767,12 +1353,376 @@ def scrape_greenhouse(
     return added, skipped
 
 
+# ── Source N: Heise Jobs ─────────────────────────────────────────────────────
+#
+# German IT-focused job aggregator (76k+ listings).
+# No auth, no API key — SSR Next.js page with jobs embedded in HTML.
+#
+# Search URL: GET https://jobs.heise.de/search?q={keyword}&loc={location}&page={N}
+# Pagination:  page=N is CUMULATIVE — page=3 returns page1+page2+page3 jobs (≈56)
+# Parse:       <li data-id="{jobId}"> cards with title, company, location, snippet
+# Job URL:     https://jobs.heise.de/search?selected={jobId}  (canonical link)
+#
+# Snippet note: some cards embed 2000+ char JDs; most have 100-500 chars or none.
+# The <p> inside each <li> is used as raw_jd_text (partial but sufficient for scoring).
+
+_HEISE_SEARCH = "https://jobs.heise.de/search"
+_HEISE_BADGE_RE = re.compile(r"^(Top|Premium|Anzeige)\s*", re.IGNORECASE)
+
+
+def scrape_heise(
+    conn,
+    keywords: list[str],
+    locations: list[str],
+    max_pages: int = 3,
+) -> tuple[int, int]:
+    added = skipped = 0
+    kw_lower = [k.lower() for k in keywords]
+    seen_ids: set[str] = set()
+
+    for keyword in keywords:
+        for loc in locations:
+            # Cumulative pagination: page=max_pages returns all results at once
+            resp = safe_get(
+                _HEISE_SEARCH,
+                params={"q": keyword, "loc": loc, "page": max_pages},
+            )
+            if resp is None:
+                continue
+
+            try:
+                soup = BeautifulSoup(resp.text, "html.parser")
+            except Exception as exc:
+                log.warning("heise: BeautifulSoup error — %s", exc)
+                continue
+
+            cards = soup.select("li[data-id]")
+            log.info("heise q=%r loc=%r: %d cards", keyword, loc, len(cards))
+
+            for card in cards:
+                job_id: str = card.get("data-id", "").strip()
+                if not job_id or job_id in seen_ids:
+                    continue
+                seen_ids.add(job_id)
+
+                # Title — strip badge prefix ("Top", "Premium", etc.)
+                title_el = card.select_one("[data-testid*='title']")
+                title = _HEISE_BADGE_RE.sub("", title_el.get_text(strip=True)) if title_el else ""
+                if not title:
+                    continue
+
+                # Keyword filter on title
+                if not any(kw in title.lower() for kw in kw_lower):
+                    continue
+
+                # Company — last <span> in first <section>
+                logo_sec = card.select_one("section")
+                spans = logo_sec.select("span") if logo_sec else []
+                company = spans[-1].get_text(strip=True) if spans else ""
+
+                # Location
+                loc_el = card.select_one("[class*='loc'] span")
+                job_location = loc_el.get_text(strip=True) if loc_el else loc
+
+                # JD snippet — the <p> inside the card (may be 0–2000+ chars)
+                snippet_el = card.select_one("p")
+                raw_jd = snippet_el.get_text(separator="\n", strip=True) if snippet_el else ""
+                if not raw_jd:
+                    raw_jd = title
+
+                job_url = f"https://jobs.heise.de/search?selected={job_id}"
+
+                record = {
+                    "id":          make_id(f"heise:{job_id}"),
+                    "company":     company,
+                    "title":       title,
+                    "url":         job_url,
+                    "source":      "heise",
+                    "source_tier": "auto",
+                    "location":    job_location,
+                    "raw_jd_text": raw_jd,
+                    "fetched_at":  utcnow(),
+                    "expires_at":  expiry(30),
+                    "status":      "un-scored",
+                }
+
+                _warn_empty_jd(record)
+                if upsert_job(conn, record):
+                    added += 1
+                else:
+                    skipped += 1
+
+    log.info("heise: total added=%d skipped=%d", added, skipped)
+    return added, skipped
+
+
+# ── Source N: Personio ───────────────────────────────────────────────────────
+#
+# Public XML feed — no auth required.
+# GET https://{slug}.jobs.personio.de/xml
+#   → 200 XML  : valid company with all open positions + full JD in CDATA
+#   → 301 to personio.de : slug doesn't exist or company no longer on Personio
+#
+# Job URL pattern: https://{slug}.jobs.personio.de/job/{id}
+# XML schema  : <workzag-jobs><position><id>, <name>, <office>, <department>,
+#                 <jobDescriptions><jobDescription><name>/<value>…
+#               </position>…</workzag-jobs>
+#
+# Note: safe_get raises on redirect (HTTPError), so we detect 301 via
+#       allow_redirects=False and a 3xx status check.
+
+
+def scrape_personio(
+    conn,
+    companies: list[str],
+    keywords: list[str],
+) -> tuple[int, int]:
+    added = skipped = 0
+    kw_lower = [k.lower() for k in keywords]
+
+    for slug in companies:
+        url = f"https://{slug}.jobs.personio.de/xml"
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=12, allow_redirects=False)
+        except Exception as exc:
+            log.warning("personio %s: request error — %s", slug, exc)
+            continue
+
+        # 3xx → company not on Personio (301 → personio.de homepage)
+        if resp.is_redirect or resp.status_code in (301, 302, 404):
+            log.debug("personio %s: redirect/404 — skipping", slug)
+            continue
+
+        if not resp.ok:
+            log.warning("personio %s: HTTP %d — skipping", slug, resp.status_code)
+            continue
+
+        time.sleep(1.0)
+
+        try:
+            root = ET.fromstring(resp.content)
+        except ET.ParseError as exc:
+            log.warning("personio %s: XML parse error — %s", slug, exc)
+            continue
+
+        positions = root.findall("position")
+        log.info("personio slug=%r: %d positions", slug, len(positions))
+
+        for pos in positions:
+            title: str = (pos.findtext("name") or "").strip()
+            if not title:
+                continue
+
+            # Keyword filter on title
+            if not any(kw in title.lower() for kw in kw_lower):
+                continue
+
+            pos_id: str = (pos.findtext("id") or "").strip()
+            if not pos_id:
+                continue
+
+            job_url = f"https://{slug}.jobs.personio.de/job/{pos_id}"
+            office: str = (pos.findtext("office") or "").strip()
+            department: str = (pos.findtext("department") or "").strip()
+            location = ", ".join(filter(None, [office, department])) or slug
+
+            # Build JD from all <jobDescription> sections
+            jd_parts: list[str] = []
+            for jd_el in pos.findall("jobDescriptions/jobDescription"):
+                section_name = jd_el.findtext("name") or ""
+                value_html = jd_el.findtext("value") or ""
+                section_text = clean_html(value_html)
+                if section_text:
+                    jd_parts.append(f"{section_name}\n{section_text}" if section_name else section_text)
+            raw_jd = "\n\n".join(jd_parts) or title
+
+            created_at: str = pos.findtext("createdAt") or utcnow()
+
+            record = {
+                "id":          make_id(job_url),
+                "company":     slug,
+                "title":       title,
+                "url":         job_url,
+                "source":      "personio",
+                "source_tier": "auto",
+                "location":    location,
+                "raw_jd_text": raw_jd,
+                "fetched_at":  utcnow(),
+                "expires_at":  expiry(60),
+                "status":      "un-scored",
+            }
+
+            _warn_empty_jd(record)
+            if upsert_job(conn, record):
+                added += 1
+            else:
+                skipped += 1
+
+    log.info("personio: total added=%d skipped=%d", added, skipped)
+    return added, skipped
+
+
 # ── Source 9: Lever ───────────────────────────────────────────────────────────
 #
 # Public Postings API — no auth required.
 # GET https://api.lever.co/v0/postings/{slug}?mode=json
 # Returns list of open postings with plain-text description.
 # 404 means the company doesn't use Lever — skip silently.
+
+# ── Welcome to the Jungle (WTTJ) ──────────────────────────────────────────────
+# Algolia-backed public search API (credentials embedded in HTML, no auth wall).
+# Filters: language:en AND (remote:fulltime OR offices.country_code:DE)
+# Gives EU startup remote jobs + German office roles in English.
+# API key is scoped to search-only reads; safe to embed here.
+
+_WTTJ_APP_ID  = "CSEKHVMS53"
+_WTTJ_API_KEY = "4bd8f6215d0cc52b26430765769e65a0"
+_WTTJ_INDEX   = "wttj_jobs_production_en"
+_WTTJ_ENDPOINT = (
+    f"https://{_WTTJ_APP_ID}-dsn.algolia.net"
+    f"/1/indexes/{_WTTJ_INDEX}/query"
+)
+_WTTJ_HEADERS = {
+    "X-Algolia-Application-Id": _WTTJ_APP_ID,
+    "X-Algolia-API-Key":        _WTTJ_API_KEY,
+    "Referer":                  "https://www.welcometothejungle.com/en/jobs",
+    "Content-Type":             "application/json",
+    "User-Agent":               HEADERS["User-Agent"],
+}
+_WTTJ_FILTERS = "language:en AND (remote:fulltime OR offices.country_code:DE)"
+
+
+def scrape_wttj(
+    conn,
+    keywords: list[str],
+    hits_per_page: int = 100,
+) -> tuple[int, int]:
+    """Scrape Welcome to the Jungle via its Algolia search API."""
+    added = skipped = 0
+    kw_lower = [k.lower() for k in keywords]
+    seen_refs: set[str] = set()
+
+    for keyword in keywords:
+        page = 0
+        while True:
+            payload = {
+                "query":        keyword,
+                "hitsPerPage":  hits_per_page,
+                "page":         page,
+                "filters":      _WTTJ_FILTERS,
+            }
+            try:
+                resp = requests.post(
+                    _WTTJ_ENDPOINT,
+                    headers=_WTTJ_HEADERS,
+                    json=payload,
+                    timeout=15,
+                )
+            except Exception as exc:
+                log.warning("wttj q=%r page=%d: request error — %s", keyword, page, exc)
+                break
+
+            if not resp.ok:
+                log.warning("wttj q=%r page=%d: HTTP %d", keyword, page, resp.status_code)
+                break
+
+            try:
+                data = resp.json()
+            except Exception:
+                log.warning("wttj q=%r page=%d: invalid JSON", keyword, page)
+                break
+
+            hits      = data.get("hits", [])
+            nb_pages  = data.get("nbPages", 1)
+            log.info("wttj q=%r page=%d/%d: %d hits", keyword, page + 1, nb_pages, len(hits))
+
+            for h in hits:
+                ref = h.get("reference", "")
+                if not ref or ref in seen_refs:
+                    continue
+
+                title = (h.get("name") or "").strip()
+                if not title:
+                    continue
+                # keyword relevance check — Algolia already does this but double-check
+                if not any(kw in title.lower() for kw in kw_lower):
+                    # also check summary / key_missions text
+                    summary_text = (h.get("summary") or "").lower()
+                    missions_text = " ".join(h.get("key_missions") or []).lower()
+                    if not any(kw in summary_text or kw in missions_text for kw in kw_lower):
+                        continue
+
+                seen_refs.add(ref)
+
+                org       = h.get("organization") or {}
+                org_ref   = org.get("reference", "")
+                slug      = h.get("slug", "")
+                company   = org.get("name", "")
+
+                if org_ref and slug:
+                    job_url = (
+                        f"https://www.welcometothejungle.com"
+                        f"/en/companies/{org_ref}/jobs/{slug}"
+                    )
+                else:
+                    job_url = f"https://www.welcometothejungle.com/en/jobs/{ref}"
+
+                # Location: offices list → first DE office or first city
+                offices = h.get("offices") or []
+                de_offices = [o for o in offices if o.get("country_code") == "DE"]
+                loc_office  = de_offices[0] if de_offices else (offices[0] if offices else {})
+                city        = loc_office.get("city", "")
+                country     = loc_office.get("country_code", "")
+                remote_type = h.get("remote", "")
+                if remote_type == "fulltime":
+                    location = f"Remote{(' / ' + city) if city else ''}"
+                else:
+                    location = ", ".join(filter(None, [city, country])) or "DE"
+
+                # JD: summary + key_missions bullets + profile requirements
+                summary       = (h.get("summary") or "").strip()
+                key_missions  = h.get("key_missions") or []
+                profile       = (h.get("profile") or "").strip()
+
+                parts = []
+                if summary:
+                    parts.append(summary)
+                if isinstance(key_missions, list):
+                    parts.extend(m for m in key_missions if m)
+                elif key_missions:
+                    parts.append(str(key_missions))
+                if profile:
+                    parts.append(profile)
+
+                raw_jd = "\n\n".join(parts) or title
+
+                record = {
+                    "id":          make_id(job_url),
+                    "company":     company,
+                    "title":       title,
+                    "url":         job_url,
+                    "source":      "wttj",
+                    "source_tier": "auto",
+                    "location":    location,
+                    "raw_jd_text": raw_jd,
+                    "fetched_at":  utcnow(),
+                    "expires_at":  expiry(30),
+                    "status":      "un-scored",
+                }
+
+                _warn_empty_jd(record)
+                if upsert_job(conn, record):
+                    added += 1
+                else:
+                    skipped += 1
+
+            if page + 1 >= nb_pages:
+                break
+            page += 1
+            time.sleep(0.3)  # Algolia is generous but be polite
+
+    log.info("wttj: total added=%d skipped=%d", added, skipped)
+    return added, skipped
 
 
 def scrape_lever(
@@ -872,6 +1822,19 @@ if __name__ == "__main__":
         max_pages=an.get("max_pages", 5),
     )
 
+    # ── WeAreDevelopers ──
+    wad = config.get("wearedevelopers", {})
+    if wad.get("keywords"):
+        results["wearedevelopers"] = scrape_wearedevelopers(
+            conn,
+            keywords=wad["keywords"],
+            max_pages=wad.get("max_pages", 3),
+            per_page=wad.get("per_page", 100),
+        )
+    else:
+        log.info("wearedevelopers: not configured — skipping")
+        results["wearedevelopers"] = (0, 0)
+
     # ── EnglishJobs ──
     ej = config["englishjobs"]
     results["englishjobs"] = scrape_englishjobs(
@@ -881,9 +1844,15 @@ if __name__ == "__main__":
         max_pages=ej.get("max_pages", 3),
     )
 
-    # ── GermanTechJobs（JS 渲染 SPA，暫停；需 Playwright 才能爬取）──
-    log.warning("germantechjobs: JS-rendered SPA — skipped (needs Playwright)")
-    results["germantechjobs"] = (0, 0)
+    # ── GermanTechJobs ──
+    gtj = config.get("germantechjobs", {})
+    results["germantechjobs"] = scrape_germantechjobs(
+        conn,
+        keywords=gtj.get("keywords", []),
+        target_cities=set(gtj.get("target_cities", [])) or None,
+        include_remote=gtj.get("include_remote", True),
+        max_detail_fetches=gtj.get("max_detail_fetches", 50),
+    )
 
     # ── Bundesagentur ──
     ba = config["bundesagentur"]
@@ -922,6 +1891,42 @@ if __name__ == "__main__":
         exclude_geo=jc.get("exclude_geo", []),
     )
 
+    # ── Ashby ──
+    ab = config.get("ashby", {})
+    if ab.get("companies"):
+        results["ashby"] = scrape_ashby(
+            conn,
+            companies=ab["companies"],
+            keywords=ab.get("keywords", []),
+        )
+    else:
+        log.info("ashby: no companies configured — skipping")
+        results["ashby"] = (0, 0)
+
+    # ── Workable ──
+    wb = config.get("workable", {})
+    if wb.get("companies"):
+        results["workable"] = scrape_workable(
+            conn,
+            companies=wb["companies"],
+            keywords=wb.get("keywords", []),
+        )
+    else:
+        log.info("workable: no companies configured — skipping")
+        results["workable"] = (0, 0)
+
+    # ── We Work Remotely ──
+    wwr = config.get("weworkremotely", {})
+    if wwr.get("feeds"):
+        results["weworkremotely"] = scrape_weworkremotely(
+            conn,
+            feed_urls=wwr["feeds"],
+            keywords=wwr.get("keywords", []),
+        )
+    else:
+        log.info("weworkremotely: not configured — skipping")
+        results["weworkremotely"] = (0, 0)
+
     # ── Greenhouse ──
     gh = config.get("greenhouse", {})
     if gh.get("companies"):
@@ -933,6 +1938,43 @@ if __name__ == "__main__":
     else:
         log.info("greenhouse: no companies configured — skipping")
         results["greenhouse"] = (0, 0)
+
+    # ── Heise Jobs ──
+    hj = config.get("heise", {})
+    if hj.get("keywords"):
+        results["heise"] = scrape_heise(
+            conn,
+            keywords=hj["keywords"],
+            locations=hj.get("locations", [""]),
+            max_pages=hj.get("max_pages", 3),
+        )
+    else:
+        log.info("heise: not configured — skipping")
+        results["heise"] = (0, 0)
+
+    # ── Personio ──
+    pn = config.get("personio", {})
+    if pn.get("companies"):
+        results["personio"] = scrape_personio(
+            conn,
+            companies=pn["companies"],
+            keywords=pn.get("keywords", []),
+        )
+    else:
+        log.info("personio: no companies configured — skipping")
+        results["personio"] = (0, 0)
+
+    # ── Welcome to the Jungle (WTTJ) ──
+    wttj = config.get("wttj", {})
+    if wttj.get("keywords"):
+        results["wttj"] = scrape_wttj(
+            conn,
+            keywords=wttj["keywords"],
+            hits_per_page=wttj.get("hits_per_page", 100),
+        )
+    else:
+        log.info("wttj: not configured — skipping")
+        results["wttj"] = (0, 0)
 
     # ── Lever ──
     lv = config.get("lever", {})

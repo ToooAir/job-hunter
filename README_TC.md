@@ -18,7 +18,7 @@
 
 以非 EU 身份在德國找科技工作，跟一般求職是完全不同的問題：
 
-- 職缺分散在 9 個以上平台，許多是德文
+- 職缺分散在 16 個以上平台，許多是德文
 - 每一封 Cover Letter 都必須客製化——通用版直接進垃圾桶
 - 大多數 JD 對簽證要求語焉不詳（Chancenkarte ≠「無工作許可」）
 - 面試流程漫長；等到回覆時，早就忘了這個職缺在做什麼
@@ -30,7 +30,7 @@
 ## 功能特色
 
 **Pipeline**
-- 每日排程爬取 9 個來源（API + HTML，依 JD 內容雜湊自動去重）
+- 每日排程爬取 16 個來源（API + HTML，依 JD 內容雜湊自動去重）
 - 自動偵測德文 JD 並翻譯為英文後再評分
 - 基於個人履歷知識庫的 RAG 增強 LLM 評分
 - A/B/C 分級，含來源加分機制（Relocate.me、Greenhouse、Lever、Bundesagentur）
@@ -64,12 +64,12 @@
 
 ```
 Phase 1（爬取）      →   Phase 2（評分）      →   Phase 3（儀表板）
-9 個來源爬入             RAG + LLM 評分            審閱、編輯 CL、投遞、
+16 個來源爬入            RAG + LLM 評分            審閱、編輯 CL、投遞、
 SQLite 自動去重          每筆職缺產出               追蹤面試流程、
                          Cover Letter + 分數        按需 AI 分析
 ```
 
-**Phase 1** 從 9 個來源爬取，依 JD 內容雜湊（第 50–550 字元，跳過平台套版開頭）去重。**Phase 2** 偵測德文 JD 並翻譯，透過 RAG 對照個人知識庫評分，分出 A/B/C 級。**Phase 3** 是 Streamlit 儀表板，用於審閱、編輯、投遞和追蹤完整面試流程。
+**Phase 1** 從 16 個來源爬取，依 JD 內容雜湊（第 50–550 字元，跳過平台套版開頭）去重。**Phase 2** 偵測德文 JD 並翻譯，透過 RAG 對照個人知識庫評分，分出 A/B/C 級。**Phase 3** 是 Streamlit 儀表板，用於審閱、編輯、投遞和追蹤完整面試流程。
 
 ---
 
@@ -84,7 +84,7 @@ job-hunter/
 ├── docker-compose.yml
 ├── run_pipeline.sh                   # Shell 包裝器（launchd / 手動執行）
 ├── scheduler.py                      # 排程器（在 Docker 內運行）
-├── phase1_ingestor.py                # 爬取職缺（9 個來源）
+├── phase1_ingestor.py                # 爬取職缺（16 個來源）
 ├── phase2_scorer.py                  # LLM 評分 + Cover Letter + 面試準備單
 ├── phase3_dashboard.py               # Streamlit 審閱儀表板（支援 EN / 中文）
 ├── check_api.py                      # LLM + Embedding API 連線快速檢查
@@ -306,12 +306,19 @@ docker compose exec pipeline python utils/kb_loader.py
 | 來源 | 方式 | 說明 |
 |------|------|------|
 | [Arbeitnow](https://www.arbeitnow.com) | JSON API | 穩定；含英德文職缺 |
+| [WeAreDevelopers](https://www.wearedevelopers.com) | Private REST API | 德語圈最大開發者求職板；德國 + 遠端雙 pass |
 | [EnglishJobs.de](https://englishjobs.de) | HTML 爬取 | 德國英語職缺 |
 | [Bundesagentur für Arbeit](https://api.arbeitsagentur.de) | REST API | 德國官方職缺平台 |
 | [Remotive](https://remotive.com) | JSON API | 純遠端，英語 |
 | [Relocate.me](https://relocate.me) | HTML 爬取 | 提供搬遷協助的職缺 |
 | [Jobicy](https://jobicy.com) | JSON API | 純遠端；含地區排除篩選 |
+| [Ashby ATS](https://jobs.ashbyhq.com) | GraphQL API | 公司專屬職缺板，無需認證 |
+| [Workable ATS](https://apply.workable.com) | REST API | 公司專屬職缺板；內建 429 指數退避 |
+| [We Work Remotely](https://weworkremotely.com) | RSS feed | 程式設計 + DevOps / 系統管理 feed |
 | [Greenhouse ATS](https://boards-api.greenhouse.io) | JSON API | 公司專屬職缺板，無需認證 |
+| [Heise Jobs](https://jobs.heise.de) | HTML 爬取 | 德國 IT 求職板；SSR 累積分頁 |
+| [Personio ATS](https://personio.de) | XML feed | 公司專屬 feed：`{slug}.jobs.personio.de/xml` |
+| [Welcome to the Jungle](https://www.welcometothejungle.com) | Algolia API | 歐洲新創職缺；僅英語，遠端 EU + 德國辦公室篩選 |
 | [Lever ATS](https://api.lever.co) | JSON API | 公司專屬職缺板，無需認證 |
 | LinkedIn / StepStone / 其他 | 儀表板手動 | 搜尋捷徑按鈕 + 手動新增表單 |
 
