@@ -32,6 +32,7 @@ This tool automates the tedious parts (scraping, deduplication, scoring, cover l
 **Pipeline**
 - Scrapes 16 job sources daily on a schedule (APIs + HTML, auto-deduped by JD content hash)
 - Detects and auto-translates German JDs to English before scoring
+- JDs sanitised before LLM injection — resists prompt injection attacks embedded in job postings
 - RAG-augmented LLM scoring against your personal resume knowledge base
 - A/B/C grading with source bonus (Relocate.me, Greenhouse, Lever, Bundesagentur)
 - Cover letter generated per job, editable with 3 tone presets (Formal / Startup / Concise)
@@ -379,7 +380,7 @@ un-scored
     ├─→ applied → interview_1 → interview_2 → offer               │
     │              └──────────────────────────┴─→ rejected         │
     ├─→ skipped                                                     │
-    ├─→ error        (LLM failed 3× — retry from dashboard)        │
+    ├─→ error        (LLM error — retry from dashboard)             │
     └─→ expired      (expires_at passed — auto-marked at Phase 2)  ◄─┘
 ```
 
@@ -459,7 +460,7 @@ Free-text notes field. Follow-up reminder date (auto-set to 7 days post-apply, c
 | Cover letter regeneration | 2 (1 embed + 1 chat) | 2,500–5,000 |
 | Company research | 1 chat | 2,000–4,000 |
 | Salary estimate | 1 chat | 1,500–3,000 |
-| Visa analysis | 1 chat | 1,500–3,000 |
+| Visa analysis | 1 chat | 2,000–4,000 |
 
 All on-demand analyses (visa, salary, company research) are opt-in per job — triggered by buttons in the dashboard.
 

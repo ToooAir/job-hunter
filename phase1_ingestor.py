@@ -652,6 +652,7 @@ def scrape_wearedevelopers(
                 if not jobs:
                     break
 
+                page_added = 0
                 for job in jobs:
                     job_id: int = job.get("id", 0)
                     if not job_id or job_id in seen_ids:
@@ -709,6 +710,7 @@ def scrape_wearedevelopers(
                     _warn_empty_jd(record)
                     if upsert_job(conn, record):
                         added += 1
+                        page_added += 1
                     else:
                         skipped += 1
 
@@ -716,6 +718,10 @@ def scrape_wearedevelopers(
                     "wearedevelopers kw=%r pass=%s page=%d: added=%d skipped=%d",
                     keyword, pass_label, page, added, skipped,
                 )
+
+                # Early exit: results are newest-first; 0 new on this page → nothing newer ahead
+                if page_added == 0:
+                    break
 
                 # No more pages
                 pagination = data.get("pagination", {})
@@ -1620,6 +1626,7 @@ def scrape_wttj(
     for keyword in keywords:
         page = 0
         while True:
+            page_added = 0
             payload = {
                 "query":        keyword,
                 "hitsPerPage":  hits_per_page,
@@ -1728,9 +1735,13 @@ def scrape_wttj(
                 _warn_empty_jd(record)
                 if upsert_job(conn, record):
                     added += 1
+                    page_added += 1
                 else:
                     skipped += 1
 
+            # Early exit: results are newest-first; 0 new on this page → nothing newer ahead
+            if page_added == 0:
+                break
             if page + 1 >= nb_pages:
                 break
             page += 1

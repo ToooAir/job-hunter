@@ -32,6 +32,7 @@
 **Pipeline**
 - 每日排程爬取 16 個來源（API + HTML，依 JD 內容雜湊自動去重）
 - 自動偵測德文 JD 並翻譯為英文後再評分
+- JD 注入 LLM 前先做清理，防禦職缺描述中夾帶的 Prompt Injection 攻擊
 - 基於個人履歷知識庫的 RAG 增強 LLM 評分
 - A/B/C 分級，含來源加分機制（Relocate.me、Greenhouse、Lever、Bundesagentur）
 - 每筆職缺自動產出 Cover Letter，支援三種語氣調整（正式 / 新創 / 精簡）
@@ -378,7 +379,7 @@ un-scored（待評分）
     ├─→ applied（已投遞）→ interview_1（一面）→ interview_2（二面）→ offer（Offer）│
     │                      └──────────────────────────────┴─→ rejected（已拒絕）│
     ├─→ skipped（已略過）                                           │
-    ├─→ error（失敗）     （LLM 連續失敗 3 次 — 可從儀表板重試）    │
+    ├─→ error（失敗）     （LLM 錯誤 — 可從儀表板重試）             │
     └─→ expired（已過期） （expires_at 已過 — Phase 2 自動標記）   ◄─┘
 ```
 
@@ -458,7 +459,7 @@ un-scored（待評分）
 | Cover Letter 重新生成 | 2（1 embed + 1 chat） | 2,500–5,000 |
 | 公司研究 | 1 chat | 2,000–4,000 |
 | 薪資估計 | 1 chat | 1,500–3,000 |
-| 簽證分析 | 1 chat | 1,500–3,000 |
+| 簽證分析 | 1 chat | 2,000–4,000 |
 
 所有按需分析（簽證、薪資、公司研究）皆為每筆職缺選擇性觸發——點擊儀表板按鈕後才執行。
 

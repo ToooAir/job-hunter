@@ -271,3 +271,49 @@ Qdrant 以 Python 函式庫的形式直接在 `pipeline` 和 `dashboard` 兩個 
 ### 取捨與邊界
 
 Embedded Qdrant 的限制是：同一時間只能有一個 process 持有資料庫的寫鎖。本系統的 `pipeline` 和 `dashboard` 若同時寫入（實際上幾乎不會，因為 pipeline 是定時批次、dashboard 只在使用者手動觸發時寫），理論上會產生鎖競爭。目前規模下這從未成為問題；若未來需要真正的並行寫入，才需要遷移到獨立 Qdrant service。
+
+---
+
+## 13. 為什麼 Phase 2 Chat Model 選用 mistral-small-2603 而非 mistral-large-2512？
+
+本系統的 Chat Model 在開發初期使用 `mistral-large-2512`，後來在月 Token 耗盡後切換至 `mistral-small-2603`，並確認效果符合需求後將其定為正式選用。這個決定不是被動降級，而是在橫向比較後的主動選擇。
+
+### 三個 Mistral 模型的決策相關對比
+
+| 面向 | mistral-large-2512 | mistral-medium-2508 | mistral-small-2603 |
+|------|--------------------|--------------------|-------------------|
+| TPM | 50,000 | 375,000 | 375,000 |
+| 官方強調的使用場景 | 超長上下文整合、複雜推理 | agent workflow、tool-heavy 任務 | 高頻批量、低延遲高吞吐 |
+| 對本系統的適配性 | TPM 嚴重限制吞吐 | tool-use 強項用不到 | **直接命中需求** |
+
+### 為什麼不繼續用 mistral-large-2512？
+
+**關鍵原因是 TPM，而非能力。**
+
+mistral-large-2512 的 TPM 上限為 50,000。Phase 2 每次評分約消耗 3,500 tokens，這意味著 TPM 才是真正的瓶頸，而非 RPS（1.0）。換算結果：最大可持續吞吐量約 **0.24 RPS**，不到 API 允許的 RPS 的四分之一。
+
+並行設計無法解決這個問題——naive 的多 thread 反而讓多個 response 同時湧入，在幾秒內燒光 TPM 觸發 429 cascade（這正是開發過程中踩過的坑）。
+
+mistral-large 的優勢是「更高的能力天花板」，但對於**批量職缺評分**這個任務，Large 的增益對主流程不是線性成長——職缺的核心 JD 通常在 1,000–3,000 字以內，不需要超長 context 整合，也不涉及複雜的多步推理。Large 的增益主要體現在「難題」，而職缺評分是高度結構化的重複任務。
+
+### 為什麼不選 mistral-medium-2508？
+
+mistral-medium-2508 的核心優勢是 agent workflow 的穩定性與 tool-use 能力。128K context 在本系統的實際場景下（Phase 2 prompt 約 5,000–8,000 tokens）並不構成實際限制，這不是排除 Medium 的原因。
+
+真正的理由是**任務適配性**：Medium 的定位偏向多步驟 agent workflow（如 tool call → 結果解析 → 再次 call），它的設計重心是可預期的穩定性與工具整合，而非單次高吞吐的批量評分。Phase 2 的每個 job 是獨立的一次性 LLM call，不涉及 tool use 或多輪 agent 迭代——Medium 的強項在這裡發揮不出來。
+
+Small 4 的官方文件明確強調 latency/throughput 優化，這與本系統「高頻批量評分」的需求直接對應，而 Medium 的官方定位並未強調這個面向。
+
+### mistral-small-2603 不是「降級」
+
+官方將 mistral-small-2603 定位為 **powerful general-purpose model**，明確針對 latency/throughput 優化。實測回應延遲約 **1–2 秒**（100 次 completion 約 110 秒），且 375,000 TPM 讓持續 1 RPS 的吞吐有約 1.8 倍的緩衝（`1 RPS × 3,500 tokens × 60s = 210,000 TPM`）。
+
+### 結論：瓶頸決定選型
+
+| 場景 | 建議選型 |
+|------|---------|
+| 高頻批量評分、RAG 問答、同步 UI 回應 | **mistral-small-2603**（RPS 為瓶頸，TPM 充裕） |
+| 超長文件整合、複雜推理、月 token 充足 | mistral-large-2512（能力天花板更高，但 TPM 是硬傷） |
+| agent workflow、tool-heavy 任務 | mistral-medium-2508 |
+
+本系統的主要痛點是**回覆速度與並發量**，Large 在這個維度上是「太重的展示模型」。Small 4 在本系統的任務規模下是更匹配的「工程選擇」，而非能力妥協。
