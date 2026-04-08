@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Literal
@@ -486,10 +487,10 @@ def score_jobs(
 
     scored: list[ScoringResult] = []
 
-    for job in jobs:
+    def _llm_score_job(job: dict) -> tuple[dict, ScoringResult | None, Exception | None]:
+        """Make the LLM call for one job. Thread-safe (rate_limit uses threading.Lock)."""
         context = contexts.get(job["id"], "(候選人背景資料未載入)")
         effective_jd = (job.get("translated_jd_text") or job["raw_jd_text"])[:6000]
-
         system_prompt, user_prompt = build_prompt(
             jd_text=effective_jd,
             company=job["company"],
@@ -498,8 +499,6 @@ def score_jobs(
             context=context,
             grading_rules=grading_rules,
         )
-
-        # ── LLM call with retry ──
         result: ScoringResult | None = None
         last_exc: Exception | None = None
         for attempt in range(1, 4):
@@ -517,7 +516,21 @@ def score_jobs(
                     job["id"], job["title"], job["company"], exc,
                 )
                 break
+        return job, result, last_exc
 
+    # ── Concurrent LLM calls (rate_limit() serialises dispatch to ≤1 RPS;
+    #    responses are awaited in parallel so latency doesn't compound) ──────────
+    # With avg ~18 s latency and 1 RPS dispatch we keep ~18 requests in-flight,
+    # giving effective throughput close to 1 RPS instead of 0.055 RPS.
+    max_workers = max(len(jobs), 1)
+    llm_results: list[tuple[dict, ScoringResult | None, Exception | None]] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_llm_score_job, job): job for job in jobs}
+        for future in as_completed(futures):
+            llm_results.append(future.result())
+
+    # ── Sequential DB writes (SQLite connection is not thread-safe) ───────────
+    for job, result, last_exc in llm_results:
         if result is None:
             mark_error(conn, job["id"], str(last_exc) if last_exc else "unknown error")
             log.warning("Marked job %s as error — will not retry automatically", job["id"])
