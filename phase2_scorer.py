@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -487,44 +488,52 @@ def score_jobs(
 
     scored: list[ScoringResult] = []
 
-    def _llm_score_job(job: dict) -> tuple[dict, ScoringResult | None, Exception | None]:
-        """Make the LLM call for one job. Thread-safe (rate_limit uses threading.Lock)."""
-        context = contexts.get(job["id"], "(候選人背景資料未載入)")
-        effective_jd = (job.get("translated_jd_text") or job["raw_jd_text"])[:6000]
-        system_prompt, user_prompt = build_prompt(
-            jd_text=effective_jd,
-            company=job["company"],
-            title=job["title"],
-            location=job.get("location") or "",
-            context=context,
-            grading_rules=grading_rules,
-        )
-        result: ScoringResult | None = None
-        last_exc: Exception | None = None
-        for attempt in range(1, 4):
-            try:
-                result = _call_llm(client, system_prompt, user_prompt)
-                break
-            except openai.RateLimitError as exc:
-                last_exc = exc
-                log.warning("RateLimitError on attempt %d/3 — sleeping 60s", attempt)
-                time.sleep(60)
-            except Exception as exc:
-                last_exc = exc
-                log.error(
-                    "Scoring failed for job %s (%s @ %s): %s",
-                    job["id"], job["title"], job["company"], exc,
-                )
-                break
-        return job, result, last_exc
+    # ── Concurrent LLM calls with semaphore ───────────────────────────────────
+    # Mistral 1 RPS = 1 dispatch/sec (rate_limit handles this).
+    # But concurrent in-flight requests also have a limit: logs show ~18
+    # concurrent triggers 429 cascade. Cap at 10 to leave headroom while
+    # still getting ~10x throughput vs sequential (≈ 0.55 RPS vs 0.055 RPS).
+    # Tune via env var MISTRAL_MAX_CONCURRENT if needed.
+    max_concurrent = int(os.getenv("MISTRAL_MAX_CONCURRENT", "10"))
+    sem = threading.Semaphore(max_concurrent)
 
-    # ── Concurrent LLM calls (rate_limit() serialises dispatch to ≤1 RPS;
-    #    responses are awaited in parallel so latency doesn't compound) ──────────
-    # With avg ~18 s latency and 1 RPS dispatch we keep ~18 requests in-flight,
-    # giving effective throughput close to 1 RPS instead of 0.055 RPS.
-    max_workers = max(len(jobs), 1)
+    def _llm_score_job(job: dict) -> tuple[dict, ScoringResult | None, Exception | None]:
+        """Acquire semaphore slot, make LLM call, release slot."""
+        sem.acquire()
+        try:
+            context = contexts.get(job["id"], "(候選人背景資料未載入)")
+            effective_jd = (job.get("translated_jd_text") or job["raw_jd_text"])[:6000]
+            system_prompt, user_prompt = build_prompt(
+                jd_text=effective_jd,
+                company=job["company"],
+                title=job["title"],
+                location=job.get("location") or "",
+                context=context,
+                grading_rules=grading_rules,
+            )
+            result: ScoringResult | None = None
+            last_exc: Exception | None = None
+            for attempt in range(1, 4):
+                try:
+                    result = _call_llm(client, system_prompt, user_prompt)
+                    break
+                except openai.RateLimitError as exc:
+                    last_exc = exc
+                    log.warning("RateLimitError on attempt %d/3 — sleeping 60s", attempt)
+                    time.sleep(60)
+                except Exception as exc:
+                    last_exc = exc
+                    log.error(
+                        "Scoring failed for job %s (%s @ %s): %s",
+                        job["id"], job["title"], job["company"], exc,
+                    )
+                    break
+            return job, result, last_exc
+        finally:
+            sem.release()
+
     llm_results: list[tuple[dict, ScoringResult | None, Exception | None]] = []
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    with ThreadPoolExecutor(max_workers=len(jobs)) as executor:
         futures = {executor.submit(_llm_score_job, job): job for job in jobs}
         for future in as_completed(futures):
             llm_results.append(future.result())
