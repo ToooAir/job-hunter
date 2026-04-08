@@ -197,8 +197,9 @@ OPENAI_API_KEY=sk-...
 # Mistral AI（有免費方案）
 # LLM_PROVIDER=mistral
 # MISTRAL_API_KEY=your_key_here
-# CHAT_MODEL=mistral-large-latest
+# CHAT_MODEL=mistral-small-2603
 # EMB_MODEL=mistral-embed
+# MISTRAL_MAX_CONCURRENT=3   # 並發評分數（預設 3，視帳號 TPM 調整）
 
 # Azure OpenAI
 # LLM_PROVIDER=azure
@@ -443,7 +444,7 @@ un-scored（待評分）
 | Provider | Structured Outputs | Rate Limit | Embedding 維度 |
 |----------|--------------------|------------|----------------|
 | OpenAI（`gpt-4o`） | 支援 | 無（依方案） | 1536 |
-| Mistral（`mistral-large-latest`） | 不支援（JSON mode） | 1 req/sec | 1024 |
+| Mistral（`mistral-small-2603`） | 不支援（JSON mode） | 1 RPS / 375,000 TPM | 1024 |
 | Azure OpenAI | 支援 | 無（依部署） | 1536 |
 | 自訂 / 本地 | 不支援（JSON mode） | 無 | 不定 |
 

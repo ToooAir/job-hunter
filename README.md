@@ -197,8 +197,9 @@ OPENAI_API_KEY=sk-...
 # Mistral AI (free tier available)
 # LLM_PROVIDER=mistral
 # MISTRAL_API_KEY=your_key_here
-# CHAT_MODEL=mistral-large-latest
+# CHAT_MODEL=mistral-small-2603
 # EMB_MODEL=mistral-embed
+# MISTRAL_MAX_CONCURRENT=3   # concurrent scoring workers (default 3, tune by TPM tier)
 
 # Azure OpenAI
 # LLM_PROVIDER=azure
@@ -444,7 +445,7 @@ Free-text notes field. Follow-up reminder date (auto-set to 7 days post-apply, c
 | Provider | Structured Outputs | Rate limit | Embedding dim |
 |----------|--------------------|------------|---------------|
 | OpenAI (`gpt-4o`) | Yes | None (tier-dependent) | 1536 |
-| Mistral (`mistral-large-latest`) | No (JSON mode) | 1 req/sec | 1024 |
+| Mistral (`mistral-small-2603`) | No (JSON mode) | 1 RPS / 375,000 TPM | 1024 |
 | Azure OpenAI | Yes | None (deployment-dependent) | 1536 |
 | Custom / local | No (JSON mode) | None | varies |
 

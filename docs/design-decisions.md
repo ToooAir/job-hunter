@@ -63,11 +63,45 @@ Vector DB（如 Qdrant）的特性是「永遠會回傳 Top K 個結果」，即
 
 ## 6. Token 與 API 最佳化：如何適應嚴苛的 Provider 限制？
 
-使用 Mistral 等外部 API 時，需克服嚴苛的 Rate Limit（如：1 RPS）與高延遲。
+使用 Mistral 等外部 API 時，需克服嚴苛的 Rate Limit（1 RPS）與每分鐘 Token 上限（TPM）。
 
 ### 決策理由
+
 - **Batch Embeddings**：針對單次爬取回來的 N 個職缺，若使用迴圈逐一呼叫 Embedding API，會製造大量零碎的 HTTP Request 並輕易觸發 429 Too Many Requests 阻擋。系統改用 `_batch_embed()` 機制，將 N 筆文字合併並以 Batch 形式發送，將請求次數大幅壓縮至 `⌈N/50⌉`。
-- **集中化基礎設施層限流**：只在 `utils/llm.py` 實作 `rate_limit()` 函式（`_RateLimiter` class，threading.Lock + time.monotonic）。所有業務層（評分、CL 生成、簽證分析）在每次 API 呼叫前一律呼叫 `rate_limit()`，自己不需要處理任何 Throttle 或 Retry 邏輯。這是一個函式呼叫約定，而非 Decorator Pattern——設計上刻意讓呼叫點顯式可見，便於 code review 追蹤每個 API 呼叫點。
+- **集中化基礎設施層限流**：只在 `utils/llm.py` 實作 `rate_limit()` 函式（`_RateLimiter` class，threading.Lock + time.monotonic）。所有業務層在每次 API 呼叫前一律呼叫 `rate_limit()`，自己不需要處理任何 Throttle 或 Retry 邏輯。
+
+### Phase 2 並發評分設計
+
+原始的 sequential `for job in jobs` 迴圈，因為每次 LLM call 等待回應期間（mistral-small 約 1–2 秒）CPU 完全閒置，實際吞吐量遠低於 API 允許的 1 RPS。
+
+**真正的設計挑戰：RPS vs TPM**
+
+Mistral 同時有兩個維度的限制，且不同模型的瓶頸不同：
+
+| 模型 | RPS | TPM | 每 call ~Token | 瓶頸 | 最大安全吞吐量 |
+|------|-----|-----|----------------|------|--------------|
+| mistral-large-2512 | 1.0 | 50,000 | ~3,500 | **TPM** | ~0.24 RPS |
+| mistral-small-2603 | 1.0 | 375,000 | ~3,500 | **RPS** | ~1.0 RPS |
+
+naive 的並行化（無限 thread）會讓大量 response 同時回來，瞬間燒光 TPM 觸發 429 cascade。
+
+**最終設計：`ThreadPoolExecutor(max_workers=N)` + `rate_limit()`**
+
+```python
+max_concurrent = int(os.getenv("MISTRAL_MAX_CONCURRENT", "3"))
+with ThreadPoolExecutor(max_workers=max_concurrent) as executor:
+    futures = [executor.submit(_llm_score_job, job) for job in jobs]
+```
+
+- `max_workers` 同時限制並發數（取代 Semaphore，語意更直接）
+- `rate_limit()` 在每個 thread 內仍然生效（threading.Lock 序列化 dispatch 至 1 RPS）
+- 實測 mistral-small latency ~1–2s，`max_workers=2` 已可跑滿 1 RPS，預設 3 留 spike buffer
+
+**即時 DB write（crash safety）**
+
+並發設計的附帶風險：若在「所有 LLM call 完成後才批次寫 DB」的架構中途當機，N 個 call 的結果與花掉的 Token 全部丟失。
+
+改為每個 job LLM call 完成後**立刻寫入 DB**（`db_lock = threading.Lock()` 保護 SQLite），中途重啟最多損失 `max_workers` 筆 in-flight 的結果。SQLite write 約 5ms，遠小於 LLM call 的 1–2s，不構成瓶頸。
 
 ---
 
