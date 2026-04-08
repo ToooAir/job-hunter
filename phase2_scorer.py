@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -39,6 +40,11 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 log = logging.getLogger(__name__)
+# Per-job score lines are only useful in interactive runs; suppress in scheduler (no TTY)
+if sys.stdout.isatty():
+    log.setLevel(logging.DEBUG)
+# httpx logs every HTTP call at INFO — always suppress
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 # ── Pydantic Output Schema ─────────────────────────────────────────────────────
 
@@ -73,6 +79,18 @@ class ScoringResult(BaseModel):
         elif len(v) < 3:
             raise ValueError(f"top_3_reasons must have at least 3 items, got {len(v)}")
         return [r[:80] for r in v]
+
+    @field_validator("cover_letter_draft", mode="before")
+    @classmethod
+    def coerce_cover_letter_to_str(cls, v):
+        if isinstance(v, dict):
+            for key in ("content", "en", "text", "draft"):
+                if key in v and isinstance(v[key], str):
+                    return v[key]
+            strings = [str(val) for val in v.values() if isinstance(val, str)]
+            if strings:
+                return "\n".join(strings)
+        return v
 
     @field_validator("cover_letter_draft")
     @classmethod
@@ -196,6 +214,7 @@ def _parse_with_json_mode(
         ],
         response_format={"type": "json_object"},
         temperature=0.3,
+        max_tokens=1200,
     )
     raw = response.choices[0].message.content
     try:
@@ -548,7 +567,7 @@ def score_jobs(
                     "source bonus +%d (%s): %d → %d | grade %s",
                     bonus, job.get("source"), original, result.match_score, result.fit_grade,
                 )
-            log.info(
+            log.debug(
                 "[%s] %s @ %s | score=%d | lang=%s",
                 result.fit_grade, job["title"], job["company"],
                 result.match_score, result.jd_language_req,
