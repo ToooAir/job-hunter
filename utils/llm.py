@@ -95,7 +95,7 @@ def chat_model() -> str:
     if LLM_PROVIDER == "azure":
         return AZURE_CHAT_DEPLOYMENT
     if LLM_PROVIDER == "mistral":
-        return CHAT_MODEL if CHAT_MODEL != "gpt-4o" else "mistral-large-latest"
+        return CHAT_MODEL if CHAT_MODEL != "gpt-4o" else "mistral-small-2603"
     return CHAT_MODEL
 
 

@@ -67,7 +67,11 @@ class ScoringResult(BaseModel):
     @field_validator("top_3_reasons")
     @classmethod
     def check_reasons_length(cls, v):
-        assert len(v) == 3, "top_3_reasons must have exactly 3 items"
+        if len(v) > 3:
+            log.warning("top_3_reasons had %d items; truncating to 3", len(v))
+            v = v[:3]
+        elif len(v) < 3:
+            raise ValueError(f"top_3_reasons must have at least 3 items, got {len(v)}")
         return [r[:80] for r in v]
 
     @field_validator("cover_letter_draft")
@@ -489,107 +493,98 @@ def score_jobs(
     scored: list[ScoringResult] = []
 
     # ── Concurrent LLM calls with semaphore ───────────────────────────────────
-    # mistral-large-2512 limits: 1 RPS (dispatch) + 50,000 TPM.
-    # Each scoring call ≈ 3,500 tokens → max sustainable ≈ 14 calls/min = 0.23 RPS.
-    # With ~18s latency, semaphore=N gives N/18 ≈ RPS throughput.
-    #   semaphore=3 → 0.17 RPS → ~35,000 TPM (safe, 3x faster than sequential)
-    #   semaphore=4 → 0.22 RPS → ~47,000 TPM (edge of limit, risky)
+    # mistral-small-2603 limits: 1 RPS (dispatch) + 375,000 TPM.
+    # Each scoring call ≈ 3,500 tokens → TPM allows up to 1.79 RPS; RPS is now binding.
+    # Observed latency ~1-2s → semaphore=2 already saturates 1 RPS (2/1.5 > 1).
+    # semaphore=3 leaves buffer for latency spikes without exceeding rate limit.
     # Tune via env var MISTRAL_MAX_CONCURRENT if needed.
     max_concurrent = int(os.getenv("MISTRAL_MAX_CONCURRENT", "3"))
-    sem = threading.Semaphore(max_concurrent)
+    db_lock = threading.Lock()
 
-    def _llm_score_job(job: dict) -> tuple[dict, ScoringResult | None, Exception | None]:
-        """Acquire semaphore slot, make LLM call, release slot."""
-        sem.acquire()
-        try:
-            context = contexts.get(job["id"], "(候選人背景資料未載入)")
-            effective_jd = (job.get("translated_jd_text") or job["raw_jd_text"])[:6000]
-            system_prompt, user_prompt = build_prompt(
-                jd_text=effective_jd,
-                company=job["company"],
-                title=job["title"],
-                location=job.get("location") or "",
-                context=context,
-                grading_rules=grading_rules,
-            )
-            result: ScoringResult | None = None
-            last_exc: Exception | None = None
-            for attempt in range(1, 4):
-                try:
-                    result = _call_llm(client, system_prompt, user_prompt)
-                    break
-                except openai.RateLimitError as exc:
-                    last_exc = exc
-                    log.warning("RateLimitError on attempt %d/3 — sleeping 60s", attempt)
-                    time.sleep(60)
-                except Exception as exc:
-                    last_exc = exc
-                    log.error(
-                        "Scoring failed for job %s (%s @ %s): %s",
-                        job["id"], job["title"], job["company"], exc,
-                    )
-                    break
-            return job, result, last_exc
-        finally:
-            sem.release()
-
-    llm_results: list[tuple[dict, ScoringResult | None, Exception | None]] = []
-    with ThreadPoolExecutor(max_workers=len(jobs)) as executor:
-        futures = {executor.submit(_llm_score_job, job): job for job in jobs}
-        for future in as_completed(futures):
-            llm_results.append(future.result())
-
-    # ── Sequential DB writes (SQLite connection is not thread-safe) ───────────
-    for job, result, last_exc in llm_results:
-        if result is None:
-            mark_error(conn, job["id"], str(last_exc) if last_exc else "unknown error")
-            log.warning("Marked job %s as error — will not retry automatically", job["id"])
-            continue
+    def _llm_score_job(job: dict) -> ScoringResult | None:
+        """LLM call + immediate DB write. Concurrency capped by max_workers."""
+        context = contexts.get(job["id"], "(候選人背景資料未載入)")
+        effective_jd = (job.get("translated_jd_text") or job["raw_jd_text"])[:6000]
+        system_prompt, user_prompt = build_prompt(
+            jd_text=effective_jd,
+            company=job["company"],
+            title=job["title"],
+            location=job.get("location") or "",
+            context=context,
+            grading_rules=grading_rules,
+        )
+        result: ScoringResult | None = None
+        last_exc: Exception | None = None
+        for attempt in range(1, 4):
+            try:
+                result = _call_llm(client, system_prompt, user_prompt)
+                break
+            except openai.RateLimitError as exc:
+                last_exc = exc
+                log.warning("RateLimitError on attempt %d/3 — sleeping 60s", attempt)
+                time.sleep(60)
+            except Exception as exc:
+                last_exc = exc
+                log.error(
+                    "Scoring failed for job %s (%s @ %s): %s",
+                    job["id"], job["title"], job["company"], exc,
+                )
+                break
 
         # ── Apply source bonus (deterministic, not LLM) ──
-        bonus = SOURCE_BONUS.get(job.get("source", ""), 0)
-        if bonus:
-            original = result.match_score
-            result.match_score = min(100, result.match_score + bonus)
-            # Re-derive fit_grade after bonus (validator won't re-run on mutation)
-            score = result.match_score
-            lang  = result.jd_language_req
-            result.fit_grade = (
-                "C" if lang == "de_required" or score < 60
-                else "A" if score >= 80
-                else "B"
-            )
+        if result is not None:
+            bonus = SOURCE_BONUS.get(job.get("source", ""), 0)
+            if bonus:
+                original = result.match_score
+                result.match_score = min(100, result.match_score + bonus)
+                score = result.match_score
+                lang  = result.jd_language_req
+                result.fit_grade = (
+                    "C" if lang == "de_required" or score < 60
+                    else "A" if score >= 80
+                    else "B"
+                )
+                log.info(
+                    "source bonus +%d (%s): %d → %d | grade %s",
+                    bonus, job.get("source"), original, result.match_score, result.fit_grade,
+                )
             log.info(
-                "source bonus +%d (%s): %d → %d | grade %s",
-                bonus, job.get("source"), original, result.match_score, result.fit_grade,
+                "[%s] %s @ %s | score=%d | lang=%s",
+                result.fit_grade, job["title"], job["company"],
+                result.match_score, result.jd_language_req,
             )
+        else:
+            log.warning("LLM failed: %s @ %s", job["title"], job["company"])
 
-        # ── Persist ──
-        update_score(
-            conn,
-            job["id"],
-            {
-                "match_score":      result.match_score,
-                "fit_grade":        result.fit_grade,
-                "top_3_reasons":    json.dumps(result.top_3_reasons, ensure_ascii=False),
-                "cover_letter_draft": result.cover_letter_draft,
-                "jd_language_req":  result.jd_language_req,
-                "visa_restriction": result.visa_restriction,
-                "salary_range":     result.salary_range,
-                "contract_type":    result.contract_type,
-                "scored_at":        datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"),
-            },
-        )
+        # ── Immediate DB write (db_lock ensures SQLite safety) ──
+        with db_lock:
+            if result is None:
+                mark_error(conn, job["id"], str(last_exc) if last_exc else "unknown error")
+                log.warning("Marked job %s as error — will not retry automatically", job["id"])
+            else:
+                update_score(
+                    conn,
+                    job["id"],
+                    {
+                        "match_score":        result.match_score,
+                        "fit_grade":          result.fit_grade,
+                        "top_3_reasons":      json.dumps(result.top_3_reasons, ensure_ascii=False),
+                        "cover_letter_draft": result.cover_letter_draft,
+                        "jd_language_req":    result.jd_language_req,
+                        "visa_restriction":   result.visa_restriction,
+                        "salary_range":       result.salary_range,
+                        "contract_type":      result.contract_type,
+                        "scored_at":          datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"),
+                    },
+                )
+        return result
 
-        log.info(
-            "[%s] %s @ %s | score=%d | lang=%s",
-            result.fit_grade,
-            job["title"],
-            job["company"],
-            result.match_score,
-            result.jd_language_req,
-        )
-        scored.append(result)
+    with ThreadPoolExecutor(max_workers=max_concurrent) as executor:
+        futures = [executor.submit(_llm_score_job, job) for job in jobs]
+        for future in as_completed(futures):
+            result = future.result()
+            if result is not None:
+                scored.append(result)
 
     failed = len(jobs) - len(scored)
     log.info("完成：%d 筆成功，%d 筆失敗（error）", len(scored), failed)
