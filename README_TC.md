@@ -42,7 +42,7 @@
 
 **按需分析（每筆職缺，一鍵觸發）**
 - 薪資估計 + 談判建議（市場區間、開價建議、底線）
-- 公司研究（爬取官網 + LLM 摘要：技術棧、文化、搬遷政策）
+- 公司研究（爬取官網 + LLM 摘要：技術堆疊、文化、搬遷政策）
 - 面試準備單：角色摘要、核心技術要求、推斷痛點、你的相關亮點、5 個可能被問的問題
 
 **應聘追蹤**
@@ -230,7 +230,7 @@ QDRANT_PATH=./qdrant_data
 三個構成 RAG 知識庫的 Markdown 檔案：
 
 - `resume_bullets.md` — 以 STAR 格式撰寫的工作經歷，需有具體成果數字
-- `projects.md` — 重要專案，含技術棧與具體成效
+- `projects.md` — 重要專案，含技術堆疊與具體成效
 - `visa_status.md` — 工作許可、可上班日期、偏好地點
 
 修改後重建知識庫：
@@ -263,7 +263,7 @@ docker compose exec pipeline python utils/kb_loader.py
 
 ```
 請幫我整理以下專案資訊，供撰寫 Cover Letter 的 RAG 知識庫使用。
-每個專案請包含：專案用途、技術棧（完整的函式庫／框架名稱）、
+每個專案請包含：專案用途、技術堆疊（完整的函式庫／框架名稱）、
 規模或成效數字，以及我的具體貢獻。
 
 [貼入你的專案描述]
@@ -286,7 +286,7 @@ docker compose exec pipeline python utils/kb_loader.py
 
 我的資料：
 - 目前職位／年資：[例：Backend Engineer，5 年]
-- 核心技術棧：[例：Python、FastAPI、Node.js、GCP、Docker]
+- 核心技術堆疊：[例：Python、FastAPI、Node.js、GCP、Docker]
 - 在德國的目標職位：[例：Backend Engineer、AI Engineer、Platform Engineer]
 - 語言能力：[例：英語流利、德語 A2]
 - 地點偏好：[例：漢堡或遠端]
@@ -407,7 +407,7 @@ un-scored（待評分）
 產出 LLM 薪資估計（市場區間、信心水準、談判開價與底線），參考 JD 資訊、地點和公司規模。附 Glassdoor、Kununu、Levels.fyi 連結供人工查詢。
 
 **公司研究（🔍）**
-爬取公司 about/官網頁面，結合 JD 產出結構化公司側寫：概況、技術棧、文化、國際化友善度、面試談話重點。
+爬取公司 about/官網頁面，結合 JD 產出結構化公司側寫：概況、技術堆疊、文化、國際化友善度、面試談話重點。
 
 **Cover Letter**
 - 可直接編輯的文字框，即時字數統計（目標 200–400 字）

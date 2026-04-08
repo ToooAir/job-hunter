@@ -1,17 +1,17 @@
 # 系統架構與設計決策 (Design Decisions)
 
-本文件提煉 job-hunter 專案中，具備高含金量的核心設計決策與實作經驗，供日後維護與擴充時參考。
+本文件提煉 job-hunter 專案中，具備高度參考價值的核心設計決策與實作經驗，供日後維護與擴充時參考。
 
 ---
 
 ## 1. 為什麼將系統拆分為三階段獨立 Pipeline？
 
-有別於將爬蟲、評分與展示寫在同一個長駐服務或腳本中，本系統切分為 Phase 1（爬蟲）、Phase 2（AI 評分）、Phase 3（Dashboard）三個獨立生命週期的模組。
+有別於將爬蟲、評分與展示寫在同一個常駐服務或腳本中，本系統切分為 Phase 1（爬蟲）、Phase 2（AI 評分）、Phase 3（Dashboard）三個獨立生命週期的模組。
 
 ### 決策理由
 - **容錯與成本控制**：爬蟲與解析容易因網頁結構改變而失敗。分離階段確保爬蟲失敗時（returncode ≠ 0）會在 Scheduler 端中止，不會觸發並浪費高昂 Token 成本的 Phase 2 評分流程。
 - **重試粒度**：開發或微調評分 Prompt（`grading_rules.md`）時，可單獨啟動 Phase 2（`--rescore`），無須重新觸發耗時且易受到反爬機制封鎖的 Phase 1 作業。
-- **生命週期管理**：Dashboard（Streamlit）為長駐型互動服務，而資料處理流水線則屬於定時批次作業（Cron-like）。兩者獨立運行，資源互不干擾。
+- **生命週期管理**：Dashboard（Streamlit）為常駐型互動服務，而資料處理流水線則屬於定時批次作業（Cron-like）。兩者獨立運行，資源互不干擾。
 
 ---
 
@@ -53,11 +53,11 @@
 在生成面試準備單或 Cover Letter 時，系統需要從個人知識庫 (KB) 進行 RAG（檢索增強生成）。但單純依賴 Vector DB 常會遇到準確度下降。
 
 ### 決策理由
-- **Metadata 前綴注入**：如果只是將履歷單純按段落切 Chunk，Chunk 會喪失原本所屬章節的上下文資訊（例如：只剩一句「開發了微服務 API」）。系統在產生 Embedding 前，會自動將所屬的標題階層（`H1`/`H2`）作為前綴注入（如 `[Projects: ProjectX | Backend Engineer] - 開發了微服務 API`）。這確保了向量空間的語意更貼近特定的技術棧，提升 Query 命中率。
+- **Metadata 前綴注入**：如果只是將履歷單純按段落切 Chunk，Chunk 會喪失原本所屬章節的上下文資訊（例如：只剩一句「開發了微服務 API」）。系統在產生 Embedding 前，會自動將所屬的標題階層（`H1`/`H2`）作為前綴注入（如 `[Projects: ProjectX | Backend Engineer] - 開發了微服務 API`）。這確保了向量空間的語意更貼近特定的技術堆疊，提升 Query 命中率。
 - **Cos Similarity 動態門檻**：設定 `_KB_SCORE_THRESHOLD = 0.60`，過濾掉關聯度低於門檻的 Hits。
 
 ### 踩過的坑與解法
-Vector DB（如 Qdrant）的特性是「永遠會回傳 Top K 個結果」，即使職缺技術棧與履歷「完全無關」，它還是會硬擠出分數最低但相對最接近的經歷。這曾導致 LLM 拿到不相干的經驗來瞎掰求職信。**解法**是透過上述的 0.60 相似度門檻攔截，若無達標經歷則直接 fallback 回傳 `[No relevant experience found in KB]`，讓 LLM 明白「此處無參考資料」，由它自行透過常識處理，而非基於錯誤資料產生嚴重幻覺。
+Vector DB（如 Qdrant）的特性是「永遠會回傳 Top K 個結果」，即使職缺技術棧與履歷「完全無關」，它還是會硬擠出分數最低但相對最接近的經歷。這曾導致 LLM 拿到不相干的經驗來胡亂拼湊求職信。**解法**是透過上述的 0.60 相似度門檻攔截，若無達標經歷則直接 fallback 回傳 `[No relevant experience found in KB]`，讓 LLM 明白「此處無參考資料」，由它自行透過常識處理，而非基於錯誤資料產生嚴重幻覺。
 
 ---
 
@@ -84,7 +84,7 @@ Vector DB（如 Qdrant）的特性是「永遠會回傳 Top K 個結果」，即
 
 ---
 
-## 8. Embedding Model 選型：為什麼不能隨意切換？
+## 8. Embedding Model 選用：為什麼不能隨意切換？
 
 系統支援 OpenAI（`text-embedding-3-small`，1536 維）與 Mistral（`mistral-embed`，1024 維）兩種 Embedding Model，但**兩者在同一個 Vector Collection 內不可混用**，必須擇一並貫徹到底。
 
@@ -164,7 +164,7 @@ Markdown 結構與 `\n\n` 切割互相配合後，每個 `##` 小節（公司或
 
 ### 考慮但排除的方案
 
-- **固定 Token 數切割（Fixed-size Chunking）**：最簡單但最差，會在句子中間截斷，破壞「Python 後端 + CI/CD + 量化成果」這類對 RAG 檢索至關重要的技術棧完整性。
+- **固定 Token 數切割（Fixed-size Chunking）**：最簡單但最差，會在句子中間截斷，破壞「Python 後端 + CI/CD + 量化成果」這類對 RAG 檢索至關重要的技術堆疊完整性。
 - **Sliding Window（重疊切割）**：重疊設計適合「前後文有連貫性的長文本」（如法律條文、技術文章），但履歷各職位互相獨立，重疊只會帶來雜訊，讓 CompanyA 的 Bullet 混入 CompanyB 的段落。
 - **逐句切割（Sentence-level）**：粒度過細。「Reduced onboarding time by N%.」單獨存在時無法反推出所在的技術棧與職位，失去技術關鍵字在語意空間的近鄰關係。
 - **Parent-Child 策略**：上層存完整職位（Parent），下層存單條 Bullet（Child），檢索小單元再附帶大上下文。對本系統沒有必要，因為整個職位的 Chunk 大小本來就只有 300 字，直接放進 Context Window 完全沒有壓力。
@@ -230,7 +230,7 @@ Qdrant 以 Python 函式庫的形式直接在 `pipeline` 和 `dashboard` 兩個 
 
 ### 決策理由
 
-**核心理由：隱私。** 知識庫（`candidate_kb/`）存放的是高度個人化的履歷內容：工作經歷、技術棧、量化成果，以及 Chancenkarte 簽證細節。這些資料一旦上傳至雲端向量服務，就進入了第三方的儲存與日誌系統，即使服務聲稱不儲存，也無法驗證。Embedded Qdrant 確保向量與資料**從未離開本機**。
+**核心理由：隱私。** 知識庫（`candidate_kb/`）存放的是高度個人化的履歷內容：工作經歷、技術堆疊、量化成果，以及 Chancenkarte 簽證細節。這些資料一旦上傳至雲端向量服務，就進入了第三方的儲存與日誌系統，即使服務聲稱不儲存，也無法驗證。Embedded Qdrant 確保向量與資料**從未離開本機**。
 
 **附帶收益：零維運成本。** Embedded 模式不需要獨立啟動 Qdrant 服務、不需要管理網路連線、不需要開 port、也不需要 `docker compose up qdrant` 這個額外步驟。對個人工具而言，這個「直接用就能跑」的特性本身就有價值。
 
