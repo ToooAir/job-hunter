@@ -489,12 +489,13 @@ def score_jobs(
     scored: list[ScoringResult] = []
 
     # ── Concurrent LLM calls with semaphore ───────────────────────────────────
-    # Mistral 1 RPS = 1 dispatch/sec (rate_limit handles this).
-    # But concurrent in-flight requests also have a limit: logs show ~18
-    # concurrent triggers 429 cascade. Cap at 10 to leave headroom while
-    # still getting ~10x throughput vs sequential (≈ 0.55 RPS vs 0.055 RPS).
+    # mistral-large-2512 limits: 1 RPS (dispatch) + 50,000 TPM.
+    # Each scoring call ≈ 3,500 tokens → max sustainable ≈ 14 calls/min = 0.23 RPS.
+    # With ~18s latency, semaphore=N gives N/18 ≈ RPS throughput.
+    #   semaphore=3 → 0.17 RPS → ~35,000 TPM (safe, 3x faster than sequential)
+    #   semaphore=4 → 0.22 RPS → ~47,000 TPM (edge of limit, risky)
     # Tune via env var MISTRAL_MAX_CONCURRENT if needed.
-    max_concurrent = int(os.getenv("MISTRAL_MAX_CONCURRENT", "10"))
+    max_concurrent = int(os.getenv("MISTRAL_MAX_CONCURRENT", "3"))
     sem = threading.Semaphore(max_concurrent)
 
     def _llm_score_job(job: dict) -> tuple[dict, ScoringResult | None, Exception | None]:
