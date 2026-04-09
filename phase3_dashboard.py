@@ -223,6 +223,10 @@ STRINGS: dict[str, dict[str, str]] = {
         "contract_contract":  "⏳ Contract",
         "contract_freelance": "🔧 Freelance",
         "contract_unknown":   "— Unknown",
+        # Location filter
+        "filter_location":    "Location Search",
+        "filter_location_ph": "e.g. Hamburg",
+        "filter_remote":      "Also include Remote jobs",
         # Lang toggle
         "lang_toggle_label":  "🌐 Language",
     },
@@ -422,6 +426,10 @@ STRINGS: dict[str, dict[str, str]] = {
         "contract_contract":  "⏳ 合約",
         "contract_freelance": "🔧 Freelance",
         "contract_unknown":   "— unknown",
+        # Location filter
+        "filter_location":    "地點搜尋",
+        "filter_location_ph": "例：Hamburg",
+        "filter_remote":      "也包含 Remote 職缺",
         # Lang toggle
         "lang_toggle_label":  "🌐 語言",
     },
@@ -483,6 +491,52 @@ def today_iso() -> str:
 
 PIPELINE_STATUSES = ('applied', 'interview_1', 'interview_2', 'offer', 'rejected')
 
+# City alias expansion: handles English/German name variants and common misspellings
+_GERMANY_PATTERNS = [
+    # country-level markers (catches "Berlin, Germany", "Germany", "Deutschland", "bundesweit")
+    "germany", "deutschland", "bundesweit",
+    # major cities (English + German + Anglicised spellings)
+    "hamburg", "berlin",
+    "munich", "münchen", "muenchen",
+    "cologne", "köln", "koeln",
+    "frankfurt",
+    "düsseldorf", "dusseldorf",
+    "stuttgart",
+    "nuremberg", "nürnberg", "nuernberg",
+    "leipzig",
+    "hannover", "hanover",
+    "bremen",
+    "dresden",
+    "essen", "dortmund", "bochum",
+    "karlsruhe", "mannheim", "heidelberg",
+    "augsburg", "freiburg",
+    "wiesbaden", "mainz", "bonn",
+    "kiel", "rostock", "lübeck", "luebeck",
+    "konstanz", "ulm", "regensburg",
+]
+
+_LOCATION_ALIASES: dict[str, list[str]] = {
+    # Germany-wide search
+    "germany":     _GERMANY_PATTERNS,
+    "deutschland": _GERMANY_PATTERNS,
+    # individual cities
+    "hamburg":    ["hamburg"],
+    "berlin":     ["berlin"],
+    "munich":     ["munich", "münchen", "muenchen"],
+    "cologne":    ["cologne", "köln", "koeln"],
+    "frankfurt":  ["frankfurt"],
+    "dusseldorf": ["dusseldorf", "düsseldorf"],
+    "stuttgart":  ["stuttgart"],
+    "nuremberg":  ["nuremberg", "nürnberg"],
+    "leipzig":    ["leipzig"],
+    "hannover":   ["hannover", "hanover"],
+    "bremen":     ["bremen"],
+    "dresden":    ["dresden"],
+}
+
+def _location_patterns(kw: str) -> list[str]:
+    return _LOCATION_ALIASES.get(kw.lower().strip(), [kw.lower().strip()])
+
 
 def fetch_kpis(conn) -> dict:
     rows = conn.execute(f"""
@@ -508,12 +562,31 @@ def fetch_kpis(conn) -> dict:
     }
 
 
-def fetch_jobs(conn, grades, langs, sources, statuses) -> pd.DataFrame:
+def fetch_jobs(conn, grades, langs, sources, statuses,
+               location_kw: str = "", include_remote: bool = False) -> pd.DataFrame:
     if not (grades and langs and sources and statuses):
         return pd.DataFrame()
 
     def placeholders(lst):
         return ",".join("?" * len(lst))
+
+    # Build optional location clause
+    location_clause = ""
+    location_params: list = []
+    kw = location_kw.strip()
+    if kw or include_remote:
+        parts = []
+        if kw:
+            for pattern in _location_patterns(kw):
+                parts.append("LOWER(location) LIKE ?")
+                location_params.append(f"%{pattern}%")
+        if include_remote:
+            parts.extend([
+                "LOWER(location) LIKE '%remote%'",
+                "LOWER(location) LIKE '%home office%'",
+                "LOWER(location) LIKE '%homeoffice%'",
+            ])
+        location_clause = f"AND ({' OR '.join(parts)})"
 
     # error / un-scored jobs have no fit_grade — bypass that filter for them
     sql = f"""
@@ -524,11 +597,12 @@ def fetch_jobs(conn, grades, langs, sources, statuses) -> pd.DataFrame:
           AND (jd_language_req IN ({placeholders(langs)}) OR jd_language_req IS NULL)
           AND source           IN ({placeholders(sources)})
           AND status           IN ({placeholders(statuses)})
+          {location_clause}
         ORDER BY
             CASE fit_grade WHEN 'A' THEN 1 WHEN 'B' THEN 2 ELSE 3 END,
             match_score DESC
     """
-    params = grades + langs + sources + statuses
+    params = grades + langs + sources + statuses + location_params
     rows = conn.execute(sql, params).fetchall()
     return pd.DataFrame([dict(r) for r in rows])
 
@@ -756,9 +830,15 @@ with left:
              "offer", "rejected", "skipped", "error", "expired"],
             default=["scored"],
         )
+        location_filter = st.text_input(
+            T("filter_location"),
+            placeholder=T("filter_location_ph"),
+        )
+        remote_filter = st.checkbox(T("filter_remote"), value=False)
 
     # ── Job table ──
-    df = fetch_jobs(conn, fit_grade_filter, lang_filter, source_filter, status_filter)
+    df = fetch_jobs(conn, fit_grade_filter, lang_filter, source_filter, status_filter,
+                    location_kw=location_filter, include_remote=remote_filter)
 
     if df.empty:
         st.info(T("no_jobs"))

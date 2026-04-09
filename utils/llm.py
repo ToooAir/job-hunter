@@ -82,6 +82,7 @@ def make_client() -> openai.OpenAI:
         return openai.OpenAI(
             api_key=MISTRAL_API_KEY,
             base_url=MISTRAL_BASE_URL,
+            max_retries=0,  # disable SDK retries; our code handles 60s retry on 429
         )
     if LLM_PROVIDER == "custom":
         return openai.OpenAI(

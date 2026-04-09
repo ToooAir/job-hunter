@@ -152,25 +152,31 @@ def _detect_german(text: str, job_id: str = "") -> bool:
 
 def _translate_to_english(text: str, client) -> str | None:
     """Translate German JD text to English. Returns translated text or None on failure."""
-    try:
-        rate_limit()
-        resp = client.chat.completions.create(
-            model=chat_model(),
-            messages=[{
-                "role": "user",
-                "content": (
-                    "Translate the following German job description to English. "
-                    "Preserve all technical terms, job titles, and company names as-is. "
-                    "Output only the translated text, no commentary.\n\n"
-                    f"{text[:4000]}"
-                ),
-            }],
-            temperature=0.1,
-        )
-        return resp.choices[0].message.content.strip()
-    except Exception as exc:
-        log.warning("Translation failed: %s", exc)
-        return None
+    for attempt in range(1, 4):
+        try:
+            rate_limit()
+            resp = client.chat.completions.create(
+                model=chat_model(),
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        "Translate the following German job description to English. "
+                        "Preserve all technical terms, job titles, and company names as-is. "
+                        "Output only the translated text, no commentary.\n\n"
+                        f"{text[:4000]}"
+                    ),
+                }],
+                temperature=0.1,
+            )
+            return resp.choices[0].message.content.strip()
+        except openai.RateLimitError as exc:
+            log.warning("Translation RateLimitError on attempt %d/3 — sleeping 60s", attempt)
+            time.sleep(60)
+        except Exception as exc:
+            log.warning("Translation failed: %s", exc)
+            return None
+    log.warning("Translation gave up after 3 attempts")
+    return None
 
 
 def _parse_with_structured_output(
