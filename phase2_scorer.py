@@ -323,7 +323,7 @@ def _qdrant_query(qdrant, vector: list[float], top_k: int) -> str:
     return "\n---\n".join(parts)
 
 
-def _batch_embed(texts: list[str], client, batch_size: int = 50) -> list[list[float]]:
+def _batch_embed(texts: list[str], client, batch_size: int = 16) -> list[list[float]]:
     """Embed texts in batches, return one vector per text."""
     vectors: list[list[float]] = []
     for start in range(0, len(texts), batch_size):
@@ -506,7 +506,7 @@ def score_jobs(
             qdrant = QdrantClient(path=qdrant_path)
             log.info("batch embedding %d JD(s) for RAG retrieval…", len(jobs))
             effective_texts = [
-                (j.get("translated_jd_text") or j["raw_jd_text"])[:8000]
+                (j.get("translated_jd_text") or j["raw_jd_text"])[:3000]
                 for j in jobs
             ]
             vectors = _batch_embed(effective_texts, client)
