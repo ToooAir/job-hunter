@@ -79,6 +79,13 @@ def make_id(url: str) -> str:
     return hashlib.sha256(url.encode()).hexdigest()[:16]
 
 
+def _url_in_db(conn, url: str) -> bool:
+    """Return True if a job with this URL is already in the DB (cheap pre-fetch check)."""
+    return conn.execute(
+        "SELECT 1 FROM jobs WHERE id = ?", (make_id(url),)
+    ).fetchone() is not None
+
+
 def clean_html(html_str: str) -> str:
     return BeautifulSoup(html_str, "html.parser").get_text(
         separator="\n", strip=True
@@ -241,6 +248,11 @@ def scrape_englishjobs(
                     skipped += 1
                     continue
                 seen_urls.add(detail_url)
+
+                # Skip detail fetch if already in DB (saves HTTP round-trip on daily runs)
+                if _url_in_db(conn, detail_url):
+                    skipped += 1
+                    continue
 
                 detail_resp = safe_get(detail_url)
                 if detail_resp is None:
@@ -415,6 +427,19 @@ def scrape_germantechjobs(
             "germantechjobs: capping Playwright fetches at %d (of %d matched)",
             max_detail_fetches, len(matched),
         )
+
+    # Filter out jobs already in DB — Playwright is expensive, skip known URLs
+    pre_filter_count = len(to_fetch)
+    to_fetch_new = [
+        j for j in to_fetch
+        if j.get("jobUrl") and not _url_in_db(conn, f"{GTJ_BASE}/jobs/{j['jobUrl']}")
+    ]
+    skipped += pre_filter_count - len(to_fetch_new)
+    to_fetch = to_fetch_new
+    log.info(
+        "germantechjobs: %d new (filtered from %d matched, %d already in DB)",
+        len(to_fetch), pre_filter_count, pre_filter_count - len(to_fetch),
+    )
 
     # ── Step 3: batch JD via Playwright ───────────────────────────────────────
     job_url_slugs = [j["jobUrl"] for j in to_fetch if j.get("jobUrl")]
@@ -682,6 +707,11 @@ def scrape_wearedevelopers(
                     else:
                         job_url = f"https://www.wearedevelopers.com/en/jobs/{job_id}/{slug}"
 
+                    # Skip if already in DB — saves external detail API call on daily runs
+                    if _url_in_db(conn, job_url):
+                        skipped += 1
+                        continue
+
                     # Fetch full JD (external only; native jobs need company_id we don't have)
                     raw_jd = ""
                     if external:
@@ -848,6 +878,11 @@ def scrape_relocateme(
                 continue
             seen_urls.add(detail_url)
 
+            # Skip detail fetch if already in DB
+            if _url_in_db(conn, detail_url):
+                skipped += 1
+                continue
+
             detail_resp = safe_get(detail_url)
             if detail_resp is None:
                 continue
@@ -986,6 +1021,11 @@ def scrape_ashby(
             workplace: str = posting.get("workplaceType") or ""
 
             job_url = f"https://jobs.ashbyhq.com/{slug}/{posting_id}"
+
+            # Skip GQL detail fetch if already in DB
+            if _url_in_db(conn, job_url):
+                skipped += 1
+                continue
 
             # Fetch full JD
             detail_data = _ashby_gql(_ASHBY_DETAIL_QUERY, {"org": slug, "id": posting_id})
@@ -1131,6 +1171,11 @@ def scrape_workable(
             location = ", ".join(filter(None, [loc.get("city"), loc.get("country")]))
 
             job_url = f"{WORKABLE_BASE}/{slug}/j/{shortcode}"
+
+            # Skip detail fetch if already in DB
+            if _url_in_db(conn, job_url):
+                skipped += 1
+                continue
 
             raw_jd = _workable_detail(slug, shortcode)
             if not raw_jd:
