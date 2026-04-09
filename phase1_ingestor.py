@@ -46,8 +46,9 @@ HEADERS = {
 ENGLISHJOBS_SELECTORS = {
     # 列表頁：職缺卡片容器（實測確認：class="job js-job"）
     "card":           "div.js-job",
-    # 卡片 id 屬性即為 job hash，用於組詳情 URL
-    "detail_url_tpl": "https://englishjobs.de/jobs/{job_id}",
+    # 卡片 id 屬性 = clickout id；/clickout/{id} 不需要 sig 就能跳轉到雇主頁面
+    # 注意：舊的 /jobs/{id} 格式不存在，只會顯示「No jobs available」
+    "clickout_tpl":   "https://englishjobs.de/clickout/{job_id}",
     "title":          "h3",
     # company = ul > li[0]，location = ul > li[1]
 }
@@ -205,7 +206,8 @@ def _parse_englishjobs_listing(soup: BeautifulSoup, base: str) -> list[dict]:
         job_id = card.get("id", "")
         if not job_id:
             continue
-        detail_url = sel["detail_url_tpl"].format(job_id=job_id)
+        # Stable clickout URL — works without signature, redirects to employer page
+        clickout_url = sel["clickout_tpl"].format(job_id=job_id)
 
         title_el = card.select_one(sel["title"])
         title = title_el.get_text(strip=True) if title_el else ""
@@ -214,7 +216,7 @@ def _parse_englishjobs_listing(soup: BeautifulSoup, base: str) -> list[dict]:
         company  = lis[0].get_text(strip=True) if len(lis) > 0 else ""
         location = lis[1].get_text(strip=True) if len(lis) > 1 else ""
 
-        cards.append({"title": title, "company": company, "location": location, "detail_url": detail_url})
+        cards.append({"title": title, "company": company, "location": location, "clickout_url": clickout_url})
     return cards
 
 
@@ -243,32 +245,40 @@ def scrape_englishjobs(
                 break
 
             for card in cards:
-                detail_url = card["detail_url"]
-                if detail_url in seen_urls:
+                clickout_url = card["clickout_url"]
+                if clickout_url in seen_urls:
                     skipped += 1
                     continue
-                seen_urls.add(detail_url)
+                seen_urls.add(clickout_url)
 
-                # Skip detail fetch if already in DB (saves HTTP round-trip on daily runs)
-                if _url_in_db(conn, detail_url):
+                # Pre-check: clickout URL is the stable key for dedup
+                if _url_in_db(conn, clickout_url):
                     skipped += 1
                     continue
 
-                detail_resp = safe_get(detail_url)
+                # Follow redirect chain: clickout → talent.com → employer ATS page
+                detail_resp = safe_get(clickout_url)
                 if detail_resp is None:
                     continue
 
+                # Use the final URL (after all redirects) as the canonical job URL
+                canonical_url = detail_resp.url
+
                 detail_soup = BeautifulSoup(detail_resp.text, "html.parser")
-                # EnglishJobs detail page embeds the same card with a snippet;
-                # grab the full card text as the JD.
-                jd_el = detail_soup.select_one(ENGLISHJOBS_SELECTORS["card"]) or detail_soup.body
+                # Parse JD from the employer's actual page — try common content containers
+                jd_el = (
+                    detail_soup.select_one("main")
+                    or detail_soup.select_one("article")
+                    or detail_soup.select_one("[class*='content']")
+                    or detail_soup.body
+                )
                 raw_jd = jd_el.get_text(separator="\n", strip=True) if jd_el else ""
 
                 record = {
-                    "id":          make_id(detail_url),
+                    "id":          make_id(clickout_url),
                     "company":     card["company"],
                     "title":       card["title"],
-                    "url":         detail_url,
+                    "url":         canonical_url,
                     "source":      "englishjobs",
                     "source_tier": "auto",
                     "location":    card["location"],
