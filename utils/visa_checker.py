@@ -91,7 +91,47 @@ def _extract_visa_context(jd_text: str, max_chars: int = 2000) -> str:
 
 # ── Prompt ─────────────────────────────────────────────────────────────────────
 
-_PROMPT = """\
+_LANG_INSTRUCTION = {
+    "en": "Respond in English.",
+    "zh": "Respond in Traditional Chinese (繁體中文).",
+}
+
+_SECTIONS = {
+    "en": {
+        "scan":        "### JD Scan",
+        "scan_h":      "(List all work-permit-related phrases found in the JD, marking each as 'restrictive' or 'sponsor-friendly')",
+        "compat":      "### Chancenkarte Compatibility",
+        "compat_h":    """\
+Choose one and explain:
+- ✅ **Clearly friendly** — JD actively mentions relocation support / international candidates
+- ⚠️ **Ambiguous** — JD requires right to work but does not explicitly exclude Chancenkarte
+- 🔴 **Clearly restrictive** — JD explicitly requires EU citizenship or existing full work permit""",
+        "advice":      "### Application Advice",
+        "advice_h":    "(Whether it's worth applying and what steps to take)",
+        "cover":       "### Cover Letter Tips",
+        "cover_h":     "(How to proactively address Chancenkarte status; 1–2 example sentences)",
+        "questions":   "### Questions to Ask HR",
+        "questions_h": "(1–2 specific questions to confirm at first contact)",
+    },
+    "zh": {
+        "scan":        "### JD 原文掃描",
+        "scan_h":      "（列出 JD 中與工作許可相關的原始字句，並標注是「限制性」還是「友善性」語言）",
+        "compat":      "### Chancenkarte 相容性判斷",
+        "compat_h":    """\
+從以下選一個，並說明原因：
+- ✅ **明確友善** — JD 主動提到 relocation support / international candidates
+- ⚠️ **模糊地帶** — JD 要求 right to work 但未明確排除 Chancenkarte
+- 🔴 **明確限制** — JD 明確要求 EU 公民或現有完整工作許可，Chancenkarte 不符合""",
+        "advice":      "### 投遞建議",
+        "advice_h":    "（具體說明是否值得投遞、需要採取哪些步驟）",
+        "cover":       "### 求職信補充建議",
+        "cover_h":     "（建議在 Cover Letter 或 Email 中如何主動說明 Chancenkarte 身份，提供 1–2 句範例）",
+        "questions":   "### 建議向 HR 詢問的問題",
+        "questions_h": "（1–2 個具體問題，適合在第一次聯絡時確認）",
+    },
+}
+
+_PROMPT_TEMPLATE = """\
 You are a German immigration and hiring specialist advising a candidate who holds a \
 **Chancenkarte** (Opportunity Card) issued under §20a AufenthG.
 
@@ -104,26 +144,22 @@ Key facts about the Chancenkarte:
 - Many "right to work" clauses in JDs are written for non-EU applicants generally; \
   companies often do not realise the Chancenkarte counts as a legal basis.
 
-Analyse the JD below for a Chancenkarte holder and respond in Traditional Chinese \
-(繁體中文), Markdown format, using these exact sections:
+{lang_instruction} Use Markdown format, with these exact sections:
 
-### JD 原文掃描
-（列出 JD 中與工作許可相關的原始字句，並標注是「限制性」還是「友善性」語言）
+{scan}
+{scan_h}
 
-### Chancenkarte 相容性判斷
-從以下選一個，並說明原因：
-- ✅ **明確友善** — JD 主動提到 relocation support / international candidates
-- ⚠️ **模糊地帶** — JD 要求 right to work 但未明確排除 Chancenkarte
-- 🔴 **明確限制** — JD 明確要求 EU 公民或現有完整工作許可，Chancenkarte 不符合
+{compat}
+{compat_h}
 
-### 投遞建議
-（具體說明是否值得投遞、需要採取哪些步驟）
+{advice}
+{advice_h}
 
-### 求職信補充建議
-（建議在 Cover Letter 或 Email 中如何主動說明 Chancenkarte 身份，提供 1–2 句範例）
+{cover}
+{cover_h}
 
-### 建議向 HR 詢問的問題
-（1–2 個具體問題，適合在第一次聯絡時確認）
+{questions}
+{questions_h}
 
 ---
 Company: {company}
@@ -137,7 +173,7 @@ Relevant JD passages (visa-related context only):
 """
 
 
-def analyze_visa_compatibility(job_id: str, db_path: str) -> str | None:
+def analyze_visa_compatibility(job_id: str, db_path: str, lang: str = "en") -> str | None:
     """Generate and persist a Chancenkarte compatibility analysis. Returns text or None."""
     conn = init_db(db_path)
     job = fetch_job_by_id(conn, job_id)
@@ -150,12 +186,25 @@ def analyze_visa_compatibility(job_id: str, db_path: str) -> str | None:
     keywords = _scan_keywords(jd_text)
     visa_context = _extract_visa_context(jd_text)
 
-    prompt = _PROMPT.format(
+    s = _SECTIONS.get(lang, _SECTIONS["en"])
+    no_match = "（無）" if lang == "zh" else "(none)"
+    prompt = _PROMPT_TEMPLATE.format(
+        lang_instruction=_LANG_INSTRUCTION.get(lang, _LANG_INSTRUCTION["en"]),
+        scan=s["scan"],
+        scan_h=s["scan_h"],
+        compat=s["compat"],
+        compat_h=s["compat_h"],
+        advice=s["advice"],
+        advice_h=s["advice_h"],
+        cover=s["cover"],
+        cover_h=s["cover_h"],
+        questions=s["questions"],
+        questions_h=s["questions_h"],
         company=job["company"],
         title=job["title"],
         visa_restriction=job.get("visa_restriction") or "unclear",
-        exclude_keywords=", ".join(keywords["exclude"]) or "（無）",
-        sponsor_keywords=", ".join(keywords["sponsor"]) or "（無）",
+        exclude_keywords=", ".join(keywords["exclude"]) or no_match,
+        sponsor_keywords=", ".join(keywords["sponsor"]) or no_match,
         visa_context=visa_context,
     )
 

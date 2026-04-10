@@ -1047,6 +1047,7 @@ with right:
                         analyze_visa_compatibility(
                             job["id"],
                             db_path=os.getenv("DB_PATH", "./data/jobs.db"),
+                            lang=_lang(),
                         )
                     st.cache_data.clear()
                     st.rerun()

@@ -220,7 +220,7 @@ def _parse_with_json_mode(
         ],
         response_format={"type": "json_object"},
         temperature=0.3,
-        max_tokens=1200,
+        max_tokens=2000,
     )
     raw = response.choices[0].message.content
     try:
