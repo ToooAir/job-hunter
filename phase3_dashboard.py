@@ -1295,6 +1295,7 @@ with right:
                                 job["id"],
                                 db_path=os.getenv("DB_PATH", "./data/jobs.db"),
                                 qdrant_path=os.getenv("QDRANT_PATH", "./qdrant_data"),
+                                lang=_lang(),
                             )
                         _transition("interview_1")
                 with btn_cols[2]:
@@ -1345,6 +1346,7 @@ with right:
                                 job["id"],
                                 db_path=os.getenv("DB_PATH", "./data/jobs.db"),
                                 qdrant_path=os.getenv("QDRANT_PATH", "./qdrant_data"),
+                                lang=_lang(),
                             )
                         st.cache_data.clear()
                         st.rerun()
