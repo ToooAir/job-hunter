@@ -1106,6 +1106,7 @@ with right:
                             estimate_salary(
                                 job["id"],
                                 db_path=os.getenv("DB_PATH", "./data/jobs.db"),
+                                lang=_lang(),
                             )
                         st.cache_data.clear()
                         st.rerun()
@@ -1141,6 +1142,7 @@ with right:
                             research_company(
                                 job["id"],
                                 db_path=os.getenv("DB_PATH", "./data/jobs.db"),
+                                lang=_lang(),
                             )
                         st.cache_data.clear()
                         st.rerun()

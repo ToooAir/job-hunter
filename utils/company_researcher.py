@@ -32,6 +32,75 @@ _BOARD_DOMAINS = {
     "xing.com", "indeed.com",
 }
 
+_LANG_INSTRUCTION = {
+    "en": "Respond in English.",
+    "zh": "Respond in Traditional Chinese (繁體中文).",
+}
+
+_SECTIONS = {
+    "en": {
+        "overview":    "### Company Overview",
+        "overview_h":  "(founding year, HQ, size/headcount, product or service — mark unknown items as 'unknown')",
+        "tech":        "### Tech Stack",
+        "tech_h":      "(inferred from JD or public info; skip unknowns)",
+        "culture":     "### Culture & Work Environment",
+        "culture_h":   "(working language, remote policy, known cultural traits)",
+        "visa":        "### Visa / International Friendliness",
+        "visa_h":      "(international team, relocation support, likely attitude toward Chancenkarte holders)",
+        "notes":       "### Notable Points",
+        "notes_h":     "(1–3 highlights worth mentioning in the interview, or risks to watch)",
+        "uncertain":   "(est.)",
+        "no_page":     "(company page unavailable)",
+    },
+    "zh": {
+        "overview":    "### 公司概況",
+        "overview_h":  "（成立年份、總部、規模 / 員工數、產品或服務 — 若資訊不明確請標注「不明」）",
+        "tech":        "### 技術棧",
+        "tech_h":      "（從 JD 或公開資訊推斷；未知的請略過）",
+        "culture":     "### 文化與工作環境",
+        "culture_h":   "（工作語言、遠端政策、已知文化特色）",
+        "visa":        "### 簽證 / 國際化友善度",
+        "visa_h":      "（是否有國際團隊、是否提供 relocation、對 Chancenkarte 的可能態度）",
+        "notes":       "### 值得關注",
+        "notes_h":     "（值得在面試中提及的亮點，或需要留意的風險，各 1–3 點）",
+        "uncertain":   "（推測）",
+        "no_page":     "（無法取得公開頁面資訊）",
+    },
+}
+
+_PROMPT_TEMPLATE = """\
+You are a job-seeker's research assistant. Based on the information below, produce a concise \
+company profile. {lang_instruction} Use Markdown.
+
+{overview}
+{overview_h}
+
+{tech}
+{tech_h}
+
+{culture}
+{culture_h}
+
+{visa}
+{visa_h}
+
+{notes}
+{notes_h}
+
+Keep each section to 2–4 bullet points. Do not invent facts — mark uncertain items with {uncertain}.
+
+---
+
+Company name: {company}
+Job URL: {job_url}
+
+Job description (excerpt):
+{jd_text}
+
+Company about page (scraped, may be incomplete):
+{scraped_text}
+"""
+
 
 def _extract_domain(url: str) -> str | None:
     """Return netloc without www., or None if it's a known job-board domain."""
@@ -85,44 +154,11 @@ def _scrape_company_about(job_url: str, company: str) -> str:
     return text
 
 
-_RESEARCH_PROMPT = """\
-You are a job-seeker's research assistant. Based on the information below, produce a concise \
-company profile in Traditional Chinese (繁體中文). Use Markdown.
-
-### 公司概況
-（成立年份、總部、規模 / 員工數、產品或服務 — 若資訊不明確請標注「不明」）
-
-### 技術棧
-（從 JD 或公開資訊推斷；未知的請略過）
-
-### 文化與工作環境
-（工作語言、遠端政策、已知文化特色）
-
-### 簽證 / 國際化友善度
-（是否有國際團隊、是否提供 relocation、對 Chancenkarte 的可能態度）
-
-### 值得關注
-（值得在面試中提及的亮點，或需要留意的風險，各 1–3 點）
-
-Keep each section to 2–4 bullet points. Do not invent facts — mark uncertain items with「（推測）」.
-
----
-
-Company name: {company}
-Job URL: {job_url}
-
-Job description (excerpt):
-{jd_text}
-
-Company about page (scraped, may be incomplete):
-{scraped_text}
-"""
-
-
 def research_company(
     job_id: str,
     db_path: str,
     qdrant_path: str | None = None,  # unused, kept for call-site symmetry
+    lang: str = "en",
 ) -> str | None:
     """Generate and persist a company research brief. Returns brief text or None."""
     conn = init_db(db_path)
@@ -138,11 +174,24 @@ def research_company(
 
     scraped_text = _scrape_company_about(job_url, company)
 
-    prompt = _RESEARCH_PROMPT.format(
+    s = _SECTIONS.get(lang, _SECTIONS["en"])
+    prompt = _PROMPT_TEMPLATE.format(
+        lang_instruction=_LANG_INSTRUCTION.get(lang, _LANG_INSTRUCTION["en"]),
+        overview=s["overview"],
+        overview_h=s["overview_h"],
+        tech=s["tech"],
+        tech_h=s["tech_h"],
+        culture=s["culture"],
+        culture_h=s["culture_h"],
+        visa=s["visa"],
+        visa_h=s["visa_h"],
+        notes=s["notes"],
+        notes_h=s["notes_h"],
+        uncertain=s["uncertain"],
         company=company,
         job_url=job_url,
         jd_text=jd_text,
-        scraped_text=scraped_text or "（無法取得公開頁面資訊）",
+        scraped_text=scraped_text or s["no_page"],
     )
 
     client = make_client()
