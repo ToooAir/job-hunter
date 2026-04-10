@@ -7,10 +7,10 @@ import hashlib
 import json
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from urllib.parse import quote as url_quote
 
 import pandas as pd
 import pyperclip
-import requests
 import streamlit as st
 import yaml
 
@@ -770,8 +770,8 @@ with st.expander(T("log_expander"), expanded=False):
     log_path = Path("logs/pipeline.log")
     if log_path.exists():
         _log_text = log_path.read_text(encoding="utf-8", errors="replace")
-        _lines = _log_text.splitlines()
-        st.code("\n".join(_lines[-100:]), language=None)
+        _log_lines = _log_text.splitlines()
+        st.code("\n".join(_log_lines[-100:]), language=None)
         st.caption(T("log_caption").format(size=log_path.stat().st_size / 1024))
     else:
         st.info(T("no_log"))
@@ -779,7 +779,8 @@ with st.expander(T("log_expander"), expanded=False):
     _col1, _col2 = st.columns(2)
     with _col1:
         if st.button(T("run_btn"), use_container_width=True):
-            import subprocess, os
+            import subprocess
+            import os
             script = str(Path(__file__).parent / "run_pipeline.sh")
             st.info(T("run_starting"))
             subprocess.Popen(
@@ -1109,12 +1110,12 @@ with right:
                         st.cache_data.clear()
                         st.rerun()
                 with _s_col2:
-                    _q = requests.utils.quote(f"{job['company']} {job['title']} salary Germany")
+                    _q = url_quote(f"{job['company']} {job['title']} salary Germany")
                     st.link_button("Glassdoor", f"https://www.glassdoor.com/Search/results.htm?keyword={_q}", use_container_width=True)
                 with _s_col3:
-                    st.link_button("Kununu", f"https://www.kununu.com/de/search?term={requests.utils.quote(job['company'])}", use_container_width=True)
+                    st.link_button("Kununu", f"https://www.kununu.com/de/search?term={url_quote(job['company'])}", use_container_width=True)
                 with _s_col4:
-                    _lq = requests.utils.quote(job["company"])
+                    _lq = url_quote(job["company"])
                     st.link_button("Levels.fyi", f"https://www.levels.fyi/companies/{_lq}/salaries/", use_container_width=True)
 
             # ── Company Research ──────────────────────────────────────────────
@@ -1146,7 +1147,7 @@ with right:
                 with _r_col2:
                     st.link_button(
                         T("kununu_btn"),
-                        f"https://www.kununu.com/de/search?term={requests.utils.quote(job['company'])}",
+                        f"https://www.kununu.com/de/search?term={url_quote(job['company'])}",
                         use_container_width=True,
                     )
 

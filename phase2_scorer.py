@@ -32,7 +32,7 @@ load_dotenv()
 DB_PATH     = os.getenv("DB_PATH", "./data/jobs.db")
 QDRANT_PATH = os.getenv("QDRANT_PATH", "./qdrant_data")
 
-from utils.llm import make_client, chat_model, emb_model, LLM_PROVIDER, NO_STRUCTURED_OUTPUT_PROVIDERS, rate_limit
+from utils.llm import make_client, chat_model, emb_model, LLM_PROVIDER, NO_STRUCTURED_OUTPUT_PROVIDERS, rate_limit  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -169,7 +169,7 @@ def _translate_to_english(text: str, client) -> str | None:
                 temperature=0.1,
             )
             return resp.choices[0].message.content.strip()
-        except openai.RateLimitError as exc:
+        except openai.RateLimitError:
             log.warning("Translation RateLimitError on attempt %d/3 — sleeping 60s", attempt)
             time.sleep(60)
         except Exception as exc:

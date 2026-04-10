@@ -3,7 +3,6 @@ utils/kb_loader.py — Build and persist the candidate knowledge base in Qdrant.
 """
 
 import logging
-import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path

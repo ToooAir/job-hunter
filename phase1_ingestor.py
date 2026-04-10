@@ -10,7 +10,7 @@ import os
 import re
 import time
 from datetime import datetime, timezone, timedelta
-from urllib.parse import urljoin, urlencode
+from urllib.parse import urlencode
 
 import requests
 import yaml
@@ -134,7 +134,7 @@ def scrape_arbeitnow(
 ) -> tuple[int, int]:
     added = skipped = 0
     kw_lower = [k.lower() for k in keywords]
-    loc_lower = [l.lower() for l in locations]
+    loc_lower = [loc.lower() for loc in locations]
 
     for page in range(1, max_pages + 1):
         url = f"https://www.arbeitnow.com/api/job-board-api?page={page}"
@@ -413,8 +413,8 @@ def scrape_germantechjobs(
     # ── Step 2: filter ────────────────────────────────────────────────────────
     matched = []
     for job in jobs_all:
-        city: str = job.get("cityCategory") or ""
-        workplace: str = job.get("workplace") or ""
+        city = job.get("cityCategory") or ""
+        workplace = job.get("workplace") or ""
         is_remote = workplace == "remote"
 
         if not (city in target_cities or (include_remote and is_remote)):
@@ -468,8 +468,8 @@ def scrape_germantechjobs(
 
         job_url = f"{GTJ_BASE}/jobs/{slug}"
         raw_jd = jd_map.get(slug) or job.get("name") or ""
-        city: str = job.get("cityCategory") or ""
-        workplace: str = job.get("workplace") or ""
+        city = job.get("cityCategory") or ""
+        workplace = job.get("workplace") or ""
 
         record = {
             "id":          make_id(job_url),
@@ -1002,9 +1002,6 @@ def scrape_ashby(
     added = skipped = 0
     kw_lower = [k.lower() for k in keywords]
 
-    # Workplace types we consider remote-eligible
-    remote_types = {"Remote", "Hybrid", None, ""}
-
     for slug in companies:
         data = _ashby_gql(_ASHBY_BOARD_QUERY, {"org": slug})
         if not data:
@@ -1226,7 +1223,7 @@ def scrape_workable(
 #   /categories/remote-programming-jobs.rss       — programming (~25 items)
 #   /categories/remote-devops-sysadmin-jobs.rss   — devops (~40 items)
 
-import xml.etree.ElementTree as ET  # stdlib, no extra dep
+import xml.etree.ElementTree as ET  # stdlib, no extra dep  # noqa: E402
 
 
 def scrape_weworkremotely(
@@ -1276,8 +1273,6 @@ def scrape_weworkremotely(
             region: str = item.findtext("region") or "Remote"
             desc_html: str = item.findtext("description") or ""
             raw_jd = clean_html(desc_html) if desc_html else title
-
-            pub_date: str = item.findtext("pubDate") or ""
 
             record = {
                 "id":          make_id(job_url),
@@ -1611,8 +1606,6 @@ def scrape_personio(
                 if section_text:
                     jd_parts.append(f"{section_name}\n{section_text}" if section_name else section_text)
             raw_jd = "\n\n".join(jd_parts) or title
-
-            created_at: str = pos.findtext("createdAt") or utcnow()
 
             record = {
                 "id":          make_id(job_url),

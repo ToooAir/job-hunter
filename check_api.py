@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from utils.llm import make_client, chat_model, emb_model, LLM_PROVIDER, rate_limit
+from utils.llm import make_client, chat_model, emb_model, LLM_PROVIDER, rate_limit  # noqa: E402
 
 print(f"Provider : {LLM_PROVIDER}")
 print(f"Chat model: {chat_model()}")
