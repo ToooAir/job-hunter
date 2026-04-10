@@ -319,3 +319,44 @@ Mistral officially positions `mistral-small-2603` as a **powerful general-purpos
 | Agent Workflows / Tool-calling tasks | mistral-medium-2508 |
 
 The absolute core friction point traversing this specific system lies inside **response speeds and max-concurrency volumes**. Large functions purely as an excessively "heavy showcase model" on this axis. Operating Small 4 inside the functional constraints of this system embodies an intentional **Engineering Decision**, vastly distancing itself away from capability compromises.
+
+---
+
+## 14. Why are batch outputs always in English while on-demand analyses follow the UI language?
+
+The system has two distinct LLM output paths with different language handling:
+
+- **Phase 2 batch scoring** (runs via `scheduler.py`): `top_3_reasons` and `cover_letter_draft` are always in English.
+- **On-demand analyses** (`visa_checker.py`, `salary_estimator.py`, `company_researcher.py`, and the interview brief in `phase2_scorer.py`): output language follows the dashboard language toggle (English or Traditional Chinese).
+
+### Rationale
+
+**Why batch is English-only:**
+
+The Phase 2 batch runs on a schedule with no active UI session — there is no user language preference to read. More importantly, `top_3_reasons` and `cover_letter_draft` are stored as structured fields in the SQLite database. Mixing Chinese and English values in the same column across different runs would create inconsistency — especially if the user later toggles the language, rescores, or exports data. The grading rubric (`config/grading_rules.md`) and JSON schema are authored in English, so keeping the output English preserves end-to-end consistency.
+
+**Why on-demand analyses follow the toggle:**
+
+These outputs are never stored as structured data — they are Markdown text blobs displayed immediately to the user in the dashboard (`visa_analysis`, `salary_estimate`, `company_research`, `interview_brief` columns in the DB). The user reads them on screen right after clicking the button, so the display language is directly meaningful to them. There is no downstream parsing of these fields; they are rendered as-is.
+
+### Implementation Pattern
+
+All four on-demand utils follow the same pattern:
+
+```python
+_LANG_INSTRUCTION = {"en": "Respond in English.", "zh": "Respond in Traditional Chinese (繁體中文)."}
+_SECTIONS = {"en": {...}, "zh": {...}}   # section headers and hints per language
+
+def generate_x(job_id, db_path, lang: str = "en") -> str | None:
+    s = _SECTIONS.get(lang, _SECTIONS["en"])
+    prompt = _PROMPT_TEMPLATE.format(lang_instruction=_LANG_INSTRUCTION[lang], ...)
+```
+
+`phase3_dashboard.py` passes `lang=_lang()` at every call site, where `_lang()` reads `st.session_state["lang"]`.
+
+**The `lang="en"` default** ensures that if any util is called outside the dashboard context (e.g. scripts, tests, CLI), it falls back to English safely without raising a `KeyError`.
+
+### Maintenance Rule
+
+- Adding a new **batch** Phase 2 field → English only, no `lang` parameter needed.
+- Adding a new **on-demand dashboard** analysis → must implement the `_LANG_INSTRUCTION + _SECTIONS + lang` pattern and pass `lang=_lang()` at the dashboard call site.
