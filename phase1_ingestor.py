@@ -274,6 +274,12 @@ def scrape_englishjobs(
                 )
                 raw_jd = jd_el.get_text(separator="\n", strip=True) if jd_el else ""
 
+                # Skip JS-redirect transition pages (HTTP redirect followed but JS redirect remained)
+                if len(raw_jd) < 200 or "weitergeleitet" in raw_jd or "Wir haben alle Jobs" in raw_jd:
+                    log.warning("englishjobs: skipping JS-redirect page for %r (%s)", card["title"], clickout_url)
+                    skipped += 1
+                    continue
+
                 record = {
                     "id":          make_id(clickout_url),
                     "company":     card["company"],
@@ -596,7 +602,132 @@ def scrape_bundesagentur(
     return added, skipped
 
 
-# ── Source 5: WeAreDevelopers ─────────────────────────────────────────────────
+# ── Source 5: Jobware ─────────────────────────────────────────────────────────
+#
+# Undocumented internal REST API discovered via browser devtools.
+# GET https://www.jobware.de/api/d48b2/iasz3
+#   ?jw_jobname=<keyword>&jw_jobort=<city>&jw_radius=<km>&jw_internal=true
+#   → returns up to 20 jobs; location filter keeps results small enough (~5–15/kw)
+# GET https://www.jobware.de/api/d48b2/da6gd  → total count for the same query
+#
+# JD is in job["task"] field (plain text, already extracted).
+# If task is empty, falls back to fetching job["resourceUrlWithTracking"] iframe.
+# Job URL: https://www.jobware.de/job/{job["url"]}
+# No pagination needed: location-filtered queries return < 20 per keyword.
+
+JW_API_BASE  = "https://www.jobware.de/api/d48b2"
+JW_LIST_EP   = f"{JW_API_BASE}/iasz3"
+JW_JOB_BASE  = "https://www.jobware.de/job"
+JW_HEADERS   = {
+    "User-Agent": HEADERS["User-Agent"],
+    "Accept":     "application/json",
+    "Referer":    "https://www.jobware.de/",
+}
+
+
+def _jw_safe_get(params: dict) -> list[dict]:
+    """Call jobware listing API; return list of job dicts or [] on error."""
+    try:
+        resp = requests.get(JW_LIST_EP, params=params, headers=JW_HEADERS, timeout=15)
+        resp.raise_for_status()
+        return resp.json().get("data", [])
+    except Exception as exc:
+        log.warning("jobware GET failed: %s — %s", params, exc)
+        return []
+
+
+def _jw_iframe_jd(resource_url: str) -> str:
+    """Fetch JD text from jobware iframe URL using requests (HTML is server-rendered)."""
+    try:
+        resp = requests.get(resource_url, headers=JW_HEADERS, timeout=15)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+        el = soup.select_one("body")
+        return el.get_text(separator="\n", strip=True) if el else ""
+    except Exception as exc:
+        log.warning("jobware iframe fetch failed: %s — %s", resource_url, exc)
+        return ""
+
+
+def scrape_jobware(
+    conn,
+    keywords: list[str],
+    location: str,
+    radius_km: int,
+    include_remote: bool,
+) -> tuple[int, int]:
+    added = skipped = 0
+    seen_ids: set[str] = set()
+
+    search_locations = [location]
+    if include_remote:
+        search_locations.append("")   # empty = all Germany incl. remote
+
+    for wo in search_locations:
+        for keyword in keywords:
+            params: dict = {"jw_jobname": keyword, "jw_internal": "true"}
+            if wo:
+                params["jw_jobort"] = wo
+                params["jw_radius"] = str(radius_km)
+
+            jobs = _jw_safe_get(params)
+            time.sleep(1.0)
+
+            for job in jobs:
+                job_id: str = str(job.get("id", ""))
+                if not job_id or job_id in seen_ids:
+                    continue
+                seen_ids.add(job_id)
+
+                url_slug: str = job.get("url", "")
+                if not url_slug:
+                    continue
+                job_url = f"{JW_JOB_BASE}/{url_slug}"
+
+                if _url_in_db(conn, job_url):
+                    skipped += 1
+                    continue
+
+                raw_jd: str = job.get("task") or ""
+                if not raw_jd:
+                    resource_url: str = job.get("resourceUrlWithTracking", "")
+                    if resource_url:
+                        raw_jd = _jw_iframe_jd(resource_url)
+
+                if not raw_jd:
+                    log.warning("jobware: empty JD for %r (%s)", job.get("title"), job_url)
+                    skipped += 1
+                    continue
+
+                company: str = (job.get("advertiser") or {}).get("name") or ""
+                location_str: str = job.get("location") or wo or location
+
+                record = {
+                    "id":          make_id(job_url),
+                    "company":     company,
+                    "title":       job.get("title") or "",
+                    "url":         job_url,
+                    "source":      "jobware",
+                    "source_tier": "auto",
+                    "location":    location_str,
+                    "raw_jd_text": raw_jd,
+                    "fetched_at":  utcnow(),
+                    "expires_at":  expiry(45),
+                    "status":      "un-scored",
+                }
+
+                _warn_empty_jd(record)
+                if upsert_job(conn, record):
+                    added += 1
+                else:
+                    skipped += 1
+
+            log.info("jobware kw=%r wo=%r: %d jobs from API", keyword, wo or "all", len(jobs))
+
+    return added, skipped
+
+
+# ── Source 6: WeAreDevelopers ─────────────────────────────────────────────────
 #
 # Private (undocumented) REST API discovered via browser devtools.
 # GET https://wad-api.wearedevelopers.com/api/v2/jobs/search
@@ -1943,6 +2074,21 @@ if __name__ == "__main__":
         include_remote=ba.get("include_remote", True),
         size=ba.get("size", 100),
     )
+
+    # ── Jobware ──
+    log.info("scraping jobware …")
+    jw = config.get("jobware", {})
+    if jw.get("keywords"):
+        results["jobware"] = scrape_jobware(
+            conn,
+            keywords=jw["keywords"],
+            location=jw.get("location", "Hamburg"),
+            radius_km=jw.get("radius_km", 50),
+            include_remote=jw.get("include_remote", True),
+        )
+    else:
+        log.info("jobware: not configured — skipping")
+        results["jobware"] = (0, 0)
 
     # ── Remotive ──
     log.info("scraping remotive …")
