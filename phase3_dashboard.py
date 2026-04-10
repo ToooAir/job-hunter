@@ -820,9 +820,13 @@ with left:
             T("filter_source"),
             ["arbeitnow", "englishjobs", "remotive", "jobicy",
              "relocateme", "bundesagentur", "greenhouse", "lever",
+             "wearedevelopers", "heise", "jobware", "ashby", "wttj",
+             "weworkremotely", "personio", "germantechjobs",
              "linkedin", "stepstone", "other"],
             default=["arbeitnow", "englishjobs", "remotive", "jobicy",
                      "relocateme", "bundesagentur", "greenhouse", "lever",
+                     "wearedevelopers", "heise", "jobware", "ashby", "wttj",
+                     "weworkremotely", "personio", "germantechjobs",
                      "linkedin", "stepstone", "other"],
         )
         status_filter = st.multiselect(
