@@ -1056,12 +1056,18 @@ with right:
                     st.cache_data.clear()
                     st.rerun()
 
-            c1, c2, c3, c4, c5 = st.columns(5)
+            c1, c2, c3, c4, c5 = st.columns([0.9, 0.7, 1.4, 1.2, 1.2])
             c1.metric("Match Score",  job.get("match_score") or "—")
             c2.metric("Fit Grade",    grade)
-            c3.metric("Language Req", job.get("jd_language_req") or "—")
+            LANG_LABEL = {
+                "en_required": "🇬🇧 EN",
+                "de_required": "🇩🇪 DE",
+                "de_plus":     "🇩🇪+EN",
+                "unknown":     "—",
+            }
+            c3.metric("Language Req", LANG_LABEL.get(job.get("jd_language_req") or "unknown", job.get("jd_language_req") or "—"))
             VISA_LABEL = {"open": "🟢 open", "eu_only": "🔴 EU only",
-                          "sponsored": "🟢 sponsored", "unclear": "⚪ unclear"}
+                          "sponsored": "🟢 spons.", "unclear": "⚪ unclear"}
             c4.metric("Visa",         VISA_LABEL.get(visa, visa))
             CONTRACT_LABEL = {
                 "permanent": T("contract_permanent"),
