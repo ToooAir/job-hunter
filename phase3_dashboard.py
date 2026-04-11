@@ -809,12 +809,14 @@ with left:
     # ── Filters ──
     with st.expander(T("filter_expander"), expanded=True):
         fit_grade_filter = st.multiselect(
-            T("filter_grade"), ["A", "B", "C"], default=["A", "B"]
+            T("filter_grade"), ["A", "B", "C"], default=["A", "B"],
+            key="filter_grade",
         )
         lang_filter = st.multiselect(
             T("filter_lang"),
             ["en_required", "de_plus", "de_required", "unknown"],
             default=["en_required", "de_plus", "unknown"],
+            key="filter_lang",
         )
         source_filter = st.multiselect(
             T("filter_source"),
@@ -828,18 +830,21 @@ with left:
                      "wearedevelopers", "heise", "jobware", "ashby", "wttj",
                      "weworkremotely", "personio", "germantechjobs",
                      "linkedin", "stepstone", "other"],
+            key="filter_source",
         )
         status_filter = st.multiselect(
             T("filter_status"),
             ["un-scored", "scored", "applied", "interview_1", "interview_2",
              "offer", "rejected", "skipped", "error", "expired"],
             default=["scored"],
+            key="filter_status",
         )
         location_filter = st.text_input(
             T("filter_location"),
             placeholder=T("filter_location_ph"),
+            key="filter_location",
         )
-        remote_filter = st.checkbox(T("filter_remote"), value=False)
+        remote_filter = st.checkbox(T("filter_remote"), value=False, key="filter_remote")
 
     # ── Job table ──
     df = fetch_jobs(conn, fit_grade_filter, lang_filter, source_filter, status_filter,
@@ -1056,7 +1061,7 @@ with right:
                     st.cache_data.clear()
                     st.rerun()
 
-            c1, c2, c3, c4, c5 = st.columns([0.9, 0.7, 1.4, 1.2, 1.2])
+            c1, c2, c3, c4, c5 = st.columns([0.9, 0.7, 0.9, 1.1, 1.5])
             c1.metric("Match Score",  job.get("match_score") or "—")
             c2.metric("Fit Grade",    grade)
             LANG_LABEL = {
