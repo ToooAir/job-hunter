@@ -54,7 +54,7 @@ _SECTIONS = {
 }
 
 _PROMPT_TEMPLATE = """\
-You are a compensation specialist for the German tech industry.
+You are a compensation specialist familiar with tech compensation in {location}.
 Based on the job details below, estimate the market salary range, provide negotiation guidance, \
 and give a concrete single figure suitable for writing in a job application form (Gehaltsvorstellung).
 {lang_instruction}
@@ -81,7 +81,7 @@ Output in Markdown format.
 Rules:
 - All figures are gross annual EUR for the job location.
 - If the role is remote/outside major cities, adjust downward 5–15%.
-- Berlin/Hamburg/Munich premium: standard. Tier-2 cities: -5 to -10%.
+- Apply city-tier adjustments based on the job location: major tech hubs typically command a premium; tier-2 or regional cities: -5 to -15% lower.
 - Mark uncertain estimates with（估計）if responding in Chinese, or "(est.)" if in English.
 - Do not invent specific internal company pay data.
 - Negotiation opening ask = upper end of market range.
