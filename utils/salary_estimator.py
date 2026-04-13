@@ -20,32 +20,41 @@ _LANG_INSTRUCTION = {
 
 _SECTIONS = {
     "en": {
-        "salary":  "### Salary Estimate",
-        "market":  "- **Market range**: €X,000 – €Y,000 / year (gross annual)",
-        "jd_sal":  "- **JD-stated salary**: {jd_salary}",
-        "conf":    "- **Confidence**: High / Medium / Low",
-        "basis":   "- **Basis** (2–3 points): seniority, company size, location, industry",
-        "nego":    "### Negotiation Tips",
-        "ask":     "- **Opening ask**: €X,000 (typically upper end of range)",
-        "floor":   "- **Floor**: €X,000",
-        "strat":   "- **Strategy** (2–3 points): actionable negotiation advice for German job market",
+        "salary":      "### Salary Estimate",
+        "market":      "- **Market range**: €X,000 – €Y,000 / year (gross annual)",
+        "jd_sal":      "- **JD-stated salary**: {jd_salary}",
+        "conf":        "- **Confidence**: High / Medium / Low",
+        "basis":       "- **Basis** (2–3 points): seniority, company size, location, industry",
+        "nego":        "### Negotiation Tips",
+        "ask":         "- **Opening ask**: €X,000 (typically upper end of range)",
+        "floor":       "- **Floor**: €X,000",
+        "strat":       "- **Strategy** (2–3 points): actionable negotiation advice for German job market",
+        "form":        "### Gehaltsvorstellung — Application Form",
+        "form_fig":    "- **Suggested figure**: €X,000",
+        "form_note":   "- **Why lower than opening ask**: 1 sentence — avoids budget filters while staying above midpoint",
+        "form_phrase": '- **Phrasing**: e.g. "My salary expectation is €X,000 gross per year."',
     },
     "zh": {
-        "salary":  "### 薪資估計",
-        "market":  "- **市場區間**：€X,000 – €Y,000 / year（gross，年薪稅前）",
-        "jd_sal":  "- **JD 標示薪資**：{jd_salary}",
-        "conf":    "- **信心水準**：高 / 中 / 低",
-        "basis":   "- **估計依據**（2–3 點）：職位層級、公司規模、地點、產業",
-        "nego":    "### 談判建議",
-        "ask":     "- **開價建議**：€X,000（通常為區間上緣）",
-        "floor":   "- **底線建議**：€X,000",
-        "strat":   "- **策略**（2–3 點）：具體可操作的德國求職薪資談判建議",
+        "salary":      "### 薪資估計",
+        "market":      "- **市場區間**：€X,000 – €Y,000 / year（gross，年薪稅前）",
+        "jd_sal":      "- **JD 標示薪資**：{jd_salary}",
+        "conf":        "- **信心水準**：高 / 中 / 低",
+        "basis":       "- **估計依據**（2–3 點）：職位層級、公司規模、地點、產業",
+        "nego":        "### 談判建議",
+        "ask":         "- **開價建議**：€X,000（通常為區間上緣）",
+        "floor":       "- **底線建議**：€X,000",
+        "strat":       "- **策略**（2–3 點）：具體可操作的德國求職薪資談判建議",
+        "form":        "### Gehaltsvorstellung — 表單填寫",
+        "form_fig":    "- **建議填寫數字**：€X,000",
+        "form_note":   "- **為何低於談判開價**：1 句說明 — 避免被預算篩除，同時仍高於市場中位數",
+        "form_phrase": "- **建議用語**：例如「My salary expectation is €X,000 gross per year.」",
     },
 }
 
 _PROMPT_TEMPLATE = """\
 You are a compensation specialist for the German tech industry.
-Based on the job details below, estimate the market salary range and provide negotiation guidance.
+Based on the job details below, estimate the market salary range, provide negotiation guidance, \
+and give a concrete single figure suitable for writing in a job application form (Gehaltsvorstellung).
 {lang_instruction}
 Output in Markdown format.
 
@@ -60,6 +69,11 @@ Output in Markdown format.
 {floor}
 {strat}
 
+{form_heading}
+{form_fig}
+{form_note}
+{form_phrase}
+
 ---
 Rules:
 - All figures are gross annual EUR for Germany.
@@ -67,6 +81,10 @@ Rules:
 - Berlin/Hamburg/Munich premium: standard. Tier-2 cities: -5 to -10%.
 - Mark uncertain estimates with（估計）if responding in Chinese, or "(est.)" if in English.
 - Do not invent specific internal company pay data.
+- Negotiation opening ask = upper end of market range.
+- Gehaltsvorstellung figure = 65–75th percentile of market range (lower than opening ask to pass
+  ATS/HR budget filters, but above midpoint to avoid undervaluing the candidate).
+  Provide one specific number, not a range.
 
 Job details:
 Company: {company}
@@ -103,6 +121,10 @@ def estimate_salary(job_id: str, db_path: str, lang: str = "en") -> str | None:
         ask=s["ask"],
         floor=s["floor"],
         strat=s["strat"],
+        form_heading=s["form"],
+        form_fig=s["form_fig"],
+        form_note=s["form_note"],
+        form_phrase=s["form_phrase"],
         company=job["company"],
         title=job["title"],
         location=job.get("location") or "Germany",
