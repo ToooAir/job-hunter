@@ -43,15 +43,15 @@
 
 **按需分析（每筆職缺，一鍵觸發）**
 - 薪資估計 + 談判建議（市場區間、開價建議、底線）
-- 公司研究（爬取官網 + LLM 摘要：技術堆疊、文化、搬遷政策）
+- 公司研究（爬取官網 + LLM 摘要：技術堆疊、文化、搬遷支援/Relocation 政策）
 - 面試準備單：角色摘要、核心技術要求、推斷痛點、你的相關亮點、5 個可能被問的問題
 
-**應聘追蹤**
+**求職追蹤**
 - 完整狀態流程：`已評分 → 已投遞 → 一面 → 二面 → Offer / 已拒絕`
 - 每輪結構化面試記錄（日期、形式、問題、自我評分、感想）
 - 跟進提醒（投遞後自動設為 7 天，可自訂）
 - 重複投遞警告（偵測是否已投遞過同公司其他職缺）
-- 統計儀表板：等級分布、來源效益表、應聘漏斗、每週投遞趨勢
+- 統計儀表板：等級分布、來源效益表、求職漏斗、每週投遞趨勢
 
 **靈活性**
 - 支援 OpenAI、Mistral AI（有免費方案）、Azure OpenAI，或任何本地/自訂 LLM 端點
@@ -116,13 +116,14 @@ job-hunter/
     ├── kb_loader.py                  # 從 candidate_kb/ 建立 Qdrant 知識庫
     ├── llm.py                        # OpenAI / Mistral / Azure / 自訂端點工廠
     ├── company_researcher.py         # 按需公司研究（爬網站 + LLM）
+    ├── levels_scraper.py             # Levels.fyi 彙整數據爬蟲（含快取 + 匯率轉換）
     ├── salary_estimator.py           # 按需薪資估計 + 談判建議
     └── visa_checker.py               # 按需 Chancenkarte 簽證相容性分析
 ```
 
 ---
 
-## 快速開始
+## 快速上手
 
 ### 方式 A — Docker（推薦）
 
@@ -215,13 +216,18 @@ OPENAI_API_KEY=sk-...
 
 DB_PATH=./data/jobs.db
 QDRANT_PATH=./qdrant_data
+
+# Levels.fyi 薪資估計資料（選用 — 供薪資估計器使用）
+# HOME_COUNTRY=germany           # 遠端職位的預設地點 slug（預設：germany）
+# LEVELS_CACHE_TTL_DAYS=7        # 爬取資料的快取天數（預設：7 天）
+# FALLBACK_USD_EUR_RATE=0.92     # 匯率 API 不可用時的回退匯率
 ```
 
 > **切換 Provider 注意**：若更換 Embedding 模型（例如從 OpenAI `text-embedding-3-small`（1536 維）換為 Mistral `mistral-embed`（1024 維）），必須重建知識庫：`python utils/kb_loader.py`
 
 ### `config/grading_rules.md`
 
-定義 LLM 如何評分職缺與格式化 Cover Letter。填入你的技術棧、資歷、語言能力和目標地點。此檔案在每次 Phase 2 執行時作為 LLM System Prompt 注入——請保持精簡以降低 Token 用量。
+定義 LLM 如何評分職缺與格式化 Cover Letter。填入你的技術堆疊、資歷、語言能力和目標地點。此檔案在每次 Phase 2 執行時作為 LLM System Prompt 注入——請保持精簡以降低 Token 用量。
 
 ### `config/search_targets.yaml`
 
@@ -338,7 +344,7 @@ GermanTechJobs 目前停用（JS SPA，需 Playwright）。
 
 Phase 2 使用 Token 頻率啟發式方法（>8% 德文功能詞）偵測德文 JD，偵測到後透過單次 LLM 呼叫翻譯為英文再評分與向量化。翻譯結果快取在資料庫中——重新評分時直接重用，不額外消耗 API。
 
-### 預檢篩選（LLM 呼叫前）
+### 預先過濾（LLM 呼叫前）
 
 | 條件 | 動作 |
 |------|------|
@@ -391,7 +397,7 @@ un-scored（待評分）
 待審閱 · 本週投遞 · 面試中 · Offer · 待跟進 · 評分失敗
 
 ### 統計分析面板
-等級分布 · 語言要求分布 · 應聘漏斗 · 來源效益表（A 級率、面試率）· 每週投遞趨勢（近 8 週）
+等級分布 · 語言要求分布 · 求職漏斗 · 來源效益表（A 級率、面試率）· 每週投遞趨勢（近 8 週）
 
 ### 職缺詳情面板
 
@@ -406,10 +412,10 @@ un-scored（待評分）
 顯示評分階段的粗略簽證分類。對於 `eu_only` 職缺，可點擊「深度分析」按鈕執行 Chancenkarte 專屬 LLM 分析：掃描 JD 中的相關字句，判斷持卡人是否可申請，並建議如何在 Cover Letter 和第一封信中說明簽證身份。
 
 **薪資估計（💰）**
-產出 LLM 薪資估計（市場區間、信心水準、談判開價與底線），參考 JD 資訊、地點和公司規模。附 Glassdoor、Kununu、Levels.fyi 連結供人工查詢。
+產出 LLM 薪資估計（市場區間、信心水準、談判開價與底線），參考 JD 資訊、地點和公司規模。透過 Playwright 自動爬取 Levels.fyi 彙整統計數據（中位數、P25/P75/P90），並在有資料時將其作為市場參考指標注入 LLM Prompt 中——給予模型經過校準的定錨基準，而不是單純依賴模型的訓練資料進行估算。遠端職缺會使用 `HOME_COUNTRY` 作為基準地點。爬取的資料會快取 7 天（可自訂配置）。附 Glassdoor、Kununu、Levels.fyi 連結供人工比對與參考。
 
 **公司研究（🔍）**
-爬取公司 about/官網頁面，結合 JD 產出結構化公司側寫：概況、技術堆疊、文化、國際化友善度、面試談話重點。
+爬取公司 about/官網頁面，結合 JD 產出結構化公司簡介：概況、技術堆疊、文化、國際化友善度、面試談話重點。
 
 **Cover Letter**
 - 可直接編輯的文字框，即時字數統計（目標 200–400 字）

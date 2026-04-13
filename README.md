@@ -116,6 +116,7 @@ job-hunter/
     ├── kb_loader.py                  # Build Qdrant knowledge base from candidate_kb/
     ├── llm.py                        # OpenAI / Mistral / Azure / custom endpoint factory
     ├── company_researcher.py         # On-demand company profile (scrape + LLM)
+    ├── levels_scraper.py             # Levels.fyi aggregate stats scraper (cache + FX conversion)
     ├── salary_estimator.py           # On-demand salary estimate + negotiation tips
     └── visa_checker.py               # On-demand Chancenkarte visa compatibility analysis
 ```
@@ -215,6 +216,11 @@ OPENAI_API_KEY=sk-...
 
 DB_PATH=./data/jobs.db
 QDRANT_PATH=./qdrant_data
+
+# Levels.fyi salary data (optional — used by salary estimator)
+# HOME_COUNTRY=germany           # Location slug for remote roles (default: germany)
+# LEVELS_CACHE_TTL_DAYS=7        # How long to cache scraped data (default: 7 days)
+# FALLBACK_USD_EUR_RATE=0.92     # Fallback FX rate if live APIs are unavailable
 ```
 
 > **Switching providers**: If you change the embedding model (e.g. from OpenAI `text-embedding-3-small` at 1536-dim to Mistral `mistral-embed` at 1024-dim), you must rebuild the knowledge base: `python utils/kb_loader.py`
@@ -407,7 +413,7 @@ If you've previously applied to another role at the same company, a warning is s
 Shows the coarse visa classification from scoring. For `eu_only` roles, a "Deep Analysis" button runs a Chancenkarte-specific LLM analysis: scans the JD for relevant phrases, reasons about whether a Chancenkarte holder can apply, and suggests how to address visa status in the cover letter and first contact.
 
 **Salary estimate (💰)**
-Generates an LLM salary estimate for the role (market range, confidence level, negotiation opening price and floor) using JD context, location, and company size signals. Links to Glassdoor, Kununu, and Levels.fyi for manual verification.
+Generates an LLM salary estimate for the role (market range, confidence level, negotiation opening price and floor) using JD context, location, and company size signals. Levels.fyi aggregate statistics (median, P25/P75/P90) are scraped automatically via Playwright and injected as a market reference table into the LLM prompt when available — giving the model a calibrated anchor rather than estimating from training data alone. Remote roles use `HOME_COUNTRY` as the reference location. Data is cached for 7 days (configurable). Links to Glassdoor, Kununu, and Levels.fyi are also shown for manual verification.
 
 **Company research (🔍)**
 Scrapes the company's about/homepage and combines it with the JD to produce a structured company profile: overview, tech stack, culture, international-friendliness, and interview talking points.
