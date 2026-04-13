@@ -140,9 +140,17 @@ STRINGS: dict[str, dict[str, str]] = {
         "salary_jd_shown":    "　(JD states: {salary})",
         "salary_not_gen":     "Salary estimate not yet generated.",
         "salary_jd_cap":      "JD-listed salary: {salary}",
-        "salary_gen_btn":     "💰 Generate Salary Estimate",
-        "salary_regen_btn":   "🔄 Re-estimate",
-        "salary_estimating":  "Estimating…",
+        "salary_gen_btn":          "💰 Generate Salary Estimate",
+        "salary_regen_btn":        "🔄 Re-estimate",
+        "salary_estimating":       "Estimating…",
+        "levels_cache_fresh":      "Levels.fyi ref data: {location} ({count} layers), {days}d ago",
+        "levels_cache_stale":      "Levels.fyi ref data: {location} ({count} layers), {days}d ago (stale)",
+        "levels_cache_none":       "No Levels.fyi cache — will fetch on next estimate",
+        "levels_refresh_btn":      "🔄 Refresh Levels data",
+        "levels_refreshing":       "Fetching Levels.fyi data…",
+        "levels_refresh_all_btn":  "🔄 Refresh All Levels Data",
+        "levels_refresh_all_done": "✓ Levels.fyi data refreshed ({n} slots)",
+        "levels_refresh_all_spin": "Fetching Levels.fyi data for all roles…",
         # Company research
         "research_expander":  "🔍 Company Research",
         "research_not_gen":   "Company research not yet generated.",
@@ -344,9 +352,17 @@ STRINGS: dict[str, dict[str, str]] = {
         "salary_jd_shown":    "　（JD 標示：{salary}）",
         "salary_not_gen":     "尚未生成薪資估計。",
         "salary_jd_cap":      "JD 標示薪資：{salary}",
-        "salary_gen_btn":     "💰 生成薪資估計",
-        "salary_regen_btn":   "🔄 重新估計",
-        "salary_estimating":  "估算中…",
+        "salary_gen_btn":          "💰 生成薪資估計",
+        "salary_regen_btn":        "🔄 重新估計",
+        "salary_estimating":       "估算中…",
+        "levels_cache_fresh":      "Levels.fyi 參考資料：{location}（{count} 層），{days} 天前更新",
+        "levels_cache_stale":      "Levels.fyi 參考資料：{location}（{count} 層），{days} 天前更新（已過期）",
+        "levels_cache_none":       "尚無 Levels.fyi 快取，下次估計時將自動抓取",
+        "levels_refresh_btn":      "🔄 刷新 Levels 資料",
+        "levels_refreshing":       "正在抓取 Levels.fyi 資料…",
+        "levels_refresh_all_btn":  "🔄 刷新全部 Levels 資料",
+        "levels_refresh_all_done": "✓ Levels.fyi 資料已更新（{n} 個 slot）",
+        "levels_refresh_all_spin": "正在抓取所有職位類型的 Levels.fyi 資料…",
         # Company research
         "research_expander":  "🔍 公司研究",
         "research_not_gen":   "尚未生成公司研究報告。",
@@ -456,6 +472,35 @@ _lang_display = st.sidebar.radio(
     horizontal=True,
 )
 st.session_state["lang"] = _lang_map[_lang_display]
+
+# ── Levels.fyi global refresh (sidebar) ───────────────────────────────────────
+
+st.sidebar.divider()
+if st.sidebar.button(T("levels_refresh_all_btn"), use_container_width=True):
+    import os
+    from dotenv import load_dotenv
+    from utils.levels_scraper import (
+        clear_cache, fetch_levels_by_slug,
+        _ROLE_MAP, _ROLE_FALLBACK, HOME_COUNTRY, FALLBACK_CHAIN,
+    )
+    load_dotenv()
+
+    _seen: dict[str, None] = dict.fromkeys(slug for _, slug in _ROLE_MAP)
+    _seen.setdefault(_ROLE_FALLBACK, None)
+    _all_role_slugs = list(_seen)
+    _loc_chain      = FALLBACK_CHAIN.get(HOME_COUNTRY, [HOME_COUNTRY, "global"])
+
+    with st.sidebar:
+        with st.spinner(T("levels_refresh_all_spin")):
+            _refreshed = 0
+            for _rs in _all_role_slugs:
+                for _ls in _loc_chain:
+                    clear_cache(_rs, _ls)
+                # fetch by slug directly — no title→slug mapping needed
+                fetch_levels_by_slug(_rs, HOME_COUNTRY)
+                _refreshed += len(_loc_chain)
+
+    st.sidebar.success(T("levels_refresh_all_done").format(n=_refreshed))
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -1108,7 +1153,33 @@ with right:
                     if job.get("salary_range"):
                         st.caption(T("salary_jd_cap").format(salary=job["salary_range"]))
                     st.caption(T("salary_not_gen"))
-                _s_col1, _s_col2, _s_col3, _s_col4 = st.columns(4)
+
+                # ── Levels.fyi cache freshness indicator ─────────────────────
+                import os
+                from dotenv import load_dotenv
+                from utils.levels_scraper import cache_info, clear_cache, _role_slug, _location_slug
+                load_dotenv()
+                _ci = cache_info(job["title"], job.get("location"), job.get("contract_type"))
+                if _ci:
+                    try:
+                        from datetime import datetime, timezone
+                        _age_days = (
+                            datetime.now(timezone.utc)
+                            - datetime.fromisoformat(_ci["fetched_at"])
+                        ).days
+                    except Exception:
+                        _age_days = 0
+                    _tpl  = "levels_cache_fresh" if _ci["is_fresh"] else "levels_cache_stale"
+                    _locs = " + ".join(_ci["location_slugs"])
+                    st.caption(T(_tpl).format(
+                        location=_locs,
+                        count=_ci["layer_count"],
+                        days=_age_days,
+                    ))
+                else:
+                    st.caption(T("levels_cache_none"))
+
+                _s_col1, _s_col2, _s_col3, _s_col4, _s_col5 = st.columns(5)
                 with _s_col1:
                     if st.button(
                         T("salary_gen_btn") if not _salary_estimate else T("salary_regen_btn"),
@@ -1116,10 +1187,7 @@ with right:
                         use_container_width=True,
                         type="primary" if not _salary_estimate else "secondary",
                     ):
-                        import os
-                        from dotenv import load_dotenv
                         from utils.salary_estimator import estimate_salary
-                        load_dotenv()
                         with st.spinner(T("salary_estimating")):
                             estimate_salary(
                                 job["id"],
@@ -1129,11 +1197,26 @@ with right:
                         st.cache_data.clear()
                         st.rerun()
                 with _s_col2:
-                    _q = url_quote(f"{job['company']} {job['title']} salary Germany")
-                    st.link_button("Glassdoor", f"https://www.glassdoor.com/Search/results.htm?keyword={_q}", use_container_width=True)
+                    if st.button(
+                        T("levels_refresh_btn"),
+                        key=f"levels_refresh_{job['id']}",
+                        use_container_width=True,
+                    ):
+                        _rs = _role_slug(job["title"])
+                        _ls = _location_slug(job.get("location"), job.get("contract_type"))
+                        from utils.levels_scraper import FALLBACK_CHAIN, fetch_levels_data
+                        _chain = FALLBACK_CHAIN.get(_ls, [_ls, "global"])
+                        with st.spinner(T("levels_refreshing")):
+                            for _slug in _chain:
+                                clear_cache(_rs, _slug)
+                            fetch_levels_data(job["title"], job.get("location"), job.get("contract_type"))
+                        st.rerun()
                 with _s_col3:
-                    st.link_button("Kununu", f"https://www.kununu.com/de/search?term={url_quote(job['company'])}", use_container_width=True)
+                    _q = url_quote(f"{job['company']} {job['title']} salary")
+                    st.link_button("Glassdoor", f"https://www.glassdoor.com/Search/results.htm?keyword={_q}", use_container_width=True)
                 with _s_col4:
+                    st.link_button("Kununu", f"https://www.kununu.com/de/search?term={url_quote(job['company'])}", use_container_width=True)
+                with _s_col5:
                     _lq = url_quote(job["company"])
                     st.link_button("Levels.fyi", f"https://www.levels.fyi/companies/{_lq}/salaries/", use_container_width=True)
 

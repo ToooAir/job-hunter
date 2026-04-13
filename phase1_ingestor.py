@@ -2233,4 +2233,49 @@ if __name__ == "__main__":
     log.info("=== Phase 1 完成 | 新增 %d 筆，略過 %d 筆 | 耗時 %ds | DB: %s ===",
              total_added, total_skipped, elapsed, DB_PATH)
 
+    # ── Levels.fyi cache warm-up ──────────────────────────────────────────────
+    # Pre-fetch ALL supported role slugs (not just those derived from config
+    # keywords) so every job category has fresh data ready before the dashboard
+    # is opened. Location chain is home country + europe + global.
+    log.info("levels_scraper: warming up cache …")
+    try:
+        from utils.levels_scraper import (
+            _ROLE_FALLBACK, _cache_get, _scrape_summary, _cache_set,
+            HOME_COUNTRY, FALLBACK_CHAIN, _ROLE_MAP,
+        )
+        from datetime import datetime, timezone as _tz
+
+        # All supported role slugs (deduplicated, fallback included)
+        _seen: dict[str, None] = dict.fromkeys(slug for _, slug in _ROLE_MAP)
+        _seen.setdefault(_ROLE_FALLBACK, None)
+        role_slugs: list[str] = list(_seen)
+
+        # Location chain: home country → europe → global
+        loc_chain = FALLBACK_CHAIN.get(HOME_COUNTRY, [HOME_COUNTRY, "europe", "global"])
+
+        warmed = skipped = 0
+        for rs in role_slugs:
+            for ls in loc_chain:
+                cached = _cache_get(rs, ls)
+                if cached is None:
+                    log.info("levels_scraper: pre-fetching %s / %s", rs, ls)
+                    summary = _scrape_summary(rs, ls)
+                    result = {
+                        "summary":     summary,
+                        "source_slug": ls,
+                        "fetched_at":  datetime.now(_tz.utc).strftime("%Y-%m-%dT%H:%M:%S"),
+                    }
+                    _cache_set(rs, ls, result)
+                    warmed += 1
+                else:
+                    log.debug("levels_scraper: cache fresh — skipping %s / %s", rs, ls)
+                    skipped += 1
+
+        log.info(
+            "levels_scraper: cache warm-up done — %d fetched, %d already fresh",
+            warmed, skipped,
+        )
+    except Exception as exc:
+        log.warning("levels_scraper: cache warm-up failed (non-fatal): %s", exc)
+
     conn.close()

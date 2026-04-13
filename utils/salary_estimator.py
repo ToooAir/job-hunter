@@ -7,9 +7,11 @@ link buttons in the dashboard — not scraped (require auth).
 """
 
 import logging
+from datetime import datetime, timezone
 
 from utils.db import init_db, fetch_job_by_id, set_salary_estimate
 from utils.llm import make_client, chat_model, rate_limit
+from utils.levels_scraper import fetch_levels_data, LevelsSummary
 
 log = logging.getLogger(__name__)
 
@@ -58,6 +60,7 @@ and give a concrete single figure suitable for writing in a job application form
 {lang_instruction}
 Output in Markdown format.
 
+{levels_section}\
 {salary_heading}
 {market}
 {jd_sal}
@@ -76,7 +79,7 @@ Output in Markdown format.
 
 ---
 Rules:
-- All figures are gross annual EUR for Germany.
+- All figures are gross annual EUR for the job location.
 - If the role is remote/outside major cities, adjust downward 5–15%.
 - Berlin/Hamburg/Munich premium: standard. Tier-2 cities: -5 to -10%.
 - Mark uncertain estimates with（估計）if responding in Chinese, or "(est.)" if in English.
@@ -85,6 +88,8 @@ Rules:
 - Gehaltsvorstellung figure = 65–75th percentile of market range (lower than opening ask to pass
   ATS/HR budget filters, but above midpoint to avoid undervaluing the candidate).
   Provide one specific number, not a range.
+- If "Recent Market Reference Data" is provided above, use it to calibrate your range.
+  Prioritise entries from the past 12 months. Note currency conversions if data is in USD.
 
 Job details:
 Company: {company}
@@ -96,6 +101,51 @@ Source: {source}
 Job description (excerpt):
 {jd_text}
 """
+
+
+def _fmt_summary_row(result: dict) -> str | None:
+    """Format one LevelsResult as a markdown table row. Returns None if no data."""
+    s = result.get("summary")
+    if not s or not s.get("median_total"):
+        return None
+    loc   = result.get("source_slug", "—")
+    med   = f"€{s['median_total']:,}"
+    p25   = f"€{s['p25']:,}" if s.get("p25")  else "—"
+    p75   = f"€{s['p75']:,}" if s.get("p75")  else "—"
+    p90   = f"€{s['p90']:,}" if s.get("p90")  else "—"
+    fx    = f" *({s['fx_note']})*" if s.get("fx_note") else ""
+    return f"| {loc} | {med}{fx} | {p25} | {p75} | {p90} |"
+
+
+def _build_levels_section(levels_results: list[dict]) -> str:
+    """
+    Build a multi-location comparison table from all fetched Levels.fyi layers.
+    Returns '' if no usable data is available.
+    """
+    if not levels_results:
+        return ""
+
+    rows = [_fmt_summary_row(r) for r in levels_results]
+    rows = [r for r in rows if r]
+    if not rows:
+        return ""
+
+    fetched_dates = []
+    for r in levels_results:
+        try:
+            fetched_dates.append(datetime.fromisoformat(r["fetched_at"]).strftime("%Y-%m-%d"))
+        except Exception:
+            pass
+    fetched_label = f"fetched {min(fetched_dates)}" if fetched_dates else ""
+
+    lines = [
+        f"### Market Reference Data (Levels.fyi, {fetched_label})",
+        f"_(total compensation, gross annual EUR)_",
+        f"| Location | Median | P25 | P75 | P90 |",
+        f"|----------|--------|-----|-----|-----|",
+    ] + rows + [""]
+
+    return "\n".join(lines) + "\n"
 
 
 def estimate_salary(job_id: str, db_path: str, lang: str = "en") -> str | None:
@@ -110,7 +160,19 @@ def estimate_salary(job_id: str, db_path: str, lang: str = "en") -> str | None:
     s = _SECTIONS.get(lang, _SECTIONS["en"])
     jd_salary = job.get("salary_range") or ("未標示" if lang == "zh" else "not stated")
 
+    # Fetch Levels.fyi market reference data (cached; silent fallback on failure)
+    levels_results = fetch_levels_data(
+        job_title=job["title"],
+        job_location=job.get("location"),
+        contract_type=job.get("contract_type"),
+    )
+    levels_section = _build_levels_section(levels_results)
+    if levels_section:
+        slugs = [r["source_slug"] for r in levels_results]
+        log.info("salary estimate: injecting Levels.fyi data %s for job %s", slugs, job_id)
+
     prompt = _PROMPT_TEMPLATE.format(
+        levels_section=levels_section,  # '' when no data
         lang_instruction=_LANG_INSTRUCTION.get(lang, _LANG_INSTRUCTION["en"]),
         salary_heading=s["salary"],
         market=s["market"],
