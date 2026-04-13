@@ -1563,7 +1563,7 @@ def scrape_greenhouse(
 # Search URL: GET https://jobs.heise.de/search?q={keyword}&loc={location}&page={N}
 # Pagination:  page=N is CUMULATIVE — page=3 returns page1+page2+page3 jobs (≈56)
 # Parse:       <li data-id="{jobId}"> cards with title, company, location, snippet
-# Job URL:     https://jobs.heise.de/search?selected={jobId}  (canonical link)
+# Job URL:     https://jobs.heise.de/job?id={jobId}  (canonical link)
 #
 # Snippet note: some cards embed 2000+ char JDs; most have 100-500 chars or none.
 # The <p> inside each <li> is used as raw_jd_text (partial but sufficient for scoring).
@@ -1632,7 +1632,7 @@ def scrape_heise(
                 if not raw_jd:
                     raw_jd = title
 
-                job_url = f"https://jobs.heise.de/search?selected={job_id}"
+                job_url = f"https://jobs.heise.de/job?id={job_id}"
 
                 record = {
                     "id":          make_id(f"heise:{job_id}"),
