@@ -164,6 +164,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "regen_cl_btn":       "🔄 Regenerate Cover Letter",
         "regen_cl_spinner":   "Regenerating with {tone} tone…",
         "download_docx":      "📄 Download .docx",
+        "download_pdf":       "📄 Download .pdf",
         # Action buttons
         "open_job_btn":       "🌐 Open Job Page",
         "copy_cl_btn":        "📋 Copy Cover Letter",
@@ -367,6 +368,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "regen_cl_btn":       "🔄 重新生成 Cover Letter",
         "regen_cl_spinner":   "以 {tone} 語氣重新生成中…",
         "download_docx":      "📄 下載 .docx",
+        "download_pdf":       "📄 下載 .pdf",
         # Action buttons
         "open_job_btn":       "🌐 開啟職缺頁面",
         "copy_cl_btn":        "📋 複製 Cover Letter",
@@ -1235,19 +1237,61 @@ with right:
             if edited_cl.strip():
                 import io
                 from docx import Document as DocxDocument
+                from reportlab.lib.pagesizes import A4
+                from reportlab.lib.styles import getSampleStyleSheet
+                from reportlab.lib.units import cm
+                from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+
+                _file_stem = f"cover_letter_{job['company']}_{job['title']}".replace(" ", "_")
+
+                # ── Build .docx ──────────────────────────────────────────────
                 _doc = DocxDocument()
                 _doc.add_heading(f"{job['title']} @ {job['company']}", level=1)
                 for para in edited_cl.strip().split("\n"):
                     _doc.add_paragraph(para)
-                _buf = io.BytesIO()
-                _doc.save(_buf)
-                st.download_button(
-                    label=T("download_docx"),
-                    data=_buf.getvalue(),
-                    file_name=f"cover_letter_{job['company']}_{job['title']}.docx".replace(" ", "_"),
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    key=f"dl_{job['id']}",
+                _docx_buf = io.BytesIO()
+                _doc.save(_docx_buf)
+
+                # ── Build .pdf ───────────────────────────────────────────────
+                _pdf_buf = io.BytesIO()
+                _pdf_doc = SimpleDocTemplate(
+                    _pdf_buf, pagesize=A4,
+                    leftMargin=2.5 * cm, rightMargin=2.5 * cm,
+                    topMargin=2.5 * cm, bottomMargin=2.5 * cm,
                 )
+                _styles = getSampleStyleSheet()
+                _story = [
+                    Paragraph(f"{job['title']} @ {job['company']}", _styles["Heading1"]),
+                    Spacer(1, 12),
+                ]
+                for para in edited_cl.strip().split("\n"):
+                    if para.strip():
+                        _story.append(Paragraph(para, _styles["Normal"]))
+                        _story.append(Spacer(1, 6))
+                    else:
+                        _story.append(Spacer(1, 10))
+                _pdf_doc.build(_story)
+
+                # ── Download buttons (side by side) ──────────────────────────
+                _dl_col1, _dl_col2 = st.columns(2)
+                with _dl_col1:
+                    st.download_button(
+                        label=T("download_docx"),
+                        data=_docx_buf.getvalue(),
+                        file_name=f"{_file_stem}.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        key=f"dl_docx_{job['id']}",
+                        use_container_width=True,
+                    )
+                with _dl_col2:
+                    st.download_button(
+                        label=T("download_pdf"),
+                        data=_pdf_buf.getvalue(),
+                        file_name=f"{_file_stem}.pdf",
+                        mime="application/pdf",
+                        key=f"dl_pdf_{job['id']}",
+                        use_container_width=True,
+                    )
 
             st.divider()
 
