@@ -214,7 +214,6 @@ def _parse_with_json_mode(
         '"salary_range": "<string extracted from JD, or empty string>", '
         '"contract_type": "permanent"|"contract"|"freelance"|"unknown", '
         '"match_score": <integer 0-100>, '
-        '"fit_grade": "A"|"B"|"C", '
         '"top_3_reasons": ["<reason1 — 1 English sentence, max 20 words>", "<reason2>", "<reason3>"], '
         '"cover_letter_draft": "<full cover letter as a plain string, no nested keys>"}'
     )
