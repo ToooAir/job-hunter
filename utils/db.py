@@ -124,6 +124,13 @@ def fetch_job_by_id(conn: sqlite3.Connection, job_id: str) -> dict | None:
     return dict(row) if row else None
 
 
+def reset_errors_to_unscored(conn: sqlite3.Connection) -> int:
+    """Reset all error-status jobs to un-scored so they will be retried. Returns count updated."""
+    cur = conn.execute("UPDATE jobs SET status = 'un-scored' WHERE status = 'error'")
+    conn.commit()
+    return cur.rowcount
+
+
 def reset_to_unscored(conn: sqlite3.Connection, job_ids: list[str]) -> int:
     """Reset specific jobs to un-scored status. Returns count of rows updated."""
     if not job_ids:

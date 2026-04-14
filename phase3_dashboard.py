@@ -65,6 +65,9 @@ STRINGS: dict[str, dict[str, str]] = {
         "no_log":             "No pipeline run recorded yet. Will appear after first manual run or scheduled trigger.",
         "run_btn":            "▶️ Run Phase 1 + 2 Now",
         "refresh_btn":        "🔄 Refresh Log",
+        "retry_errors_btn":   "⚠️ Retry All Errors",
+        "retry_errors_spin":  "Resetting & scoring error jobs…",
+        "retry_errors_none":  "No error-status jobs found.",
         "run_starting":       "Starting pipeline (background)…",
         "run_started":        "Pipeline started. Refresh the page in a moment to see results.",
         "log_caption":        "logs/pipeline.log — {size:.1f} KB, showing last 100 lines",
@@ -277,6 +280,9 @@ STRINGS: dict[str, dict[str, str]] = {
         "no_log":             "尚無 pipeline 執行記錄。首次手動執行或等排程觸發後會出現。",
         "run_btn":            "▶️ 立即執行 Phase 1 + 2",
         "refresh_btn":        "🔄 重新整理記錄",
+        "retry_errors_btn":   "⚠️ 重試所有失敗",
+        "retry_errors_spin":  "重設並評分失敗職缺中…",
+        "retry_errors_none":  "目前沒有 error 狀態的職缺。",
         "run_starting":       "啟動 pipeline（背景執行）…",
         "run_started":        "已啟動，稍後重新整理頁面查看結果。",
         "log_caption":        "logs/pipeline.log — {size:.1f} KB，顯示最後 100 行",
@@ -823,7 +829,7 @@ with st.expander(T("log_expander"), expanded=False):
     else:
         st.info(T("no_log"))
 
-    _col1, _col2 = st.columns(2)
+    _col1, _col2, _col3 = st.columns(3)
     with _col1:
         if st.button(T("run_btn"), use_container_width=True):
             import subprocess
@@ -839,6 +845,25 @@ with st.expander(T("log_expander"), expanded=False):
             )
             st.success(T("run_started"))
     with _col2:
+        if st.button(T("retry_errors_btn"), use_container_width=True):
+            import os
+            from dotenv import load_dotenv
+            from utils.db import init_db, reset_errors_to_unscored
+            from phase2_scorer import score_jobs
+            load_dotenv()
+            _db_path = os.getenv("DB_PATH", "./data/jobs.db")
+            _qdrant_path = os.getenv("QDRANT_PATH", "./qdrant_data")
+            _conn = init_db(_db_path)
+            _n = reset_errors_to_unscored(_conn)
+            _conn.close()
+            if _n:
+                with st.spinner(T("retry_errors_spin")):
+                    score_jobs(db_path=_db_path, qdrant_path=_qdrant_path)
+                st.cache_data.clear()
+                st.rerun()
+            else:
+                st.info(T("retry_errors_none"))
+    with _col3:
         if st.button(T("refresh_btn"), use_container_width=True):
             st.rerun()
 

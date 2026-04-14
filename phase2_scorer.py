@@ -17,11 +17,11 @@ from typing import Literal
 
 import openai
 from dotenv import load_dotenv
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 
 from utils.db import (
     init_db, get_unscored_jobs, update_score, fetch_job_by_id,
-    reset_to_unscored, mark_error, mark_expired,
+    reset_to_unscored, reset_errors_to_unscored, mark_error, mark_expired,
     set_interview_brief, set_translated_jd,
 )
 
@@ -55,20 +55,21 @@ class ScoringResult(BaseModel):
     salary_range: str  # extracted text or ""
     contract_type: Literal["permanent", "contract", "freelance", "unknown"]
     match_score: int  # 0–100
-    fit_grade: Literal["A", "B", "C"]
+    fit_grade: str = "C"  # accepts any LLM value; always overridden by model_validator below
     top_3_reasons: list[str]
     cover_letter_draft: str
 
-    @field_validator("fit_grade", mode="before")
-    @classmethod
-    def derive_grade(cls, v, info):
-        score = info.data.get("match_score", 0)
-        lang = info.data.get("jd_language_req", "unknown")
+    @model_validator(mode="after")
+    def derive_grade(self) -> "ScoringResult":
+        score = self.match_score
+        lang = self.jd_language_req
         if lang == "de_required" or score < 60:
-            return "C"
-        if score >= 80:
-            return "A"
-        return "B"
+            self.fit_grade = "C"
+        elif score >= 80:
+            self.fit_grade = "A"
+        else:
+            self.fit_grade = "B"
+        return self
 
     @field_validator("top_3_reasons")
     @classmethod
@@ -193,7 +194,13 @@ def _parse_with_structured_output(
         response_format=ScoringResult,
         temperature=0.3,
     )
-    return response.choices[0].message.parsed
+    msg = response.choices[0].message
+    refusal = getattr(msg, "refusal", None)
+    if refusal:
+        raise ValueError(f"LLM refused to respond: {refusal}")
+    if msg.parsed is None:
+        raise ValueError("Structured output returned null (content filter or empty response)")
+    return msg.parsed
 
 
 def _parse_with_json_mode(
@@ -222,11 +229,17 @@ def _parse_with_json_mode(
         temperature=0.3,
         max_tokens=2000,
     )
-    raw = response.choices[0].message.content
+    msg = response.choices[0].message
+    refusal = getattr(msg, "refusal", None)
+    if refusal:
+        raise ValueError(f"LLM refused to respond: {refusal}")
+    raw = msg.content
+    if raw is None:
+        raise ValueError("LLM returned null content (content filter or empty response)")
     try:
         return ScoringResult.model_validate_json(raw)
-    except Exception:
-        log.error("JSON parse failed. Raw LLM response:\n%s", raw)
+    except Exception as exc:
+        log.error("JSON parse failed (%s: %s). Raw LLM response:\n%s", type(exc).__name__, exc, raw)
         raise
 
 
@@ -409,6 +422,7 @@ def score_jobs(
     db_path: str = DB_PATH,
     qdrant_path: str = QDRANT_PATH,
     rescore: bool = False,
+    reset_errors: bool = False,
     job_ids: list[str] | None = None,
 ) -> list[ScoringResult]:
     log.info("LLM provider: %s | model: %s", LLM_PROVIDER, chat_model())
@@ -424,6 +438,10 @@ def score_jobs(
         ).rowcount
         conn.commit()
         log.info("--rescore: reset %d already-scored jobs to un-scored", n)
+
+    if reset_errors:
+        n = reset_errors_to_unscored(conn)
+        log.info("--reset-errors: reset %d error jobs to un-scored", n)
 
     jobs = get_unscored_jobs(conn)
     if job_ids is not None:
@@ -894,8 +912,13 @@ if __name__ == "__main__":
         action="store_true",
         help="Re-score already-scored jobs (resets their status to un-scored first)",
     )
+    parser.add_argument(
+        "--reset-errors",
+        action="store_true",
+        help="Reset all error-status jobs to un-scored so they will be retried",
+    )
     args = parser.parse_args()
-    scored = score_jobs(rescore=args.rescore)
+    scored = score_jobs(rescore=args.rescore, reset_errors=args.reset_errors)
 
     n = len(scored)
     log.info("完成評分 %d 筆", n)
