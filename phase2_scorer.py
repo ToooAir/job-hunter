@@ -65,7 +65,7 @@ class ScoringResult(BaseModel):
         lang = self.jd_language_req
         if lang == "de_required" or score < 60:
             self.fit_grade = "C"
-        elif score >= 80:
+        elif score >= 70:
             self.fit_grade = "A"
         else:
             self.fit_grade = "B"
@@ -587,7 +587,7 @@ def score_jobs(
                 lang  = result.jd_language_req
                 result.fit_grade = (
                     "C" if lang == "de_required" or score < 60
-                    else "A" if score >= 80
+                    else "A" if score >= 70
                     else "B"
                 )
                 log.info(
