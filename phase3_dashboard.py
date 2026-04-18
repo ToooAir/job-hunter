@@ -523,7 +523,6 @@ def week_ago_iso() -> str:
     return (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%S")
 
 
-@st.cache_resource
 def get_conn():
     import os
     from dotenv import load_dotenv
