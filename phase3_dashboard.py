@@ -30,7 +30,7 @@ STRINGS: dict[str, dict[str, str]] = {
     "en": {
         # KPIs
         "kpi_pending":        "Pending Review 🎯",
-        "kpi_week_applied":   "Applied This Week ✅",
+        "kpi_week_applied":   "Applied (Last 7 Days) ✅",
         "kpi_in_interview":   "In Interview 📞",
         "kpi_offer":          "Offer 🎉",
         "kpi_followup":       "Follow-up Due 🔔",
@@ -42,6 +42,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "funnel_title":       "**Application Funnel**",
         "source_eff":         "**Source Effectiveness**",
         "weekly_trend":       "**Weekly Application Trend (last 8 weeks)**",
+        "daily_trend":        "**This Week — Applications by Day**",
         "no_scored_jobs":     "No scored jobs yet",
         "no_applications":    "No applications yet",
         "no_data":            "No data yet",
@@ -245,7 +246,7 @@ STRINGS: dict[str, dict[str, str]] = {
     "zh": {
         # KPIs
         "kpi_pending":        "待審閱 🎯",
-        "kpi_week_applied":   "本週投遞 ✅",
+        "kpi_week_applied":   "過去 7 天投遞 ✅",
         "kpi_in_interview":   "面試中 📞",
         "kpi_offer":          "Offer 🎉",
         "kpi_followup":       "待跟進 🔔",
@@ -257,6 +258,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "funnel_title":       "**應聘漏斗**",
         "source_eff":         "**來源效益**",
         "weekly_trend":       "**每週投遞趨勢（近 8 週）**",
+        "daily_trend":        "**本週每日投遞數**",
         "no_scored_jobs":     "尚無已評分職缺",
         "no_applications":    "尚無投遞記錄",
         "no_data":            "尚無資料",
@@ -736,12 +738,35 @@ def fetch_stats(_conn) -> dict:
     """).fetchall()
     week_df = pd.DataFrame([dict(r) for r in week_rows]).set_index("week").sort_index() if week_rows else pd.DataFrame()
 
+    # Daily breakdown — current Mon → today
+    today = datetime.now(timezone.utc).date()
+    week_start = today - timedelta(days=today.weekday())  # Monday
+    daily_rows = _conn.execute(f"""
+        SELECT strftime('%Y-%m-%d', applied_at) AS day, COUNT(*) AS cnt
+        FROM jobs
+        WHERE status IN {PIPELINE_STATUSES}
+          AND applied_at IS NOT NULL
+          AND strftime('%Y-%m-%d', applied_at) >= ?
+          AND strftime('%Y-%m-%d', applied_at) <= ?
+        GROUP BY day
+        ORDER BY day
+    """, (week_start.isoformat(), today.isoformat())).fetchall()
+    # Ensure every day Mon→today appears (fill 0 for missing days)
+    daily_counts = {r["day"]: r["cnt"] for r in daily_rows}
+    days = []
+    d = week_start
+    while d <= today:
+        days.append({"day": d.isoformat(), "cnt": daily_counts.get(d.isoformat(), 0)})
+        d += timedelta(days=1)
+    daily_df = pd.DataFrame(days).set_index("day")
+
     return {
         "grade_df":  grade_df,
         "lang_df":   lang_df,
         "src_df":    src_df,
         "funnel_df": funnel_df,
         "week_df":   week_df,
+        "daily_df":  daily_df,
     }
 
 
@@ -812,11 +837,21 @@ with st.expander(T("stats_expander"), expanded=False):
     else:
         st.caption(T("no_data"))
 
-    st.markdown(T("weekly_trend"))
-    if not stats["week_df"].empty:
-        st.bar_chart(stats["week_df"], y="cnt")
-    else:
-        st.caption(T("no_applications"))
+    col_weekly, col_daily = st.columns([3, 2])
+
+    with col_weekly:
+        st.markdown(T("weekly_trend"))
+        if not stats["week_df"].empty:
+            st.bar_chart(stats["week_df"], y="cnt")
+        else:
+            st.caption(T("no_applications"))
+
+    with col_daily:
+        st.markdown(T("daily_trend"))
+        if not stats["daily_df"].empty and stats["daily_df"]["cnt"].sum() > 0:
+            st.bar_chart(stats["daily_df"], y="cnt")
+        else:
+            st.caption(T("no_applications"))
 
 with st.expander(T("log_expander"), expanded=False):
     log_path = Path("logs/pipeline.log")
