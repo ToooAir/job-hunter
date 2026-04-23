@@ -79,15 +79,16 @@ Output in Markdown format.
 
 ---
 Rules:
-- All figures are gross annual EUR for the job location.
-- If the role is remote/outside major cities, adjust downward 5–15%.
-- Apply city-tier adjustments based on the job location: major tech hubs typically command a premium; tier-2 or regional cities: -5 to -15% lower.
-- Mark uncertain estimates with（估計）if responding in Chinese, or "(est.)" if in English.
-- Do not invent specific internal company pay data.
-- Negotiation opening ask = upper end of market range.
-- Gehaltsvorstellung figure = 65–75th percentile of market range (lower than opening ask to pass
-  ATS/HR budget filters, but above midpoint to avoid undervaluing the candidate).
-  Provide one specific number, not a range.
+- Estimate BASE SALARY for a full-time employee, not total compensation, unless the JD explicitly indicates bonus/equity-heavy compensation.
+- If any reference data is total compensation (e.g. Levels.fyi), treat it as an upper-bound signal only and adjust downward before using it for the market salary range.
+- Prioritize role-specific local data (e.g. Backend Engineer in Berlin) over broader Software Engineer compensation datasets.
+- For application-form salary (Gehaltsvorstellung), optimize for passing HR screening, not for maximizing theoretical compensation.
+- If the company appears to be a startup/SME, if the role is English-only but local-market-facing, or if the candidate may present extra hiring friction, keep the form figure closer to the midpoint-to-65th percentile, not the 75th percentile.
+- Separate clearly:
+  1) market range,
+  2) negotiation opening ask,
+  3) realistic application-form figure.
+- Never assume senior-level compensation unless the JD clearly signals Senior/Lead scope and the candidate profile supports it.
 - If "Recent Market Reference Data" is provided above, use it to calibrate your range.
   Prioritise entries from the past 12 months. Note currency conversions if data is in USD.
 
