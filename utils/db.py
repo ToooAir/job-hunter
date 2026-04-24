@@ -211,10 +211,13 @@ def update_status(
     status: str,
     applied_at: str = None,
 ) -> None:
-    conn.execute(
-        "UPDATE jobs SET status = ?, applied_at = ? WHERE id = ?",
-        (status, applied_at if status == "applied" else None, job_id),
-    )
+    if status == "applied":
+        conn.execute(
+            "UPDATE jobs SET status = ?, applied_at = ? WHERE id = ?",
+            (status, applied_at, job_id),
+        )
+    else:
+        conn.execute("UPDATE jobs SET status = ? WHERE id = ?", (status, job_id))
     conn.commit()
 
 
