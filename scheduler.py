@@ -5,11 +5,14 @@ No extra dependencies — standard library only.
 """
 
 import logging
+import os
 import subprocess
 import sys
 import time
 from datetime import date, datetime
 from pathlib import Path
+
+from utils.db import init_db, auto_ghost_stale_applications
 
 logging.basicConfig(
     level=logging.INFO,
@@ -67,6 +70,19 @@ def _stream_phase(script: str, log_file) -> int:
     return proc.returncode
 
 
+def _ghost_stale() -> None:
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+        db_path = os.getenv("DB_PATH", "./data/jobs.db")
+        conn = init_db(db_path)
+        n = auto_ghost_stale_applications(conn)
+        if n:
+            log.info("ghosted %d stale application(s) (no response in 35 days)", n)
+    except Exception as exc:
+        log.error("ghost detection failed: %s", exc)
+
+
 def run_pipeline() -> None:
     log.info("════ Pipeline start ════")
     LOG_FILE.parent.mkdir(exist_ok=True)
@@ -77,6 +93,7 @@ def run_pipeline() -> None:
             if returncode != 0:
                 log.error("%s exited with code %d — aborting pipeline", phase, returncode)
                 break
+    _ghost_stale()
     log.info("════ Pipeline done  ════")
 
 

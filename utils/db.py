@@ -3,6 +3,7 @@ import json
 import logging
 import sqlite3
 import os
+from datetime import datetime, timedelta, timezone
 
 log = logging.getLogger(__name__)
 
@@ -205,6 +206,17 @@ def update_score(conn: sqlite3.Connection, job_id: str, result: dict) -> None:
     conn.commit()
 
 
+def _follow_up_date(base_iso: str | None, days: int) -> str | None:
+    """Return YYYY-MM-DD date `days` after the given ISO datetime string."""
+    if not base_iso:
+        return None
+    try:
+        dt = datetime.fromisoformat(base_iso.replace("Z", "+00:00"))
+        return (dt + timedelta(days=days)).strftime("%Y-%m-%d")
+    except ValueError:
+        return None
+
+
 def update_status(
     conn: sqlite3.Connection,
     job_id: str,
@@ -212,13 +224,37 @@ def update_status(
     applied_at: str = None,
 ) -> None:
     if status == "applied":
+        follow_up = _follow_up_date(applied_at, 21)
         conn.execute(
-            "UPDATE jobs SET status = ?, applied_at = ? WHERE id = ?",
-            (status, applied_at, job_id),
+            "UPDATE jobs SET status = ?, applied_at = ?, follow_up_at = ? WHERE id = ?",
+            (status, applied_at, follow_up, job_id),
+        )
+    elif status in ("interview_1", "interview_2"):
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+        follow_up = _follow_up_date(now_iso, 7)
+        conn.execute(
+            "UPDATE jobs SET status = ?, follow_up_at = ? WHERE id = ?",
+            (status, follow_up, job_id),
         )
     else:
-        conn.execute("UPDATE jobs SET status = ? WHERE id = ?", (status, job_id))
+        conn.execute(
+            "UPDATE jobs SET status = ?, follow_up_at = NULL WHERE id = ?",
+            (status, job_id),
+        )
     conn.commit()
+
+
+def auto_ghost_stale_applications(conn: sqlite3.Connection, days: int = 35) -> int:
+    """Mark 'applied' jobs with no response after `days` days as 'ghosted'."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%S")
+    cur = conn.execute(
+        """UPDATE jobs
+           SET status = 'ghosted', follow_up_at = NULL
+           WHERE status = 'applied' AND applied_at IS NOT NULL AND applied_at <= ?""",
+        (cutoff,),
+    )
+    conn.commit()
+    return cur.rowcount
 
 
 def set_notes(conn: sqlite3.Connection, job_id: str, notes: str) -> None:
@@ -235,7 +271,7 @@ def get_company_applications(
            FROM jobs
            WHERE LOWER(company) = LOWER(?)
              AND id != ?
-             AND status IN ('applied','interview_1','interview_2','offer','rejected')
+             AND status IN ('applied','interview_1','interview_2','offer','rejected','ghosted')
            ORDER BY applied_at DESC""",
         (company, exclude_id),
     ).fetchall()

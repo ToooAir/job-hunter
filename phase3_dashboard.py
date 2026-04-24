@@ -34,6 +34,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "kpi_in_interview":   "In Interview 📞",
         "kpi_offer":          "Offer 🎉",
         "kpi_followup":       "Follow-up Due 🔔",
+        "kpi_ghosted":        "Ghosted 👻",
         "kpi_errors":         "Score Errors ❌",
         # Stats
         "stats_expander":     "📊 Analytics",
@@ -120,6 +121,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "status_interview_2": "2nd Interview",
         "status_offer":       "Offer",
         "status_rejected":    "Rejected",
+        "status_ghosted":     "Ghosted",
         # Duplicate warning
         "dup_warning":        "⚠️ You have previously applied to other roles at **{company}**: {roles}",
         # Visa
@@ -250,6 +252,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "kpi_in_interview":   "面試中 📞",
         "kpi_offer":          "Offer 🎉",
         "kpi_followup":       "待跟進 🔔",
+        "kpi_ghosted":        "無聲卡 👻",
         "kpi_errors":         "評分失敗 ❌",
         # Stats
         "stats_expander":     "📊 統計分析",
@@ -336,6 +339,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "status_interview_2": "二面",
         "status_offer":       "Offer",
         "status_rejected":    "已拒絕",
+        "status_ghosted":     "無聲卡",
         # Duplicate warning
         "dup_warning":        "⚠️ 你曾投遞過 **{company}** 的其他職缺：{roles}",
         # Visa
@@ -543,7 +547,7 @@ def today_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
-PIPELINE_STATUSES = ('applied', 'interview_1', 'interview_2', 'offer', 'rejected')
+PIPELINE_STATUSES = ('applied', 'interview_1', 'interview_2', 'offer', 'rejected', 'ghosted')
 
 # City alias expansion: handles English/German name variants and common misspellings
 _GERMANY_PATTERNS = [
@@ -602,6 +606,7 @@ def fetch_kpis(conn) -> dict:
             SUM(CASE WHEN status='offer'                                       THEN 1 ELSE 0 END) AS offers,
             SUM(CASE WHEN status IN {PIPELINE_STATUSES} AND follow_up_at <= ? AND follow_up_at IS NOT NULL
                                                                                THEN 1 ELSE 0 END) AS needs_followup,
+            SUM(CASE WHEN status='ghosted'                                      THEN 1 ELSE 0 END) AS ghosted,
             SUM(CASE WHEN status='error'                                        THEN 1 ELSE 0 END) AS errors
         FROM jobs
     """, (week_ago_iso(), today_iso())).fetchone()
@@ -612,6 +617,7 @@ def fetch_kpis(conn) -> dict:
         "in_interview":   rows["in_interview"]   or 0,
         "offers":         rows["offers"]         or 0,
         "needs_followup": rows["needs_followup"] or 0,
+        "ghosted":        rows["ghosted"]        or 0,
         "errors":         rows["errors"]         or 0,
     }
 
@@ -780,13 +786,14 @@ config = load_config()
 # ── KPI row ────────────────────────────────────────────────────────────────────
 
 kpis = fetch_kpis(conn)
-k1, k2, k3, k4, k5, k6 = st.columns(6)
+k1, k2, k3, k4, k5, k6, k7 = st.columns(7)
 k1.metric(T("kpi_pending"),       kpis["pending"])
 k2.metric(T("kpi_week_applied"),  kpis["week_applied"])
 k3.metric(T("kpi_in_interview"),  kpis["in_interview"])
 k4.metric(T("kpi_offer"),         kpis["offers"])
 k5.metric(T("kpi_followup"),      kpis["needs_followup"])
-k6.metric(T("kpi_errors"),        kpis["errors"])
+k6.metric(T("kpi_ghosted"),       kpis["ghosted"])
+k7.metric(T("kpi_errors"),        kpis["errors"])
 
 with st.expander(T("stats_expander"), expanded=False):
     stats = fetch_stats(conn)
@@ -941,7 +948,7 @@ with left:
         status_filter = st.multiselect(
             T("filter_status"),
             ["un-scored", "scored", "applied", "interview_1", "interview_2",
-             "offer", "rejected", "skipped", "error", "expired"],
+             "offer", "rejected", "ghosted", "skipped", "error", "expired"],
             default=["scored"],
             key="filter_status",
         )
