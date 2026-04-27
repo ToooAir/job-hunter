@@ -222,88 +222,88 @@ def _parse_englishjobs_listing(soup: BeautifulSoup, base: str) -> list[dict]:
 
 def scrape_englishjobs(
     conn,
-    base_url: str,
+    base_urls: list[str],
     keywords: list[str],
     max_pages: int,
 ) -> tuple[int, int]:
     added = skipped = 0
     seen_urls: set[str] = set()
 
-    for keyword in keywords:
-        for page in range(1, max_pages + 1):
-            params = {"q": keyword, "page": page}
-            search_url = f"{base_url}?{urlencode(params)}"
-            resp = safe_get(search_url)
-            if resp is None:
-                break
+    for base_url in base_urls:
+        for keyword in keywords:
+            for page in range(1, max_pages + 1):
+                params = {"q": keyword, "page": page}
+                search_url = f"{base_url}?{urlencode(params)}"
+                resp = safe_get(search_url)
+                if resp is None:
+                    break
 
-            soup = BeautifulSoup(resp.text, "html.parser")
-            cards = _parse_englishjobs_listing(soup, base_url)
-            if not cards:
-                if page == 1:
-                    log.warning("englishjobs kw=%r: page 1 returned 0 cards — selector may be broken (url=%s)", keyword, search_url)
-                break
+                soup = BeautifulSoup(resp.text, "html.parser")
+                cards = _parse_englishjobs_listing(soup, base_url)
+                if not cards:
+                    if page == 1:
+                        log.warning("englishjobs kw=%r: page 1 returned 0 cards — selector may be broken (url=%s)", keyword, search_url)
+                    break
 
-            for card in cards:
-                clickout_url = card["clickout_url"]
-                if clickout_url in seen_urls:
-                    skipped += 1
-                    continue
-                seen_urls.add(clickout_url)
+                for card in cards:
+                    clickout_url = card["clickout_url"]
+                    if clickout_url in seen_urls:
+                        skipped += 1
+                        continue
+                    seen_urls.add(clickout_url)
 
-                # Pre-check: clickout URL is the stable key for dedup
-                if _url_in_db(conn, clickout_url):
-                    skipped += 1
-                    continue
+                    # Pre-check: clickout URL is the stable key for dedup
+                    if _url_in_db(conn, clickout_url):
+                        skipped += 1
+                        continue
 
-                # Follow redirect chain: clickout → talent.com → employer ATS page
-                detail_resp = safe_get(clickout_url)
-                if detail_resp is None:
-                    continue
+                    # Follow redirect chain: clickout → talent.com → employer ATS page
+                    detail_resp = safe_get(clickout_url)
+                    if detail_resp is None:
+                        continue
 
-                # Use the final URL (after all redirects) as the canonical job URL
-                canonical_url = detail_resp.url
+                    # Use the final URL (after all redirects) as the canonical job URL
+                    canonical_url = detail_resp.url
 
-                detail_soup = BeautifulSoup(detail_resp.text, "html.parser")
-                # Parse JD from the employer's actual page — try common content containers
-                jd_el = (
-                    detail_soup.select_one("main")
-                    or detail_soup.select_one("article")
-                    or detail_soup.select_one("[class*='content']")
-                    or detail_soup.body
+                    detail_soup = BeautifulSoup(detail_resp.text, "html.parser")
+                    jd_el = (
+                        detail_soup.select_one("main")
+                        or detail_soup.select_one("article")
+                        or detail_soup.select_one("[class*='content']")
+                        or detail_soup.body
+                    )
+                    raw_jd = jd_el.get_text(separator="\n", strip=True) if jd_el else ""
+
+                    # Skip JS-redirect transition pages (HTTP redirect followed but JS redirect remained)
+                    if len(raw_jd) < 200 or "weitergeleitet" in raw_jd or "Wir haben alle Jobs" in raw_jd:
+                        log.warning("englishjobs: skipping JS-redirect page for %r (%s)", card["title"], clickout_url)
+                        skipped += 1
+                        continue
+
+                    record = {
+                        "id":          make_id(clickout_url),
+                        "company":     card["company"],
+                        "title":       card["title"],
+                        "url":         canonical_url,
+                        "source":      "englishjobs",
+                        "source_tier": "auto",
+                        "location":    card["location"],
+                        "raw_jd_text": raw_jd,
+                        "fetched_at":  utcnow(),
+                        "expires_at":  expiry(45),
+                        "status":      "un-scored",
+                    }
+
+                    _warn_empty_jd(record)
+                    if upsert_job(conn, record):
+                        added += 1
+                    else:
+                        skipped += 1
+
+                log.info(
+                    "englishjobs base=%r kw=%r page=%d: added=%d skipped=%d",
+                    base_url.split("/")[-1], keyword, page, added, skipped,
                 )
-                raw_jd = jd_el.get_text(separator="\n", strip=True) if jd_el else ""
-
-                # Skip JS-redirect transition pages (HTTP redirect followed but JS redirect remained)
-                if len(raw_jd) < 200 or "weitergeleitet" in raw_jd or "Wir haben alle Jobs" in raw_jd:
-                    log.warning("englishjobs: skipping JS-redirect page for %r (%s)", card["title"], clickout_url)
-                    skipped += 1
-                    continue
-
-                record = {
-                    "id":          make_id(clickout_url),
-                    "company":     card["company"],
-                    "title":       card["title"],
-                    "url":         canonical_url,
-                    "source":      "englishjobs",
-                    "source_tier": "auto",
-                    "location":    card["location"],
-                    "raw_jd_text": raw_jd,
-                    "fetched_at":  utcnow(),
-                    "expires_at":  expiry(45),
-                    "status":      "un-scored",
-                }
-
-                _warn_empty_jd(record)
-                if upsert_job(conn, record):
-                    added += 1
-                else:
-                    skipped += 1
-
-            log.info(
-                "englishjobs kw=%r page=%d: added=%d skipped=%d",
-                keyword, page, added, skipped,
-            )
 
     return added, skipped
 
@@ -535,7 +535,7 @@ def _ba_detail(hash_id: str) -> str:
 def scrape_bundesagentur(
     conn,
     keywords: list[str],
-    location: str,
+    locations: list[str],
     radius_km: int,
     include_remote: bool,
     size: int,
@@ -543,8 +543,8 @@ def scrape_bundesagentur(
     added = skipped = 0
     seen_refnr: set[str] = set()
 
-    search_locations = [location]
-    if include_remote:
+    search_locations = list(locations)
+    if include_remote and "Homeoffice" not in search_locations:
         search_locations.append("Homeoffice")
 
     for wo in search_locations:
@@ -652,15 +652,15 @@ def _jw_iframe_jd(resource_url: str) -> str:
 def scrape_jobware(
     conn,
     keywords: list[str],
-    location: str,
+    locations: list[str],
     radius_km: int,
     include_remote: bool,
 ) -> tuple[int, int]:
     added = skipped = 0
     seen_ids: set[str] = set()
 
-    search_locations = [location]
-    if include_remote:
+    search_locations = list(locations)
+    if include_remote and "" not in search_locations:
         search_locations.append("")   # empty = all Germany incl. remote
 
     for wo in search_locations:
@@ -2045,9 +2045,10 @@ if __name__ == "__main__":
     # ── EnglishJobs ──
     log.info("scraping englishjobs …")
     ej = config["englishjobs"]
+    ej_base_urls = ej.get("base_urls") or [ej["base_url"]]
     results["englishjobs"] = scrape_englishjobs(
         conn,
-        base_url=ej["base_url"],
+        base_urls=ej_base_urls,
         keywords=ej["keywords"],
         max_pages=ej.get("max_pages", 3),
     )
@@ -2066,10 +2067,11 @@ if __name__ == "__main__":
     # ── Bundesagentur ──
     log.info("scraping bundesagentur …")
     ba = config["bundesagentur"]
+    ba_locations = ba.get("locations") or [ba.get("location", "Hamburg")]
     results["bundesagentur"] = scrape_bundesagentur(
         conn,
         keywords=ba["keywords"],
-        location=ba["location"],
+        locations=ba_locations,
         radius_km=ba.get("radius_km", 50),
         include_remote=ba.get("include_remote", True),
         size=ba.get("size", 100),
@@ -2079,10 +2081,11 @@ if __name__ == "__main__":
     log.info("scraping jobware …")
     jw = config.get("jobware", {})
     if jw.get("keywords"):
+        jw_locations = jw.get("locations") or [jw.get("location", "Hamburg")]
         results["jobware"] = scrape_jobware(
             conn,
             keywords=jw["keywords"],
-            location=jw.get("location", "Hamburg"),
+            locations=jw_locations,
             radius_km=jw.get("radius_km", 50),
             include_remote=jw.get("include_remote", True),
         )
