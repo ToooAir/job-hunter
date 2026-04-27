@@ -12,22 +12,62 @@ arbeitnow:
     - "Node.js"
     - "DevOps Engineer"
     - "Platform Engineer"
+    # Integration / Solutions line
+    - "Integration Engineer"
+    - "Integration Developer"
+    - "Solutions Engineer"
+    - "Implementation Engineer"
+    - "Technical Consultant"
+    # Java / Kotlin ecosystem
+    - "Java Developer"
+    - "Kotlin Developer"
+    # AI / Data extensions
+    - "Applied AI Engineer"
+    - "MLOps Engineer"
     # German equivalents (some DE companies use German titles even on English platforms)
     - "Softwareentwickler"
     - "Backend-Entwickler"
+    - "Integrationsentwickler"
+    - "Java Entwickler"
+    - "IT-Berater"
   locations: ["Hamburg", "Berlin", "Remote", "Germany"]
   remote_filter: true
   max_pages: 5
 
 englishjobs:
   base_url: "https://englishjobs.de/in/hamburg"  # change city as needed
-  keywords: ["Software", "Backend", "Engineer", "Python", "Node", "AI"]
+  keywords: ["Software", "Backend", "Integration", "Java", "Kotlin", "AI", "MLOps", "Solutions", "Engineer", "Python", "Node"]
   max_pages: 3
 
 germantechjobs:
-  base_url: "https://germantechjobs.de/jobs/{keyword}/{location}"
-  keywords: ["Software-Engineer", "Backend-Developer", "Python", "Node-js"]
-  locations: ["Hamburg", "Remote"]
+  keywords:
+    # English titles
+    - "Software Engineer"
+    - "Backend Engineer"
+    - "AI Engineer"
+    - "Data Engineer"
+    - "Integration Engineer"
+    - "Java Developer"
+    - "Kotlin Developer"
+    - "Solutions Engineer"
+    - "MLOps Engineer"
+    # Tech keywords (matched against technologies field)
+    - "Python"
+    - "Node"
+    - "TypeScript"
+    - "Java"
+    - "Kotlin"
+    # German titles
+    - "Softwareentwickler"
+    - "Integrationsentwickler"
+    - "Java Entwickler"
+  target_cities:
+    - "Hamburg"
+    - "Berlin"
+    - "Munich"
+    # Add more German cities as needed
+  include_remote: true
+  max_detail_fetches: 60
 
 bundesagentur:
   keywords:
@@ -35,8 +75,16 @@ bundesagentur:
     - "Backend Engineer"
     - "Python Developer"
     - "DevOps Engineer"
+    - "Integration Engineer"
+    - "Java Developer"
+    - "Kotlin Developer"
+    - "Solutions Engineer"
+    # German titles (Bundesagentur listings are often in German)
     - "Softwareentwickler"
     - "Backend-Entwickler"
+    - "Integrationsentwickler"
+    - "Java Entwickler"
+    - "IT-Berater"
   location: "Hamburg"   # primary city
   radius_km: 50
   include_remote: true
@@ -54,6 +102,10 @@ remotive:
     - "engineer"
     - "fastapi"
     - "typescript"
+    - "integration"
+    - "java"
+    - "kotlin"
+    - "mlops"
   limit: 100
 
 relocateme:
@@ -72,6 +124,8 @@ jobicy:
     - "typescript"
     - "devops"
     - "cloud"
+    - "java"
+    - "kotlin"
   count: 50
   exclude_geo: ["USA Only", "US Only", "United States Only", "North America Only"]
 
@@ -88,6 +142,11 @@ greenhouse:
     - "fullstack"
     - "ai engineer"
     - "platform engineer"
+    - "integration engineer"
+    - "java"
+    - "kotlin"
+    - "solutions engineer"
+    - "data engineer"
   companies:
     # Add company slugs for firms you want to track directly.
     # Examples of well-known companies using Greenhouse:
@@ -110,6 +169,10 @@ lever:
     - "devops"
     - "fullstack"
     - "ai engineer"
+    - "integration engineer"
+    - "java"
+    - "kotlin"
+    - "solutions engineer"
   companies:
     # Add company slugs for firms you want to track directly.
     # Examples of well-known companies using Lever:
@@ -125,3 +188,6 @@ linkedin_search_urls:
   - "https://www.linkedin.com/jobs/search/?keywords=Software+Engineer&location=Hamburg%2C+Germany&f_WT=2%2C3"
   - "https://www.linkedin.com/jobs/search/?keywords=Backend+Engineer&location=Hamburg%2C+Germany&f_WT=2%2C3"
   - "https://www.linkedin.com/jobs/search/?keywords=AI+Engineer&location=Hamburg%2C+Germany&f_WT=2%2C3"
+  - "https://www.linkedin.com/jobs/search/?keywords=Integration+Engineer&location=Hamburg%2C+Germany&f_WT=2%2C3"
+  - "https://www.linkedin.com/jobs/search/?keywords=Java+Developer&location=Hamburg%2C+Germany&f_WT=2%2C3"
+  - "https://www.linkedin.com/jobs/search/?keywords=Solutions+Engineer&location=Hamburg%2C+Germany&f_WT=2%2C3"
