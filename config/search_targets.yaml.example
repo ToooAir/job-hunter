@@ -35,7 +35,11 @@ arbeitnow:
   max_pages: 5
 
 englishjobs:
-  base_url: "https://englishjobs.de/in/hamburg"  # change city as needed
+  base_urls:
+    - "https://englishjobs.de/in/hamburg"
+    - "https://englishjobs.de/in/berlin"
+    - "https://englishjobs.de/in/munich"
+    # Add more cities as needed: /in/frankfurt, /in/cologne, etc.
   keywords: ["Software", "Backend", "Integration", "Java", "Kotlin", "AI", "MLOps", "Solutions", "Engineer", "Python", "Node"]
   max_pages: 3
 
