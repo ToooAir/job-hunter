@@ -93,9 +93,10 @@ def clean_html(html_str: str) -> str:
     )
 
 
-def safe_get(url: str, log_404: bool = True, **kwargs) -> requests.Response | None:
+def safe_get(url: str, log_404: bool = True, extra_headers: dict = None, **kwargs) -> requests.Response | None:
     try:
-        resp = requests.get(url, timeout=10, headers=HEADERS, **kwargs)
+        hdrs = {**HEADERS, **(extra_headers or {})}
+        resp = requests.get(url, timeout=10, headers=hdrs, **kwargs)
         if resp.status_code == 404 and not log_404:
             return None
         resp.raise_for_status()
@@ -258,7 +259,10 @@ def scrape_englishjobs(
                         continue
 
                     # Follow redirect chain: clickout → talent.com → employer ATS page
-                    detail_resp = safe_get(clickout_url)
+                    detail_resp = safe_get(
+                        clickout_url,
+                        extra_headers={"Referer": base_url},
+                    )
                     if detail_resp is None:
                         continue
 
@@ -516,7 +520,10 @@ def _ba_safe_get(url: str, params: dict) -> dict | None:
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         resp = requests.get(url, params=params, headers=BA_HEADERS, timeout=10, verify=False)
         resp.raise_for_status()
-        time.sleep(1.0)
+        time.sleep(1.5)
+        if not resp.content:
+            log.warning("BA GET empty body (status=%d): %s %s", resp.status_code, url, params)
+            return None
         return resp.json()
     except Exception as exc:
         log.warning("BA GET failed: %s %s — %s", url, params, exc)
@@ -700,7 +707,7 @@ def scrape_jobware(
                     continue
 
                 company: str = (job.get("advertiser") or {}).get("name") or ""
-                location_str: str = job.get("location") or wo or location
+                location_str: str = job.get("location") or wo or locations[0]
 
                 record = {
                     "id":          make_id(job_url),
