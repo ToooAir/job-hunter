@@ -54,9 +54,12 @@ _SECTIONS = {
 }
 
 _PROMPT_TEMPLATE = """\
-You are a compensation specialist familiar with tech compensation in {location}.
-Based on the job details below, estimate the market salary range, provide negotiation guidance, \
-and give a concrete single figure suitable for writing in a job application form (Gehaltsvorstellung).
+You are a compensation specialist for tech roles in Germany.
+Estimate a realistic BASE SALARY range for this specific role, then provide:
+1) a market range,
+2) a negotiation opening ask,
+3) a realistic single figure for a job application form (Gehaltsvorstellung).
+
 {lang_instruction}
 Output in Markdown format.
 
@@ -78,19 +81,56 @@ Output in Markdown format.
 {form_phrase}
 
 ---
-Rules:
-- Estimate BASE SALARY for a full-time employee, not total compensation, unless the JD explicitly indicates bonus/equity-heavy compensation.
-- If any reference data is total compensation (e.g. Levels.fyi), treat it as an upper-bound signal only and adjust downward before using it for the market salary range.
-- Prioritize role-specific local data (e.g. Backend Engineer in Berlin) over broader Software Engineer compensation datasets.
-- For application-form salary (Gehaltsvorstellung), optimize for passing HR screening, not for maximizing theoretical compensation.
-- If the company appears to be a startup/SME, if the role is English-only but local-market-facing, or if the candidate may present extra hiring friction, keep the form figure closer to the midpoint-to-65th percentile, not the 75th percentile.
-- Separate clearly:
-  1) market range,
-  2) negotiation opening ask,
-  3) realistic application-form figure.
-- Never assume senior-level compensation unless the JD clearly signals Senior/Lead scope and the candidate profile supports it.
-- If "Recent Market Reference Data" is provided above, use it to calibrate your range.
-  Prioritise entries from the past 12 months. Note currency conversions if data is in USD.
+Important rules:
+
+1. Estimate BASE SALARY for a full-time employee.
+   - Do NOT anchor on total compensation unless the job description clearly mentions bonus, RSUs, equity, or variable comp.
+   - If any reference source is total compensation (e.g. Levels.fyi), treat it only as an upper-bound signal and adjust downward before using it.
+
+2. Prioritise LOCAL and ROLE-SPECIFIC market data.
+   - Prefer city + role data (e.g. Backend Engineer in Hamburg, DevOps Engineer in Hamburg, Cloud Engineer in Berlin).
+   - Use broad Software Engineer datasets only as secondary context, never as the main anchor when a more specific role match exists.
+
+3. Match the role family correctly.
+   - Do not treat Backend, Cloud, DevOps, Mobile, Data, and AI roles as interchangeable.
+   - Calibrate by the closest actual role in the JD, not by the most lucrative adjacent title.
+
+4. Infer level conservatively.
+   - Do NOT assume Senior/Lead compensation unless the JD clearly signals senior scope, strong ownership, and the title or responsibilities explicitly support it.
+   - Words like "ownership", "scale", or "end-to-end" alone do not automatically justify top-tier senior salary.
+
+5. Company-type adjustment is mandatory.
+   - Apply downward adjustment for SMEs, consultancies, traditional companies, or non-top-tier employers.
+   - Apply upward adjustment only if there are clear signals such as elite employer branding, unusually high scope, scarce domain expertise, or explicitly senior/staff expectations.
+
+6. Geography adjustment is mandatory.
+   - Use the salary level typical for the stated city.
+   - Do not import Munich, US, or broad Germany high-end compensation into Berlin/Hamburg estimates unless clearly justified.
+
+7. Application-form salary must be realistic, not maximal.
+   - Optimise Gehaltsvorstellung for passing HR screening, not for maximizing theoretical compensation.
+   - Default Gehaltsvorstellung = midpoint to 65th percentile of the LOCAL BASE SALARY range.
+   - Only use the 65th–75th percentile if the role clearly looks high-paying and the employer likely has budget.
+
+8. Hard cap logic for the form figure.
+   - If local role-specific data exists, do not set the Gehaltsvorstellung materially above the common upper range unless there is explicit evidence in the JD.
+   - If evidence is mixed or weak, stay closer to midpoint than to the upper bound.
+
+9. Confidence must reflect evidence quality.
+   - High: multiple recent local role-specific signals agree.
+   - Medium: some local data exists, but role/company fit is imperfect.
+   - Low: weak or broad references only.
+
+10. Be explicit about uncertainty.
+    - If using estimated or indirect references, say so briefly.
+    - Do not invent internal company pay data.
+    - Do not cite fake percentiles or exact medians unless clearly supported by provided market references.
+
+11. Output logic:
+    - Market range = realistic local base salary range.
+    - Opening ask = ambitious but defensible, usually near the upper end of the realistic range.
+    - Floor = conservative minimum the candidate should not go below.
+    - Gehaltsvorstellung = realistic screening-safe number, usually below opening ask.
 
 Job details:
 Company: {company}
@@ -140,10 +180,10 @@ def _build_levels_section(levels_results: list[dict]) -> str:
     fetched_label = f"fetched {min(fetched_dates)}" if fetched_dates else ""
 
     lines = [
-        f"### Market Reference Data (Levels.fyi, {fetched_label})",
-        f"_(total compensation, gross annual EUR)_",
-        f"| Location | Median | P25 | P75 | P90 |",
-        f"|----------|--------|-----|-----|-----|",
+        f"### Recent Compensation Reference Data (Levels.fyi, {fetched_label})",
+        f"_(total compensation — upper-bound reference only; do not use directly as base salary)_",
+        f"| Location | Median TC | P25 | P75 | P90 |",
+        f"|----------|-----------|-----|-----|-----|",
     ] + rows + [""]
 
     return "\n".join(lines) + "\n"
