@@ -74,6 +74,11 @@ STRINGS: dict[str, dict[str, str]] = {
         "run_started":        "Pipeline started. Refresh the page in a moment to see results.",
         "log_caption":        "logs/pipeline.log — {size:.1f} KB, showing last 100 lines",
         # Filters
+        "quick_reject_expander": "⚡ Quick Reject",
+        "quick_reject_search":   "Company or job title",
+        "quick_reject_hint":     "Searches applied / interview jobs",
+        "quick_reject_none":     "No active applications match.",
+        "quick_reject_done":     "Marked as rejected ✓",
         "filter_expander":    "Filters",
         "filter_grade":       "Grade",
         "filter_lang":        "Language Req",
@@ -292,6 +297,11 @@ STRINGS: dict[str, dict[str, str]] = {
         "run_started":        "已啟動，稍後重新整理頁面查看結果。",
         "log_caption":        "logs/pipeline.log — {size:.1f} KB，顯示最後 100 行",
         # Filters
+        "quick_reject_expander": "⚡ 快速拒絕",
+        "quick_reject_search":   "公司名稱或職缺標題",
+        "quick_reject_hint":     "搜尋已投遞 / 面試中職缺",
+        "quick_reject_none":     "找不到符合的進行中申請。",
+        "quick_reject_done":     "已標記為拒絕 ✓",
         "filter_expander":    "篩選條件",
         "filter_grade":       "等級",
         "filter_lang":        "語言要求",
@@ -667,6 +677,21 @@ def fetch_jobs(conn, grades, langs, sources, statuses,
     return pd.DataFrame([dict(r) for r in rows])
 
 
+def search_active_jobs(conn, query: str) -> list[dict]:
+    """Search applied/interview jobs by company or title for quick-reject."""
+    q = f"%{query}%"
+    rows = conn.execute(
+        """SELECT id, company, title, status
+           FROM jobs
+           WHERE status IN ('applied','interview_1','interview_2')
+             AND (company LIKE ? OR title LIKE ?)
+           ORDER BY applied_at DESC
+           LIMIT 15""",
+        (q, q),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def fetch_job_detail(conn, job_id: str) -> dict | None:
     row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
     return dict(row) if row else None
@@ -919,6 +944,34 @@ left, right = st.columns([4, 6])
 # ════════════════════════════════════════════════════════════════════════════════
 
 with left:
+    # ── Quick Reject ──
+    with st.expander(T("quick_reject_expander"), expanded=False):
+        qr_query = st.text_input(
+            T("quick_reject_search"),
+            placeholder=T("quick_reject_hint"),
+            key="qr_search",
+        )
+        if qr_query.strip():
+            matches = search_active_jobs(conn, qr_query.strip())
+            if not matches:
+                st.caption(T("quick_reject_none"))
+            for m in matches:
+                col_info, col_btn = st.columns([4, 1])
+                status_label = {
+                    "applied": "applied",
+                    "interview_1": "1st interview",
+                    "interview_2": "2nd interview",
+                }.get(m["status"], m["status"])
+                col_info.markdown(
+                    f"**{m['company']}** — {m['title']}  \n"
+                    f"<sub>{status_label}</sub>",
+                    unsafe_allow_html=True,
+                )
+                if col_btn.button("❌", key=f"qr_{m['id']}", help="Mark Rejected"):
+                    update_status(conn, m["id"], "rejected")
+                    st.toast(T("quick_reject_done"))
+                    st.rerun()
+
     # ── Filters ──
     with st.expander(T("filter_expander"), expanded=True):
         fit_grade_filter = st.multiselect(
