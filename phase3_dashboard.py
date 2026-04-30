@@ -159,9 +159,9 @@ STRINGS: dict[str, dict[str, str]] = {
         "levels_cache_none":       "No Levels.fyi cache — will fetch on next estimate",
         "levels_refresh_btn":      "🔄 Refresh Levels data",
         "levels_refreshing":       "Fetching Levels.fyi data…",
-        "levels_refresh_all_btn":  "🔄 Refresh All Levels Data",
-        "levels_refresh_all_done": "✓ Levels.fyi data refreshed ({n} slots)",
-        "levels_refresh_all_spin": "Fetching Levels.fyi data for all roles…",
+        "levels_refresh_all_btn":  "🔄 Refresh All Market Data",
+        "levels_refresh_all_done": "✓ Levels.fyi: {n} slots · GTJ: {g} entries refreshed",
+        "levels_refresh_all_spin": "Fetching market data (Levels.fyi + GermanTechJobs)…",
         # Company research
         "research_expander":  "🔍 Company Research",
         "research_not_gen":   "Company research not yet generated.",
@@ -382,9 +382,9 @@ STRINGS: dict[str, dict[str, str]] = {
         "levels_cache_none":       "尚無 Levels.fyi 快取，下次估計時將自動抓取",
         "levels_refresh_btn":      "🔄 刷新 Levels 資料",
         "levels_refreshing":       "正在抓取 Levels.fyi 資料…",
-        "levels_refresh_all_btn":  "🔄 刷新全部 Levels 資料",
-        "levels_refresh_all_done": "✓ Levels.fyi 資料已更新（{n} 個 slot）",
-        "levels_refresh_all_spin": "正在抓取所有職位類型的 Levels.fyi 資料…",
+        "levels_refresh_all_btn":  "🔄 刷新全部市場資料",
+        "levels_refresh_all_done": "✓ Levels.fyi: {n} 個 slot · GTJ: {g} 筆資料已更新",
+        "levels_refresh_all_spin": "正在抓取市場資料（Levels.fyi + GermanTechJobs）…",
         # Company research
         "research_expander":  "🔍 公司研究",
         "research_not_gen":   "尚未生成公司研究報告。",
@@ -522,7 +522,10 @@ if st.sidebar.button(T("levels_refresh_all_btn"), use_container_width=True):
                 fetch_levels_by_slug(_rs, HOME_COUNTRY)
                 _refreshed += len(_loc_chain)
 
-    st.sidebar.success(T("levels_refresh_all_done").format(n=_refreshed))
+    from utils.gtj_salary_scraper import refresh_gtj_cache
+    _gtj_refreshed = refresh_gtj_cache()
+
+    st.sidebar.success(T("levels_refresh_all_done").format(n=_refreshed, g=_gtj_refreshed))
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 

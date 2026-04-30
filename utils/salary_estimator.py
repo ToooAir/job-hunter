@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from utils.db import init_db, fetch_job_by_id, set_salary_estimate
 from utils.llm import make_client, chat_model, rate_limit
 from utils.levels_scraper import fetch_levels_data, LevelsSummary
+from utils.gtj_salary_scraper import fetch_gtj_data
 
 log = logging.getLogger(__name__)
 
@@ -63,7 +64,7 @@ Estimate a realistic BASE SALARY range for this specific role, then provide:
 {lang_instruction}
 Output in Markdown format.
 
-{levels_section}\
+{gtj_section}{levels_section}\
 {salary_heading}
 {market}
 {jd_sal}
@@ -144,6 +145,39 @@ Job description (excerpt):
 """
 
 
+def _build_gtj_section(gtj_results: list[dict]) -> str:
+    """
+    Build a 3-level salary table from GermanTechJobs data.
+    Returns '' if no usable data.
+    """
+    if not gtj_results:
+        return ""
+
+    role = gtj_results[0]["role"]
+    city = gtj_results[0]["city"]
+    city_label = city if city != "all" else "Germany"
+
+    def _fmt(val: int | None) -> str:
+        return f"€{val:,}" if val else "—"
+
+    rows = []
+    for r in gtj_results:
+        s = r["salary"]
+        rows.append(
+            f"| {r['level']:8} | {_fmt(s.get('median')):10} | "
+            f"{_fmt(s.get('p25')):10} | {_fmt(s.get('p75')):10} | {_fmt(s.get('p90')):10} |"
+        )
+
+    lines = [
+        f"### Local Base Salary Reference — GermanTechJobs ({role} / {city_label})",
+        "_(base salary from job postings, EUR gross annual — pick the row matching JD seniority)_",
+        "| Level    | Median     | P25        | P75        | P90        |",
+        "|----------|------------|------------|------------|------------|",
+    ] + rows + [""]
+
+    return "\n".join(lines) + "\n"
+
+
 def _fmt_summary_row(result: dict) -> str | None:
     """Format one LevelsResult as a markdown table row. Returns None if no data."""
     s = result.get("summary")
@@ -201,6 +235,19 @@ def estimate_salary(job_id: str, db_path: str, lang: str = "en") -> str | None:
     s = _SECTIONS.get(lang, _SECTIONS["en"])
     jd_salary = job.get("salary_range") or ("未標示" if lang == "zh" else "not stated")
 
+    # Fetch GermanTechJobs local base salary data (cached; silent fallback on failure)
+    gtj_results = fetch_gtj_data(
+        job_title=job["title"],
+        job_location=job.get("location"),
+        contract_type=job.get("contract_type"),
+    )
+    gtj_section = _build_gtj_section(gtj_results)
+    if gtj_section:
+        log.info(
+            "salary estimate: injecting GTJ data %s/%s (%d levels) for job %s",
+            gtj_results[0]["role"], gtj_results[0]["city"], len(gtj_results), job_id,
+        )
+
     # Fetch Levels.fyi market reference data (cached; silent fallback on failure)
     levels_results = fetch_levels_data(
         job_title=job["title"],
@@ -213,6 +260,7 @@ def estimate_salary(job_id: str, db_path: str, lang: str = "en") -> str | None:
         log.info("salary estimate: injecting Levels.fyi data %s for job %s", slugs, job_id)
 
     prompt = _PROMPT_TEMPLATE.format(
+        gtj_section=gtj_section,        # '' when no data
         levels_section=levels_section,  # '' when no data
         lang_instruction=_LANG_INSTRUCTION.get(lang, _LANG_INSTRUCTION["en"]),
         salary_heading=s["salary"],
