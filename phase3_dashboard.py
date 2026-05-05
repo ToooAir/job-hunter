@@ -189,6 +189,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "copy_cl_btn":        "📋 Copy Cover Letter",
         "apply_btn":          "✅ Applied",
         "skip_btn":           "⏭️ Skip",
+        "unskip_btn":         "↩️ Restore to Review",
         "rescore_btn":        "🔄 Re-score",
         "rescore_spinner":    "Scoring…",
         "copied_ok":          "Copied ✓",
@@ -412,6 +413,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "copy_cl_btn":        "📋 複製 Cover Letter",
         "apply_btn":          "✅ 已投遞",
         "skip_btn":           "⏭️ 略過",
+        "unskip_btn":         "↩️ 還原至待審閱",
         "rescore_btn":        "🔄 重新評分",
         "rescore_spinner":    "評分中…",
         "copied_ok":          "已複製 ✓",
@@ -1588,7 +1590,15 @@ with right:
                     if st.button(T("reject_btn"), use_container_width=True, key=f"rej_{job['id']}"):
                         _transition("rejected")
 
-            else:  # offer / rejected / skipped / expired — terminal, open only
+            elif cur_status == "skipped":
+                btn_cols = st.columns(2)
+                with btn_cols[0]:
+                    st.link_button(T("open_job_btn"), job["url"], use_container_width=True)
+                with btn_cols[1]:
+                    if st.button(T("unskip_btn"), use_container_width=True, key=f"unskip_{job['id']}"):
+                        _transition("scored")
+
+            else:  # offer / rejected / expired — terminal, open only
                 if cur_status == "expired":
                     st.warning(T("expired_warning"))
                 st.link_button(T("open_job_btn"), job["url"])
