@@ -128,7 +128,8 @@ STRINGS: dict[str, dict[str, str]] = {
         "status_rejected":    "Rejected",
         "status_ghosted":     "Ghosted",
         # Duplicate warning
-        "dup_warning":        "⚠️ You have previously applied to other roles at **{company}**: {roles}",
+        "dup_warning":        "⚠️ Active application at **{company}**: {roles}",
+        "dup_rejected":       "ℹ️ Previously applied at **{company}**: {roles}",
         # Visa
         "visa_eu_only":       "🚫 EU Only — analyze Chancenkarte compatibility before applying",
         "visa_sponsored":     "✅ Company offers visa sponsorship — Chancenkarte friendly",
@@ -352,7 +353,8 @@ STRINGS: dict[str, dict[str, str]] = {
         "status_rejected":    "已拒絕",
         "status_ghosted":     "無聲卡",
         # Duplicate warning
-        "dup_warning":        "⚠️ 你曾投遞過 **{company}** 的其他職缺：{roles}",
+        "dup_warning":        "⚠️ **{company}** 有進行中的申請：{roles}",
+        "dup_rejected":       "ℹ️ 曾投遞過 **{company}**：{roles}",
         # Visa
         "visa_eu_only":       "🚫 EU Only — 投遞前建議深度分析 Chancenkarte 相容性",
         "visa_sponsored":     "✅ 公司提供簽證協助 — Chancenkarte 友善",
@@ -1186,12 +1188,40 @@ with right:
                     "interview_2": T("status_interview_2"),
                     "offer":       T("status_offer"),
                     "rejected":    T("status_rejected"),
+                    "ghosted":     T("kpi_ghosted"),
                 }
-                _prev_lines = "　".join(
-                    f"**{p['title']}**（{_status_label.get(p['status'], p['status'])}）"
-                    for p in _prev
-                )
-                st.warning(T("dup_warning").format(company=job["company"], roles=_prev_lines))
+
+                def _rel_time(iso: str | None) -> str:
+                    if not iso:
+                        return ""
+                    try:
+                        days = (datetime.now(timezone.utc) - datetime.fromisoformat(iso).replace(tzinfo=timezone.utc)).days
+                        if days < 30:
+                            return f"{days}d ago"
+                        elif days < 365:
+                            return f"{days // 30}mo ago"
+                        else:
+                            return f"{days // 365}y ago"
+                    except Exception:
+                        return ""
+
+                _active   = [p for p in _prev if p["status"] in ("applied", "interview_1", "interview_2", "offer")]
+                _past     = [p for p in _prev if p["status"] in ("rejected", "ghosted")]
+
+                if _active:
+                    _active_lines = "　".join(
+                        f"**{p['title']}**（{_status_label.get(p['status'], p['status'])}）"
+                        for p in _active
+                    )
+                    st.warning(T("dup_warning").format(company=job["company"], roles=_active_lines))
+
+                if _past:
+                    _past_lines = "　".join(
+                        f"**{p['title']}**（{_status_label.get(p['status'], p['status'])}"
+                        + (f", {_rel_time(p['applied_at'])}" if p.get("applied_at") else "") + "）"
+                        for p in _past
+                    )
+                    st.info(T("dup_rejected").format(company=job["company"], roles=_past_lines))
 
             # ── Visa banner + deep analysis ───────────────────────────────
             visa = job.get("visa_restriction") or "unclear"
@@ -1399,12 +1429,14 @@ with right:
 
             # Cover letter editor
             st.markdown(T("cl_title"))
+            _cl_ver_key = f"cl_ver_{job['id']}"
+            _cl_ver = st.session_state.get(_cl_ver_key, 0)
             edited_cl = st.text_area(
                 label="cover_letter",
                 value=job.get("cover_letter_draft") or "",
                 height=280,
                 label_visibility="collapsed",
-                key=f"cl_{job['id']}",
+                key=f"cl_{job['id']}_v{_cl_ver}",
             )
             word_count = len(edited_cl.split()) if edited_cl.strip() else 0
             st.caption(T("cl_word_count").format(n=word_count))
@@ -1438,6 +1470,7 @@ with right:
                             db_path=os.getenv("DB_PATH", "./data/jobs.db"),
                             qdrant_path=os.getenv("QDRANT_PATH", "./qdrant_data"),
                         )
+                    st.session_state[_cl_ver_key] = _cl_ver + 1
                     st.cache_data.clear()
                     st.rerun()
 
