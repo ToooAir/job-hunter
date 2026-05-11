@@ -1343,13 +1343,16 @@ with right:
                     ):
                         from utils.salary_estimator import estimate_salary
                         with st.spinner(T("salary_estimating")):
-                            estimate_salary(
+                            _sal_result = estimate_salary(
                                 job["id"],
                                 db_path=os.getenv("DB_PATH", "./data/jobs.db"),
                                 lang=_lang(),
                             )
-                        st.cache_data.clear()
-                        st.rerun()
+                        if _sal_result:
+                            st.cache_data.clear()
+                            st.rerun()
+                        else:
+                            st.error("⚠️ 薪資估計失敗，請稍後再試（API 暫時超載或網路錯誤）")
                 with _s_col2:
                     if st.button(
                         T("levels_refresh_btn"),

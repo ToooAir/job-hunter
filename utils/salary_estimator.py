@@ -7,7 +7,10 @@ link buttons in the dashboard — not scraped (require auth).
 """
 
 import logging
+import time
 from datetime import datetime, timezone
+
+import openai
 
 from utils.db import init_db, fetch_job_by_id, set_salary_estimate
 from utils.llm import make_client, chat_model, rate_limit
@@ -285,19 +288,27 @@ def estimate_salary(job_id: str, db_path: str, lang: str = "en") -> str | None:
     )
 
     client = make_client()
-    rate_limit()
-    try:
-        resp = client.chat.completions.create(
-            model=chat_model(),
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-        )
-        result = resp.choices[0].message.content.strip()
-        set_salary_estimate(conn, job_id, result)
-        conn.close()
-        log.info("salary estimate generated for %s @ %s", job["title"], job["company"])
-        return result
-    except Exception as exc:
-        log.error("Failed to estimate salary for job %s: %s", job_id, exc)
-        conn.close()
-        return None
+    for attempt in range(1, 4):
+        rate_limit()
+        try:
+            resp = client.chat.completions.create(
+                model=chat_model(),
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+            )
+            result = resp.choices[0].message.content.strip()
+            set_salary_estimate(conn, job_id, result)
+            conn.close()
+            log.info("salary estimate generated for %s @ %s", job["title"], job["company"])
+            return result
+        except openai.RateLimitError:
+            log.warning("RateLimitError on attempt %d/3 — sleeping 60s", attempt)
+            if attempt < 3:
+                time.sleep(60)
+        except Exception as exc:
+            log.error("Failed to estimate salary for job %s: %s", job_id, exc)
+            conn.close()
+            return None
+    log.error("Failed to estimate salary for job %s after 3 attempts", job_id)
+    conn.close()
+    return None
