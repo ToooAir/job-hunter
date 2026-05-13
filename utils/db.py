@@ -244,6 +244,41 @@ def update_status(
     conn.commit()
 
 
+_SOURCE_TTL_DAYS: dict[str, int] = {
+    "greenhouse": 30,
+    "lever":      30,
+    "remotive":   60,
+    "jobicy":     60,
+}
+_DEFAULT_TTL_DAYS = 45
+
+
+def auto_expire_stale_jobs(conn: sqlite3.Connection) -> int:
+    """Mark un-scored/scored jobs as expired when they exceed source-specific TTL from fetched_at.
+    Skips jobs that already have expires_at set (handled by phase2 pre-flight).
+    Returns count of newly expired jobs.
+    """
+    now = datetime.now(timezone.utc)
+    rows = conn.execute(
+        "SELECT id, source, fetched_at FROM jobs"
+        " WHERE status IN ('un-scored', 'scored') AND (expires_at IS NULL OR expires_at = '')"
+    ).fetchall()
+
+    expired_ids = []
+    for row in rows:
+        ttl = _SOURCE_TTL_DAYS.get(row["source"], _DEFAULT_TTL_DAYS)
+        try:
+            dt = datetime.fromisoformat(row["fetched_at"])
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            if (now - dt).days >= ttl:
+                expired_ids.append(row["id"])
+        except Exception:
+            pass
+
+    return mark_expired(conn, expired_ids)
+
+
 def auto_ghost_stale_applications(conn: sqlite3.Connection, days: int = 35) -> int:
     """Mark 'applied' jobs with no response after `days` days as 'ghosted'."""
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%S")

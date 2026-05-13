@@ -2110,14 +2110,9 @@ if __name__ == "__main__":
         limit=rm.get("limit", 100),
     )
 
-    # ── Relocate.me ──
-    log.info("scraping relocateme …")
-    rm2 = config["relocateme"]
-    results["relocateme"] = scrape_relocateme(
-        conn,
-        categories=rm2["categories"],
-        base_url_template=rm2["base_url"],
-    )
+    # ── Relocate.me (disabled — user is already in Germany; relocation source no longer relevant) ──
+    # rm2 = config["relocateme"]
+    # results["relocateme"] = scrape_relocateme(conn, ...)
 
     # ── Jobicy ──
     log.info("scraping jobicy …")

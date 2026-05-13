@@ -17,7 +17,7 @@ import yaml
 from utils.db import (
     init_db, upsert_job, update_status, set_follow_up, set_notes,
     add_interview_record, get_interview_records, delete_interview_record,
-    get_company_applications,
+    get_company_applications, auto_expire_stale_jobs, auto_ghost_stale_applications,
 )
 
 # ── Page config ────────────────────────────────────────────────────────────────
@@ -248,7 +248,7 @@ STRINGS: dict[str, dict[str, str]] = {
         # Location filter
         "filter_location":    "Location Search",
         "filter_location_ph": "e.g. Hamburg",
-        "filter_remote":      "Also include Remote jobs",
+        "filter_remote":      "Also include global remote sources (Remotive / WWR / Jobicy)",
         # Lang toggle
         "lang_toggle_label":  "🌐 Language",
     },
@@ -473,7 +473,7 @@ STRINGS: dict[str, dict[str, str]] = {
         # Location filter
         "filter_location":    "地點搜尋",
         "filter_location_ph": "例：Hamburg",
-        "filter_remote":      "也包含 Remote 職缺",
+        "filter_remote":      "也包含全球 Remote 來源（Remotive / WWR / Jobicy）",
         # Lang toggle
         "lang_toggle_label":  "🌐 語言",
     },
@@ -566,6 +566,9 @@ def today_iso() -> str:
 
 PIPELINE_STATUSES = ('applied', 'interview_1', 'interview_2', 'offer', 'rejected', 'ghosted')
 
+# Sources with no geographic filtering capability; excluded from default view
+REMOTE_GLOBAL_SOURCES = ["remotive", "jobicy", "weworkremotely"]
+
 # City alias expansion: handles English/German name variants and common misspellings
 _GERMANY_PATTERNS = [
     # country-level markers (catches "Berlin, Germany", "Germany", "Deutschland", "bundesweit")
@@ -640,7 +643,7 @@ def fetch_kpis(conn) -> dict:
 
 
 def fetch_jobs(conn, grades, langs, sources, statuses,
-               location_kw: str = "", include_remote: bool = False) -> pd.DataFrame:
+               location_kw: str = "") -> pd.DataFrame:
     if not (grades and langs and sources and statuses):
         return pd.DataFrame()
 
@@ -651,24 +654,17 @@ def fetch_jobs(conn, grades, langs, sources, statuses,
     location_clause = ""
     location_params: list = []
     kw = location_kw.strip()
-    if kw or include_remote:
+    if kw:
         parts = []
-        if kw:
-            for pattern in _location_patterns(kw):
-                parts.append("LOWER(location) LIKE ?")
-                location_params.append(f"%{pattern}%")
-        if include_remote:
-            parts.extend([
-                "LOWER(location) LIKE '%remote%'",
-                "LOWER(location) LIKE '%home office%'",
-                "LOWER(location) LIKE '%homeoffice%'",
-            ])
+        for pattern in _location_patterns(kw):
+            parts.append("LOWER(location) LIKE ?")
+            location_params.append(f"%{pattern}%")
         location_clause = f"AND ({' OR '.join(parts)})"
 
     # error / un-scored jobs have no fit_grade — bypass that filter for them
     sql = f"""
         SELECT id, title, company, location,
-               fit_grade, match_score, jd_language_req, source, status
+               fit_grade, match_score, jd_language_req, source, status, fetched_at
         FROM jobs
         WHERE (fit_grade IN ({placeholders(grades)}) OR fit_grade IS NULL)
           AND (jd_language_req IN ({placeholders(langs)}) OR jd_language_req IS NULL)
@@ -813,6 +809,8 @@ GRADE_ICON = {"A": "🟢", "B": "🟡", "C": "🔴"}
 # ── App ────────────────────────────────────────────────────────────────────────
 
 conn = get_conn()
+auto_expire_stale_jobs(conn)
+auto_ghost_stale_applications(conn)
 config = load_config()
 
 # ── KPI row ────────────────────────────────────────────────────────────────────
@@ -998,10 +996,9 @@ with left:
              "wearedevelopers", "heise", "jobware", "ashby", "wttj",
              "weworkremotely", "personio", "germantechjobs",
              "linkedin", "stepstone", "other"],
-            default=["arbeitnow", "englishjobs", "remotive", "jobicy",
-                     "relocateme", "bundesagentur", "greenhouse", "lever",
-                     "wearedevelopers", "heise", "jobware", "ashby", "wttj",
-                     "weworkremotely", "personio", "germantechjobs",
+            default=["arbeitnow", "englishjobs", "bundesagentur", "greenhouse",
+                     "lever", "wearedevelopers", "heise", "jobware", "ashby",
+                     "wttj", "personio", "germantechjobs",
                      "linkedin", "stepstone", "other"],
             key="filter_source",
         )
@@ -1020,16 +1017,40 @@ with left:
         remote_filter = st.checkbox(T("filter_remote"), value=False, key="filter_remote")
 
     # ── Job table ──
-    df = fetch_jobs(conn, fit_grade_filter, lang_filter, source_filter, status_filter,
-                    location_kw=location_filter, include_remote=remote_filter)
+    # When remote_filter is on, append global-remote sources to the active source list
+    effective_sources = (
+        list(dict.fromkeys(source_filter + REMOTE_GLOBAL_SOURCES))
+        if remote_filter else source_filter
+    )
+    df = fetch_jobs(conn, fit_grade_filter, lang_filter, effective_sources, status_filter,
+                    location_kw=location_filter)
 
     if df.empty:
         st.info(T("no_jobs"))
         selected_job_id = None
     else:
+        _now = datetime.now(timezone.utc)
+
+        def _age_label(fetched_at: str) -> str:
+            try:
+                dt = datetime.fromisoformat(fetched_at)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                days = (_now - dt).days
+                if days < 14:
+                    return f"🟢 {days}d"
+                elif days < 30:
+                    return f"🟡 {days}d"
+                else:
+                    return f"🔴 {days}d"
+            except Exception:
+                return "—"
+
+        df["age"] = df["fetched_at"].apply(_age_label)
+
         event = st.dataframe(
             df[["title", "company", "location", "fit_grade",
-                "match_score", "jd_language_req", "source", "status"]],
+                "match_score", "jd_language_req", "source", "status", "age"]],
             use_container_width=True,
             hide_index=True,
             selection_mode="single-row",

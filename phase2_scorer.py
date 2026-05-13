@@ -22,7 +22,7 @@ from pydantic import BaseModel, field_validator, model_validator
 from utils.db import (
     init_db, get_unscored_jobs, update_score, fetch_job_by_id,
     reset_to_unscored, reset_errors_to_unscored, mark_error, mark_expired,
-    set_interview_brief, set_translated_jd,
+    set_interview_brief, set_translated_jd, auto_expire_stale_jobs,
 )
 
 # ── Setup ──────────────────────────────────────────────────────────────────────
@@ -374,7 +374,6 @@ def retrieve_context(
 
 # Source bonus applied deterministically after LLM returns score (more reliable than prompt instruction)
 SOURCE_BONUS: dict[str, int] = {
-    "relocateme":   10,  # company actively offers relocation support
     "greenhouse":    5,  # direct ATS posting — company is actively hiring
     "lever":         5,  # direct ATS posting — company is actively hiring
     "bundesagentur": 5,  # official DE listing — higher visa-sponsorship rate
@@ -451,6 +450,11 @@ def score_jobs(
         log.info("沒有待評分職缺")
         conn.close()
         return []
+
+    # ── TTL-based expiry ──────────────────────────────────────────────────────
+    n_ttl = auto_expire_stale_jobs(conn)
+    if n_ttl:
+        log.info("TTL 過期：標記 %d 筆職缺為 expired", n_ttl)
 
     # ── Pre-flight filters ────────────────────────────────────────────────────
     MIN_JD_CHARS = 100
@@ -582,7 +586,7 @@ def score_jobs(
             bonus = SOURCE_BONUS.get(job.get("source", ""), 0)
             if bonus:
                 original = result.match_score
-                result.match_score = min(100, result.match_score + bonus)
+                result.match_score = max(0, min(100, result.match_score + bonus))
                 score = result.match_score
                 lang  = result.jd_language_req
                 result.fit_grade = (
@@ -591,7 +595,7 @@ def score_jobs(
                     else "B"
                 )
                 log.info(
-                    "source bonus +%d (%s): %d → %d | grade %s",
+                    "source bonus %+d (%s): %d → %d | grade %s",
                     bonus, job.get("source"), original, result.match_score, result.fit_grade,
                 )
             log.debug(

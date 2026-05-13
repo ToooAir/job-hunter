@@ -349,8 +349,19 @@ Phase 2 detects German-language JDs using a token frequency heuristic (>8% Germa
 
 | Condition | Action |
 |-----------|--------|
-| `expires_at` is in the past | → `expired` (no LLM call) |
+| Age from `fetched_at` exceeds source TTL (see table below) | → `expired` (TTL-based, runs first) |
+| `expires_at` is in the past | → `expired` (explicit deadline) |
 | JD text shorter than 100 characters | → `error` (no LLM call) |
+
+**Source TTL defaults** (applied when `expires_at` is not set by the scraper):
+
+| Source | TTL |
+|--------|-----|
+| Greenhouse, Lever | 30 days |
+| Remotive, Jobicy | 60 days |
+| All others | 45 days |
+
+TTL expiry also runs on every dashboard page load — so stale jobs are cleaned up even without running Phase 2.
 
 ### Grading
 
@@ -387,8 +398,10 @@ un-scored
     │              └──────────────────────────┴─→ rejected         │
     ├─→ skipped                                                     │
     ├─→ error        (LLM error — retry from dashboard)             │
-    └─→ expired      (expires_at passed — auto-marked at Phase 2)  ◄─┘
+    └─→ expired      (expires_at passed OR TTL exceeded)           ◄─┘
 ```
+
+Expired jobs are removed from the main job list automatically. TTL is checked at Phase 2 start and on every dashboard page load.
 
 ---
 
@@ -399,6 +412,18 @@ Pending review · Applied this week · In interview · Offers · Follow-up due �
 
 ### Statistics Panel
 Grade distribution · Language requirement breakdown · Application funnel · Source yield table (A-grade rate, interview-to-apply rate) · Weekly apply trend (last 8 weeks)
+
+### Job List
+
+The job table includes an **age** column showing how long ago the listing was fetched:
+
+| Indicator | Meaning |
+|-----------|---------|
+| 🟢 Xd | Fetched < 14 days ago — likely still active |
+| 🟡 Xd | 14–30 days — worth checking before applying |
+| 🔴 Xd | 30+ days — high chance the listing is closed |
+
+Jobs that exceed their source TTL are automatically marked `expired` and removed from the list.
 
 ### Job Detail Panel
 
