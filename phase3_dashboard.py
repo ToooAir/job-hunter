@@ -940,12 +940,129 @@ with st.expander(T("log_expander"), expanded=False):
 
 st.divider()
 
-# ── Main columns ───────────────────────────────────────────────────────────────
+# ── Filters (full width) ───────────────────────────────────────────────────────
+
+with st.expander(T("filter_expander"), expanded=True):
+    _fc1, _fc2, _fc3, _fc4 = st.columns([1, 1.5, 3, 1.5])
+    with _fc1:
+        fit_grade_filter = st.multiselect(
+            T("filter_grade"), ["A", "B", "C"], default=["A", "B"],
+            key="filter_grade",
+        )
+    with _fc2:
+        lang_filter = st.multiselect(
+            T("filter_lang"),
+            ["en_required", "de_plus", "de_required", "unknown"],
+            default=["en_required", "de_plus", "unknown"],
+            key="filter_lang",
+        )
+    with _fc3:
+        source_filter = st.multiselect(
+            T("filter_source"),
+            ["arbeitnow", "englishjobs", "remotive", "jobicy",
+             "relocateme", "bundesagentur", "greenhouse", "lever",
+             "wearedevelopers", "heise", "jobware", "ashby", "wttj",
+             "weworkremotely", "personio", "germantechjobs",
+             "linkedin", "stepstone", "other"],
+            default=["arbeitnow", "englishjobs", "bundesagentur", "greenhouse",
+                     "lever", "wearedevelopers", "heise", "jobware", "ashby",
+                     "wttj", "personio", "germantechjobs",
+                     "linkedin", "stepstone", "other"],
+            key="filter_source",
+        )
+    with _fc4:
+        status_filter = st.multiselect(
+            T("filter_status"),
+            ["un-scored", "scored", "applied", "interview_1", "interview_2",
+             "offer", "rejected", "ghosted", "skipped", "error", "expired"],
+            default=["scored"],
+            key="filter_status",
+        )
+    _fl1, _fl2 = st.columns([4, 1])
+    with _fl1:
+        location_filter = st.text_input(
+            T("filter_location"),
+            placeholder=T("filter_location_ph"),
+            key="filter_location",
+        )
+    with _fl2:
+        st.write("")
+        remote_filter = st.checkbox(T("filter_remote"), value=False, key="filter_remote")
+
+# ── Job table (full width) ─────────────────────────────────────────────────────
+
+# When remote_filter is on, append global-remote sources to the active source list
+effective_sources = (
+    list(dict.fromkeys(source_filter + REMOTE_GLOBAL_SOURCES))
+    if remote_filter else source_filter
+)
+df = fetch_jobs(conn, fit_grade_filter, lang_filter, effective_sources, status_filter,
+                location_kw=location_filter)
+
+if df.empty:
+    st.info(T("no_jobs"))
+    selected_job_id = None
+else:
+    _now = datetime.now(timezone.utc)
+
+    def _age_label(fetched_at: str) -> str:
+        try:
+            dt = datetime.fromisoformat(fetched_at)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            days = (_now - dt).days
+            if days < 14:
+                return f"🟢 {days}d"
+            elif days < 30:
+                return f"🟡 {days}d"
+            else:
+                return f"🔴 {days}d"
+        except Exception:
+            return "—"
+
+    df["age"] = df["fetched_at"].apply(_age_label)
+
+    event = st.dataframe(
+        df[["title", "company", "location", "fit_grade",
+            "match_score", "jd_language_req", "source", "status", "age"]],
+        use_container_width=True,
+        hide_index=True,
+        height=280,
+        selection_mode="single-row",
+        on_select="rerun",
+        key="job_table",
+        column_config={
+            "title":           st.column_config.TextColumn("Title"),
+            "company":         st.column_config.TextColumn("Company"),
+            "location":        st.column_config.TextColumn("Location", width="small"),
+            "fit_grade":       st.column_config.TextColumn("Grade", width="small"),
+            "match_score":     st.column_config.NumberColumn("Score", width="small"),
+            "jd_language_req": st.column_config.TextColumn("Lang", width="small"),
+            "source":          st.column_config.TextColumn("Source", width="small"),
+            "status":          st.column_config.TextColumn("Status", width="small"),
+            "age":             st.column_config.TextColumn("Age", width="small"),
+        },
+    )
+
+    selected_rows = event.selection.get("rows", []) if event.selection else []
+    if selected_rows:
+        st.session_state["selected_idx"] = selected_rows[0]
+
+    selected_job_id = (
+        df.iloc[st.session_state["selected_idx"]]["id"]
+        if "selected_idx" in st.session_state
+        and st.session_state["selected_idx"] < len(df)
+        else None
+    )
+
+st.divider()
+
+# ── Side columns ───────────────────────────────────────────────────────────────
 
 left, right = st.columns([4, 6])
 
 # ════════════════════════════════════════════════════════════════════════════════
-# LEFT COLUMN
+# LEFT COLUMN — management tools
 # ════════════════════════════════════════════════════════════════════════════════
 
 with left:
@@ -976,98 +1093,6 @@ with left:
                     update_status(conn, m["id"], "rejected")
                     st.toast(T("quick_reject_done"))
                     st.rerun()
-
-    # ── Filters ──
-    with st.expander(T("filter_expander"), expanded=True):
-        fit_grade_filter = st.multiselect(
-            T("filter_grade"), ["A", "B", "C"], default=["A", "B"],
-            key="filter_grade",
-        )
-        lang_filter = st.multiselect(
-            T("filter_lang"),
-            ["en_required", "de_plus", "de_required", "unknown"],
-            default=["en_required", "de_plus", "unknown"],
-            key="filter_lang",
-        )
-        source_filter = st.multiselect(
-            T("filter_source"),
-            ["arbeitnow", "englishjobs", "remotive", "jobicy",
-             "relocateme", "bundesagentur", "greenhouse", "lever",
-             "wearedevelopers", "heise", "jobware", "ashby", "wttj",
-             "weworkremotely", "personio", "germantechjobs",
-             "linkedin", "stepstone", "other"],
-            default=["arbeitnow", "englishjobs", "bundesagentur", "greenhouse",
-                     "lever", "wearedevelopers", "heise", "jobware", "ashby",
-                     "wttj", "personio", "germantechjobs",
-                     "linkedin", "stepstone", "other"],
-            key="filter_source",
-        )
-        status_filter = st.multiselect(
-            T("filter_status"),
-            ["un-scored", "scored", "applied", "interview_1", "interview_2",
-             "offer", "rejected", "ghosted", "skipped", "error", "expired"],
-            default=["scored"],
-            key="filter_status",
-        )
-        location_filter = st.text_input(
-            T("filter_location"),
-            placeholder=T("filter_location_ph"),
-            key="filter_location",
-        )
-        remote_filter = st.checkbox(T("filter_remote"), value=False, key="filter_remote")
-
-    # ── Job table ──
-    # When remote_filter is on, append global-remote sources to the active source list
-    effective_sources = (
-        list(dict.fromkeys(source_filter + REMOTE_GLOBAL_SOURCES))
-        if remote_filter else source_filter
-    )
-    df = fetch_jobs(conn, fit_grade_filter, lang_filter, effective_sources, status_filter,
-                    location_kw=location_filter)
-
-    if df.empty:
-        st.info(T("no_jobs"))
-        selected_job_id = None
-    else:
-        _now = datetime.now(timezone.utc)
-
-        def _age_label(fetched_at: str) -> str:
-            try:
-                dt = datetime.fromisoformat(fetched_at)
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
-                days = (_now - dt).days
-                if days < 14:
-                    return f"🟢 {days}d"
-                elif days < 30:
-                    return f"🟡 {days}d"
-                else:
-                    return f"🔴 {days}d"
-            except Exception:
-                return "—"
-
-        df["age"] = df["fetched_at"].apply(_age_label)
-
-        event = st.dataframe(
-            df[["title", "company", "location", "fit_grade",
-                "match_score", "jd_language_req", "source", "status", "age"]],
-            use_container_width=True,
-            hide_index=True,
-            selection_mode="single-row",
-            on_select="rerun",
-            key="job_table",
-        )
-
-        selected_rows = event.selection.get("rows", []) if event.selection else []
-        if selected_rows:
-            st.session_state["selected_idx"] = selected_rows[0]
-
-        selected_job_id = (
-            df.iloc[st.session_state["selected_idx"]]["id"]
-            if "selected_idx" in st.session_state
-            and st.session_state["selected_idx"] < len(df)
-            else None
-        )
 
     # ── LinkedIn search buttons ──
     st.markdown(T("linkedin_search"))
