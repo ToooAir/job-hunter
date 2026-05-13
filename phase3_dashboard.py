@@ -569,10 +569,22 @@ PIPELINE_STATUSES = ('applied', 'interview_1', 'interview_2', 'offer', 'rejected
 # Sources with no geographic filtering capability; excluded from default view
 REMOTE_GLOBAL_SOURCES = ["remotive", "jobicy", "weworkremotely"]
 
+# Sentinel used in _GERMANY_PATTERNS to trigger a 5-digit postal code GLOB in fetch_jobs
+_DE_POSTAL = "__de_postal__"
+
 # City alias expansion: handles English/German name variants and common misspellings
 _GERMANY_PATTERNS = [
-    # country-level markers (catches "Berlin, Germany", "Germany", "Deutschland", "bundesweit")
+    _DE_POSTAL,          # matches "74076 Heilbronn", "07743 Jena", etc.
+    # country-level markers
     "germany", "deutschland", "bundesweit",
+    # "(DE)" suffix — e.g. "Hamburg (DE)"
+    "(de)",
+    # German federal states
+    "nordrhein", "westfalen", "rheinland", "pfalz",
+    "sachsen", "thüringen", "thueringen",
+    "schleswig", "holstein", "mecklenburg",
+    "niedersachsen", "hessen", "saarland",
+    "bayern", "bavaria", "brandenbur",
     # major cities (English + German + Anglicised spellings)
     "hamburg", "berlin",
     "munich", "münchen", "muenchen",
@@ -591,25 +603,57 @@ _GERMANY_PATTERNS = [
     "wiesbaden", "mainz", "bonn",
     "kiel", "rostock", "lübeck", "luebeck",
     "konstanz", "ulm", "regensburg",
+    # additional cities present in DB
+    "potsdam", "jena", "halle",
+    "magdeburg", "erfurt", "schwerin",
+    "oldenburg", "bremerhaven", "neumünster", "neumuenster",
+    "paderborn", "bielefeld", "münster", "muenster",
+    "osnabrück", "osnabrueck",
+    "aachen", "göttingen", "goettingen",
+    "wolfsburg", "braunschweig", "brunswick",
+    "kassel", "darmstadt", "offenbach",
+    "saarbrücken", "saarbruecken",
+    "koblenz", "trier",
 ]
 
 _LOCATION_ALIASES: dict[str, list[str]] = {
-    # Germany-wide search
+    # Germany-wide search (also accept "german" without trailing 'y')
     "germany":     _GERMANY_PATTERNS,
+    "german":      _GERMANY_PATTERNS,
     "deutschland": _GERMANY_PATTERNS,
+    "de":          _GERMANY_PATTERNS,
     # individual cities
     "hamburg":    ["hamburg"],
     "berlin":     ["berlin"],
     "munich":     ["munich", "münchen", "muenchen"],
+    "münchen":    ["munich", "münchen", "muenchen"],
     "cologne":    ["cologne", "köln", "koeln"],
+    "köln":       ["cologne", "köln", "koeln"],
     "frankfurt":  ["frankfurt"],
     "dusseldorf": ["dusseldorf", "düsseldorf"],
+    "düsseldorf": ["dusseldorf", "düsseldorf"],
     "stuttgart":  ["stuttgart"],
     "nuremberg":  ["nuremberg", "nürnberg"],
+    "nürnberg":   ["nuremberg", "nürnberg"],
     "leipzig":    ["leipzig"],
     "hannover":   ["hannover", "hanover"],
     "bremen":     ["bremen"],
     "dresden":    ["dresden"],
+    "potsdam":    ["potsdam"],
+    "jena":       ["jena"],
+    "halle":      ["halle"],
+    "magdeburg":  ["magdeburg"],
+    "erfurt":     ["erfurt"],
+    "münster":    ["münster", "muenster"],
+    "muenster":   ["münster", "muenster"],
+    "osnabrück":  ["osnabrück", "osnabrueck"],
+    "aachen":     ["aachen"],
+    "bielefeld":  ["bielefeld"],
+    "paderborn":  ["paderborn"],
+    "wolfsburg":  ["wolfsburg"],
+    "braunschweig": ["braunschweig", "brunswick"],
+    "kassel":     ["kassel"],
+    "bonn":       ["bonn"],
 }
 
 def _location_patterns(kw: str) -> list[str]:
@@ -657,8 +701,12 @@ def fetch_jobs(conn, grades, langs, sources, statuses,
     if kw:
         parts = []
         for pattern in _location_patterns(kw):
-            parts.append("LOWER(location) LIKE ?")
-            location_params.append(f"%{pattern}%")
+            if pattern == _DE_POSTAL:
+                # German 5-digit postal code prefix (GLOB is case-sensitive but digits are unambiguous)
+                parts.append("location GLOB '[0-9][0-9][0-9][0-9][0-9]*'")
+            else:
+                parts.append("LOWER(location) LIKE ?")
+                location_params.append(f"%{pattern}%")
         location_clause = f"AND ({' OR '.join(parts)})"
 
     # error / un-scored jobs have no fit_grade — bypass that filter for them
