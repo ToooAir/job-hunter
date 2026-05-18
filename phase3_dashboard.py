@@ -74,6 +74,8 @@ STRINGS: dict[str, dict[str, str]] = {
         "run_started":        "Pipeline started. Refresh the page in a moment to see results.",
         "log_caption":        "logs/pipeline.log — {size:.1f} KB, showing last 100 lines",
         # Filters
+        "daily_log_expander":    "📅 Application Log",
+        "daily_log_empty":       "No applications yet.",
         "quick_reject_expander": "⚡ Quick Reject",
         "quick_reject_search":   "Company or job title",
         "quick_reject_hint":     "Searches applied / interview jobs",
@@ -299,6 +301,8 @@ STRINGS: dict[str, dict[str, str]] = {
         "run_started":        "已啟動，稍後重新整理頁面查看結果。",
         "log_caption":        "logs/pipeline.log — {size:.1f} KB，顯示最後 100 行",
         # Filters
+        "daily_log_expander":    "📅 投遞日誌",
+        "daily_log_empty":       "尚無投遞記錄。",
         "quick_reject_expander": "⚡ 快速拒絕",
         "quick_reject_search":   "公司名稱或職缺標題",
         "quick_reject_hint":     "搜尋已投遞 / 面試中職缺",
@@ -743,6 +747,19 @@ def search_active_jobs(conn, query: str) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def fetch_application_log(conn) -> list[dict]:
+    """Return all pipeline jobs ordered by applied_at DESC for the daily log."""
+    rows = conn.execute(f"""
+        SELECT DATE(applied_at) AS day, company, title, status
+        FROM jobs
+        WHERE status IN {PIPELINE_STATUSES}
+          AND applied_at IS NOT NULL
+        ORDER BY applied_at DESC
+        LIMIT 60
+    """).fetchall()
+    return [dict(r) for r in rows]
+
+
 def fetch_job_detail(conn, job_id: str) -> dict | None:
     row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
     return dict(row) if row else None
@@ -777,7 +794,7 @@ def fetch_stats(_conn) -> dict:
             SUM(CASE WHEN fit_grade='A'                                  THEN 1 ELSE 0 END) AS grade_a,
             SUM(CASE WHEN fit_grade='B'                                  THEN 1 ELSE 0 END) AS grade_b,
             SUM(CASE WHEN status IN {PIPELINE_STATUSES}                  THEN 1 ELSE 0 END) AS applied,
-            SUM(CASE WHEN status IN ('interview_1','interview_2','offer') THEN 1 ELSE 0 END) AS interviews
+            SUM(CASE WHEN COALESCE(peak_stage, status) IN ('interview_1','interview_2','offer') THEN 1 ELSE 0 END) AS interviews
         FROM jobs
         WHERE status NOT IN ('un-scored','error')
         GROUP BY source
@@ -798,9 +815,9 @@ def fetch_stats(_conn) -> dict:
     f = _conn.execute(f"""
         SELECT
             SUM(CASE WHEN status IN {PIPELINE_STATUSES}                  THEN 1 ELSE 0 END) AS applied,
-            SUM(CASE WHEN status IN ('interview_1','interview_2','offer') THEN 1 ELSE 0 END) AS interview_1,
-            SUM(CASE WHEN status IN ('interview_2','offer')               THEN 1 ELSE 0 END) AS interview_2,
-            SUM(CASE WHEN status='offer'                                  THEN 1 ELSE 0 END) AS offer
+            SUM(CASE WHEN COALESCE(peak_stage, status) IN ('interview_1','interview_2','offer') THEN 1 ELSE 0 END) AS interview_1,
+            SUM(CASE WHEN COALESCE(peak_stage, status) IN ('interview_2','offer')               THEN 1 ELSE 0 END) AS interview_2,
+            SUM(CASE WHEN COALESCE(peak_stage, status) = 'offer'                               THEN 1 ELSE 0 END) AS offer
         FROM jobs
     """).fetchone()
     funnel_df = pd.DataFrame({
@@ -1114,6 +1131,31 @@ left, right = st.columns([4, 6])
 # ════════════════════════════════════════════════════════════════════════════════
 
 with left:
+    # ── Application Daily Log ──
+    _STATUS_EMOJI = {
+        "applied":     "✅",
+        "interview_1": "📞",
+        "interview_2": "💻",
+        "offer":       "🎉",
+        "rejected":    "❌",
+        "ghosted":     "👻",
+    }
+    with st.expander(T("daily_log_expander"), expanded=False):
+        _log_rows = fetch_application_log(conn)
+        if not _log_rows:
+            st.caption(T("daily_log_empty"))
+        else:
+            # Group by day
+            from itertools import groupby as _groupby
+            lines = []
+            for day, entries in _groupby(_log_rows, key=lambda r: r["day"]):
+                entries = list(entries)
+                lines.append(f"**{day}** — {len(entries)} 筆")
+                for e in entries:
+                    emoji = _STATUS_EMOJI.get(e["status"], "•")
+                    lines.append(f"&nbsp;&nbsp;{emoji} {e['company']} — {e['title']}")
+            st.markdown("\n\n".join(lines), unsafe_allow_html=True)
+
     # ── Quick Reject ──
     with st.expander(T("quick_reject_expander"), expanded=False):
         qr_query = st.text_input(

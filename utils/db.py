@@ -38,6 +38,7 @@ SCHEMA_COLUMNS = [
     ("cover_letter_draft", "TEXT"),
     ("scored_at",          "TEXT"),
     ("applied_at",         "TEXT"),
+    ("peak_stage",         "TEXT"),
     ("follow_up_at",       "TEXT"),
     ("jd_hash",            "TEXT"),
     ("notes",              "TEXT"),
@@ -84,6 +85,24 @@ def init_db(db_path: str) -> sqlite3.Connection:
         if col_name not in existing:
             base_type = col_type.split()[0]
             conn.execute(f"ALTER TABLE jobs ADD COLUMN {col_name} {base_type}")
+    conn.commit()
+
+    # One-time backfill for peak_stage (NULL = newly added column on existing DB)
+    conn.execute("""
+        UPDATE jobs SET peak_stage = status
+        WHERE peak_stage IS NULL AND status IN ('applied','interview_1','interview_2','offer')
+    """)
+    # Rejected/ghosted with interview_brief → reached at least interview_1
+    conn.execute("""
+        UPDATE jobs SET peak_stage = 'interview_1'
+        WHERE peak_stage IS NULL AND status IN ('rejected','ghosted')
+          AND interview_brief IS NOT NULL AND interview_brief != ''
+    """)
+    # Remaining rejected/ghosted with no interview evidence → treat as applied
+    conn.execute("""
+        UPDATE jobs SET peak_stage = 'applied'
+        WHERE peak_stage IS NULL AND status IN ('rejected','ghosted')
+    """)
     conn.commit()
 
     return conn
@@ -225,18 +244,26 @@ def update_status(
 ) -> None:
     if status == "applied":
         follow_up = _follow_up_date(applied_at, 21)
+        # Only set peak_stage if not already at a higher stage
         conn.execute(
-            "UPDATE jobs SET status = ?, applied_at = ?, follow_up_at = ? WHERE id = ?",
-            (status, applied_at, follow_up, job_id),
+            "UPDATE jobs SET status = ?, applied_at = ?, follow_up_at = ?, "
+            "peak_stage = CASE WHEN peak_stage IS NULL THEN ? ELSE peak_stage END "
+            "WHERE id = ?",
+            (status, applied_at, follow_up, status, job_id),
         )
     elif status in ("interview_1", "interview_2"):
         now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
         follow_up = _follow_up_date(now_iso, 7)
         conn.execute(
-            "UPDATE jobs SET status = ?, follow_up_at = ? WHERE id = ?",
-            (status, follow_up, job_id),
+            "UPDATE jobs SET status = ?, follow_up_at = ?, peak_stage = ? WHERE id = ?",
+            (status, follow_up, status, job_id),
         )
-    else:
+    elif status == "offer":
+        conn.execute(
+            "UPDATE jobs SET status = ?, follow_up_at = NULL, peak_stage = ? WHERE id = ?",
+            (status, status, job_id),
+        )
+    else:  # rejected, ghosted, skipped, expired, error — preserve peak_stage
         conn.execute(
             "UPDATE jobs SET status = ?, follow_up_at = NULL WHERE id = ?",
             (status, job_id),
