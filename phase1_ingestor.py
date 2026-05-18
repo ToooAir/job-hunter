@@ -1862,15 +1862,15 @@ def scrape_wttj(
 
                 seen_refs.add(ref)
 
-                org       = h.get("organization") or {}
-                org_ref   = org.get("reference", "")
-                slug      = h.get("slug", "")
-                company   = org.get("name", "")
+                org      = h.get("organization") or {}
+                org_slug = org.get("slug", "")
+                slug     = h.get("slug", "")
+                company  = org.get("name", "")
 
-                if org_ref and slug:
+                if org_slug and slug:
                     job_url = (
                         f"https://www.welcometothejungle.com"
-                        f"/en/companies/{org_ref}/jobs/{slug}"
+                        f"/en/companies/{org_slug}/jobs/{slug}"
                     )
                 else:
                     job_url = f"https://www.welcometothejungle.com/en/jobs/{ref}"
