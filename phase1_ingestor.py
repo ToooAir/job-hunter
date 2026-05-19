@@ -5,6 +5,7 @@ then upserts raw job listings into the SQLite database.
 """
 
 import hashlib
+import json
 import logging
 import os
 import re
@@ -1572,11 +1573,33 @@ def scrape_greenhouse(
 # Parse:       <li data-id="{jobId}"> cards with title, company, location, snippet
 # Job URL:     https://jobs.heise.de/job?id={jobId}  (canonical link)
 #
-# Snippet note: some cards embed 2000+ char JDs; most have 100-500 chars or none.
-# The <p> inside each <li> is used as raw_jd_text (partial but sufficient for scoring).
+# Full JD:     Each job page embeds __NEXT_DATA__.__PPA__ (int array → JSON).
+#              job.jobOffer.offerContent contains the full JD as HTML (~2000+ chars).
+#              We fetch the detail page only for jobs not yet in DB.
 
 _HEISE_SEARCH = "https://jobs.heise.de/search"
 _HEISE_BADGE_RE = re.compile(r"^(Top|Premium|Anzeige)\s*", re.IGNORECASE)
+_HEISE_NEXT_DATA_RE = re.compile(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', re.DOTALL)
+
+
+def _heise_fetch_full_jd(job_id: str) -> str:
+    """Fetch full JD text from the job detail page. Returns plain text or ''."""
+    resp = safe_get(f"https://jobs.heise.de/job?id={job_id}", log_404=False)
+    if resp is None:
+        return ""
+    m = _HEISE_NEXT_DATA_RE.search(resp.text)
+    if not m:
+        return ""
+    try:
+        data = json.loads(m.group(1))
+        ppa = data["props"]["pageProps"]["__PPA__"]
+        obj = json.loads("".join(chr(c) for c in ppa))
+        html_content = obj["job"]["jobOffer"].get("offerContent", "")
+        if not html_content:
+            return ""
+        return BeautifulSoup(html_content, "html.parser").get_text(separator="\n", strip=True)
+    except Exception:
+        return ""
 
 
 def scrape_heise(
@@ -1633,13 +1656,20 @@ def scrape_heise(
                 loc_el = card.select_one("[class*='loc'] span")
                 job_location = loc_el.get_text(strip=True) if loc_el else loc
 
-                # JD snippet — the <p> inside the card (may be 0–2000+ chars)
-                snippet_el = card.select_one("p")
-                raw_jd = snippet_el.get_text(separator="\n", strip=True) if snippet_el else ""
+                job_url = f"https://jobs.heise.de/job?id={job_id}"
+
+                # Skip DB round-trip fetch for jobs already stored
+                if conn.execute("SELECT 1 FROM jobs WHERE url = ?", (job_url,)).fetchone():
+                    skipped += 1
+                    continue
+
+                # Fetch full JD from detail page; fall back to card snippet
+                raw_jd = _heise_fetch_full_jd(job_id)
+                if not raw_jd:
+                    snippet_el = card.select_one("p")
+                    raw_jd = snippet_el.get_text(separator="\n", strip=True) if snippet_el else ""
                 if not raw_jd:
                     raw_jd = title
-
-                job_url = f"https://jobs.heise.de/job?id={job_id}"
 
                 record = {
                     "id":          make_id(f"heise:{job_id}"),
