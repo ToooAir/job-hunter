@@ -776,13 +776,48 @@ def _wad_safe_get(path: str, params: dict) -> dict | None:
 
 
 def _wad_jd(job_id: int, slug: str, external: bool) -> str:
-    """Fetch full JD from detail endpoint. Returns combined HTML-stripped text."""
+    """Fetch full JD from detail endpoint. Returns combined HTML-stripped text.
+
+    Native jobs (external=False): first call returns HTTP 301 with body
+    {"company_id": N, "company_slug": "..."} — use those to make a second call.
+    """
     params: dict = {"job_id": job_id, "job_slug": slug}
     if external:
         params["external"] = "true"
-    data = _wad_safe_get("/v2/jobs/details", params)
-    if not data:
+
+    try:
+        resp = requests.get(
+            WAD_API + "/v2/jobs/details",
+            params=params,
+            headers=WAD_HEADERS,
+            timeout=10,
+            allow_redirects=False,
+        )
+        time.sleep(0.8)
+
+        if resp.status_code == 301 and not external:
+            # Body contains company_id/company_slug needed for the real request
+            redirect_info = resp.json()
+            company_id = redirect_info.get("company_id")
+            company_slug = redirect_info.get("company_slug")
+            if not company_id or not company_slug:
+                return ""
+            resp = requests.get(
+                WAD_API + "/v2/jobs/details",
+                params={**params, "company_id": company_id, "company_slug": company_slug},
+                headers=WAD_HEADERS,
+                timeout=10,
+                allow_redirects=False,
+            )
+            time.sleep(0.8)
+
+        if resp.status_code != 200:
+            return ""
+        data = resp.json()
+    except Exception as exc:
+        log.warning("WAD JD fetch failed job_id=%s — %s", job_id, exc)
         return ""
+
     parts = [
         data.get("description") or "",
         data.get("candidate_description") or "",
@@ -861,10 +896,8 @@ def scrape_wearedevelopers(
                         skipped += 1
                         continue
 
-                    # Fetch full JD (external only; native jobs need company_id we don't have)
-                    raw_jd = ""
-                    if external:
-                        raw_jd = _wad_jd(job_id, slug, external=True)
+                    # Fetch full JD — native jobs use two-step 301 flow in _wad_jd
+                    raw_jd = _wad_jd(job_id, slug, external=external)
                     if not raw_jd:
                         # Fallback: combine skills list as minimal context
                         skills = job.get("skills", [])
