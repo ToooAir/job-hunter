@@ -102,10 +102,16 @@ Important rules:
 4. Infer level conservatively.
    - Do NOT assume Senior/Lead compensation unless the JD clearly signals senior scope, strong ownership, and the title or responsibilities explicitly support it.
    - Words like "ownership", "scale", or "end-to-end" alone do not automatically justify top-tier senior salary.
+   - If the JD also publishes a salary band, and the band is below typical senior-level market ranges, treat the role as Mid-Senior regardless of title keywords.
 
 5. Company-type adjustment is mandatory.
    - Apply downward adjustment for SMEs, consultancies, traditional companies, or non-top-tier employers.
    - Apply upward adjustment only if there are clear signals such as elite employer branding, unusually high scope, scarce domain expertise, or explicitly senior/staff expectations.
+   Typical downward adjustment scale:
+   - Local SME / Mittelstand / non-tech-primary industry: −10% to −15% from city market midpoint
+   - Consultancy with unclear end client: −5% to −10%
+   - Early-stage startup with equity: assess equity separately, base may be −5% to −20%
+   Do NOT apply any upward adjustment unless at least two independent signals confirm budget.
 
 6. Geography adjustment is mandatory.
    - Use the salary level typical for the stated city.
@@ -113,8 +119,9 @@ Important rules:
 
 7. Application-form salary must be realistic, not maximal.
    - Optimise Gehaltsvorstellung for passing HR screening, not for maximizing theoretical compensation.
-   - Default Gehaltsvorstellung = midpoint to 65th percentile of the LOCAL BASE SALARY range.
-   - Only use the 65th–75th percentile if the role clearly looks high-paying and the employer likely has budget.
+   - Default Gehaltsvorstellung = midpoint (50th percentile) of the LOCAL BASE SALARY range.
+   - Use 65th percentile only if: employer is clearly well-funded/high-tier AND the role is explicitly senior-scoped.
+   - Use 75th percentile ONLY if: both conditions above apply AND the JD does NOT publish a salary band.
 
 8. Hard cap logic for the form figure.
    - If local role-specific data exists, do not set the Gehaltsvorstellung materially above the common upper range unless there is explicit evidence in the JD.
@@ -135,6 +142,13 @@ Important rules:
     - Opening ask = ambitious but defensible, usually near the upper end of the realistic range.
     - Floor = conservative minimum the candidate should not go below.
     - Gehaltsvorstellung = realistic screening-safe number, usually below opening ask.
+
+12. If the JD explicitly states a salary range (e.g., "€60,000–€75,000"):
+    - Treat this as the employer's real budget ceiling, not a negotiation floor.
+    - Set Gehaltsvorstellung at 70–85% of the JD upper bound, or the JD midpoint — whichever is lower.
+    - Do NOT set Gehaltsvorstellung above the JD upper bound in the output.
+    - Opening ask (verbal negotiation) may target the JD upper bound, but must never materially exceed it.
+    - Rationale: HR pre-screening filters out candidates above stated budget. Passing screening is the priority.
 
 Job details:
 Company: {company}
