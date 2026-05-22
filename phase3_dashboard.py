@@ -1419,6 +1419,108 @@ with right:
             }
             c5.metric("Contract",     CONTRACT_LABEL.get(job.get("contract_type") or "unknown", "—"))
 
+            # ── Action buttons (status-conditional) ──────────────────────────
+            _cl_draft = job.get("cover_letter_draft") or ""
+            cur_status = job.get("status", "")
+
+            def _transition(new_status: str) -> None:
+                update_status(conn, job["id"], new_status)
+                st.session_state.pop("selected_idx", None)
+                st.cache_data.clear()
+                st.rerun()
+
+            if cur_status in ("scored", "un-scored", "error"):
+                btn_cols = st.columns(5)
+                with btn_cols[0]:
+                    st.link_button(T("open_job_btn"), job["url"], use_container_width=True)
+                with btn_cols[1]:
+                    if st.button(T("copy_cl_btn"), use_container_width=True, key=f"copy_{job['id']}"):
+                        try:
+                            pyperclip.copy(_cl_draft)
+                            st.success(T("copied_ok"))
+                        except Exception:
+                            st.info(T("copy_docker_msg"))
+                with btn_cols[2]:
+                    if st.button(T("apply_btn"), use_container_width=True, type="primary", key=f"apply_{job['id']}"):
+                        update_status(conn, job["id"], "applied", applied_at=utcnow_iso())
+                        set_follow_up(conn, job["id"],
+                            (datetime.now(timezone.utc) + timedelta(days=7)).strftime("%Y-%m-%d"))
+                        st.session_state.pop("selected_idx", None)
+                        st.cache_data.clear()
+                        st.rerun()
+                with btn_cols[3]:
+                    if st.button(T("skip_btn"), use_container_width=True, key=f"skip_{job['id']}"):
+                        _transition("skipped")
+                with btn_cols[4]:
+                    if st.button(T("rescore_btn"), use_container_width=True, key=f"rescore_{job['id']}"):
+                        import os
+                        from dotenv import load_dotenv
+                        from phase2_scorer import score_single_job
+                        load_dotenv()
+                        with st.spinner(T("rescore_spinner")):
+                            score_single_job(job["id"],
+                                db_path=os.getenv("DB_PATH", "./data/jobs.db"),
+                                qdrant_path=os.getenv("QDRANT_PATH", "./qdrant_data"))
+                        st.cache_data.clear()
+                        st.rerun()
+
+            elif cur_status == "applied":
+                btn_cols = st.columns(3)
+                with btn_cols[0]:
+                    st.link_button(T("open_job_btn"), job["url"], use_container_width=True)
+                with btn_cols[1]:
+                    if st.button(T("iv1_btn"), use_container_width=True, type="primary", key=f"iv1_{job['id']}"):
+                        import os
+                        from dotenv import load_dotenv
+                        from phase2_scorer import generate_brief_for_job
+                        load_dotenv()
+                        with st.spinner(T("iv1_spinner")):
+                            generate_brief_for_job(
+                                job["id"],
+                                db_path=os.getenv("DB_PATH", "./data/jobs.db"),
+                                qdrant_path=os.getenv("QDRANT_PATH", "./qdrant_data"),
+                                lang=_lang(),
+                            )
+                        _transition("interview_1")
+                with btn_cols[2]:
+                    if st.button(T("reject_btn"), use_container_width=True, key=f"rej_{job['id']}"):
+                        _transition("rejected")
+
+            elif cur_status == "interview_1":
+                btn_cols = st.columns(3)
+                with btn_cols[0]:
+                    st.link_button(T("open_job_btn"), job["url"], use_container_width=True)
+                with btn_cols[1]:
+                    if st.button(T("iv2_btn"), use_container_width=True, type="primary", key=f"iv2_{job['id']}"):
+                        _transition("interview_2")
+                with btn_cols[2]:
+                    if st.button(T("reject_btn"), use_container_width=True, key=f"rej_{job['id']}"):
+                        _transition("rejected")
+
+            elif cur_status == "interview_2":
+                btn_cols = st.columns(3)
+                with btn_cols[0]:
+                    st.link_button(T("open_job_btn"), job["url"], use_container_width=True)
+                with btn_cols[1]:
+                    if st.button(T("offer_btn"), use_container_width=True, type="primary", key=f"offer_{job['id']}"):
+                        _transition("offer")
+                with btn_cols[2]:
+                    if st.button(T("reject_btn"), use_container_width=True, key=f"rej_{job['id']}"):
+                        _transition("rejected")
+
+            elif cur_status == "skipped":
+                btn_cols = st.columns(2)
+                with btn_cols[0]:
+                    st.link_button(T("open_job_btn"), job["url"], use_container_width=True)
+                with btn_cols[1]:
+                    if st.button(T("unskip_btn"), use_container_width=True, key=f"unskip_{job['id']}"):
+                        _transition("scored")
+
+            else:  # offer / rejected / expired — terminal, open only
+                if cur_status == "expired":
+                    st.warning(T("expired_warning"))
+                st.link_button(T("open_job_btn"), job["url"])
+
             # ── Full JD ──────────────────────────────────────────────────────
             with st.expander(T("jd_expander"), expanded=False):
                 _translated = job.get("translated_jd_text")
@@ -1671,109 +1773,6 @@ with right:
                         key=f"dl_pdf_{job['id']}",
                         use_container_width=True,
                     )
-
-            st.divider()
-
-            # ── Action buttons (status-conditional) ──────────────────────────
-            cur_status = job.get("status", "")
-
-            def _transition(new_status: str) -> None:
-                update_status(conn, job["id"], new_status)
-                st.session_state.pop("selected_idx", None)
-                st.cache_data.clear()
-                st.rerun()
-
-            if cur_status in ("scored", "un-scored", "error"):
-                btn_cols = st.columns(5)
-                with btn_cols[0]:
-                    st.link_button(T("open_job_btn"), job["url"], use_container_width=True)
-                with btn_cols[1]:
-                    if st.button(T("copy_cl_btn"), use_container_width=True, key=f"copy_{job['id']}"):
-                        try:
-                            pyperclip.copy(edited_cl)
-                            st.success(T("copied_ok"))
-                        except Exception:
-                            st.info(T("copy_docker_msg"))
-                with btn_cols[2]:
-                    if st.button(T("apply_btn"), use_container_width=True, type="primary", key=f"apply_{job['id']}"):
-                        update_status(conn, job["id"], "applied", applied_at=utcnow_iso())
-                        set_follow_up(conn, job["id"],
-                            (datetime.now(timezone.utc) + timedelta(days=7)).strftime("%Y-%m-%d"))
-                        st.session_state.pop("selected_idx", None)
-                        st.cache_data.clear()
-                        st.rerun()
-                with btn_cols[3]:
-                    if st.button(T("skip_btn"), use_container_width=True, key=f"skip_{job['id']}"):
-                        _transition("skipped")
-                with btn_cols[4]:
-                    if st.button(T("rescore_btn"), use_container_width=True, key=f"rescore_{job['id']}"):
-                        import os
-                        from dotenv import load_dotenv
-                        from phase2_scorer import score_single_job
-                        load_dotenv()
-                        with st.spinner(T("rescore_spinner")):
-                            score_single_job(job["id"],
-                                db_path=os.getenv("DB_PATH", "./data/jobs.db"),
-                                qdrant_path=os.getenv("QDRANT_PATH", "./qdrant_data"))
-                        st.cache_data.clear()
-                        st.rerun()
-
-            elif cur_status == "applied":
-                btn_cols = st.columns(3)
-                with btn_cols[0]:
-                    st.link_button(T("open_job_btn"), job["url"], use_container_width=True)
-                with btn_cols[1]:
-                    if st.button(T("iv1_btn"), use_container_width=True, type="primary", key=f"iv1_{job['id']}"):
-                        import os
-                        from dotenv import load_dotenv
-                        from phase2_scorer import generate_brief_for_job
-                        load_dotenv()
-                        with st.spinner(T("iv1_spinner")):
-                            generate_brief_for_job(
-                                job["id"],
-                                db_path=os.getenv("DB_PATH", "./data/jobs.db"),
-                                qdrant_path=os.getenv("QDRANT_PATH", "./qdrant_data"),
-                                lang=_lang(),
-                            )
-                        _transition("interview_1")
-                with btn_cols[2]:
-                    if st.button(T("reject_btn"), use_container_width=True, key=f"rej_{job['id']}"):
-                        _transition("rejected")
-
-            elif cur_status == "interview_1":
-                btn_cols = st.columns(3)
-                with btn_cols[0]:
-                    st.link_button(T("open_job_btn"), job["url"], use_container_width=True)
-                with btn_cols[1]:
-                    if st.button(T("iv2_btn"), use_container_width=True, type="primary", key=f"iv2_{job['id']}"):
-                        _transition("interview_2")
-                with btn_cols[2]:
-                    if st.button(T("reject_btn"), use_container_width=True, key=f"rej_{job['id']}"):
-                        _transition("rejected")
-
-            elif cur_status == "interview_2":
-                btn_cols = st.columns(3)
-                with btn_cols[0]:
-                    st.link_button(T("open_job_btn"), job["url"], use_container_width=True)
-                with btn_cols[1]:
-                    if st.button(T("offer_btn"), use_container_width=True, type="primary", key=f"offer_{job['id']}"):
-                        _transition("offer")
-                with btn_cols[2]:
-                    if st.button(T("reject_btn"), use_container_width=True, key=f"rej_{job['id']}"):
-                        _transition("rejected")
-
-            elif cur_status == "skipped":
-                btn_cols = st.columns(2)
-                with btn_cols[0]:
-                    st.link_button(T("open_job_btn"), job["url"], use_container_width=True)
-                with btn_cols[1]:
-                    if st.button(T("unskip_btn"), use_container_width=True, key=f"unskip_{job['id']}"):
-                        _transition("scored")
-
-            else:  # offer / rejected / expired — terminal, open only
-                if cur_status == "expired":
-                    st.warning(T("expired_warning"))
-                st.link_button(T("open_job_btn"), job["url"])
 
             # ── Interview Brief ──────────────────────────────────────────────
             if cur_status in ("interview_1", "interview_2", "offer"):
