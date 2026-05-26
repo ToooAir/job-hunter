@@ -12,7 +12,7 @@ import time
 from datetime import date, datetime
 from pathlib import Path
 
-from utils.db import init_db, auto_ghost_stale_applications
+from utils.db import init_db, auto_expire_stale_jobs, auto_ghost_stale_applications
 
 logging.basicConfig(
     level=logging.INFO,
@@ -70,17 +70,20 @@ def _stream_phase(script: str, log_file) -> int:
     return proc.returncode
 
 
-def _ghost_stale() -> None:
+def _housekeeping() -> None:
     try:
         from dotenv import load_dotenv
         load_dotenv()
         db_path = os.getenv("DB_PATH", "./data/jobs.db")
         conn = init_db(db_path)
-        n = auto_ghost_stale_applications(conn)
-        if n:
-            log.info("ghosted %d stale application(s) (no response in 35 days)", n)
+        n_expired = auto_expire_stale_jobs(conn)
+        if n_expired:
+            log.info("expired %d stale job(s) (TTL or expires_at exceeded)", n_expired)
+        n_ghosted = auto_ghost_stale_applications(conn)
+        if n_ghosted:
+            log.info("ghosted %d stale application(s) (no response in 35 days)", n_ghosted)
     except Exception as exc:
-        log.error("ghost detection failed: %s", exc)
+        log.error("housekeeping failed: %s", exc)
 
 
 def run_pipeline() -> None:
@@ -93,7 +96,7 @@ def run_pipeline() -> None:
             if returncode != 0:
                 log.error("%s exited with code %d — aborting pipeline", phase, returncode)
                 break
-    _ghost_stale()
+    _housekeeping()
     log.info("════ Pipeline done  ════")
 
 

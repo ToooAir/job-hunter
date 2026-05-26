@@ -281,17 +281,32 @@ _DEFAULT_TTL_DAYS = 45
 
 
 def auto_expire_stale_jobs(conn: sqlite3.Connection) -> int:
-    """Mark un-scored/scored jobs as expired when they exceed source-specific TTL from fetched_at.
-    Skips jobs that already have expires_at set (handled by phase2 pre-flight).
-    Returns count of newly expired jobs.
+    """Mark un-scored/scored jobs as expired.
+
+    Two rules applied in order (TTL is a hard ceiling regardless of expires_at):
+    1. Has expires_at set and that date has passed → expire immediately.
+    2. Age exceeds source-specific TTL from fetched_at → expire (even if expires_at is set
+       to a future date, TTL acts as the upper bound to prevent stale data accumulation).
+
+    Returns total count of newly expired jobs.
     """
     now = datetime.now(timezone.utc)
-    rows = conn.execute(
-        "SELECT id, source, fetched_at FROM jobs"
-        " WHERE status IN ('un-scored', 'scored') AND (expires_at IS NULL OR expires_at = '')"
-    ).fetchall()
+    now_str = now.strftime("%Y-%m-%dT%H:%M:%S")
 
-    expired_ids = []
+    # Rule 1: jobs with an explicit expiry date that has passed
+    date_expired = conn.execute(
+        "SELECT id FROM jobs"
+        " WHERE status IN ('un-scored', 'scored')"
+        "   AND expires_at IS NOT NULL AND expires_at != ''"
+        "   AND expires_at < ?",
+        (now_str,),
+    ).fetchall()
+    expired_ids = {row["id"] for row in date_expired}
+
+    # Rule 2: age exceeds source TTL (applies regardless of whether expires_at is set)
+    rows = conn.execute(
+        "SELECT id, source, fetched_at FROM jobs WHERE status IN ('un-scored', 'scored')"
+    ).fetchall()
     for row in rows:
         ttl = _SOURCE_TTL_DAYS.get(row["source"], _DEFAULT_TTL_DAYS)
         try:
@@ -299,11 +314,11 @@ def auto_expire_stale_jobs(conn: sqlite3.Connection) -> int:
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
             if (now - dt).days >= ttl:
-                expired_ids.append(row["id"])
+                expired_ids.add(row["id"])
         except Exception:
             pass
 
-    return mark_expired(conn, expired_ids)
+    return mark_expired(conn, list(expired_ids))
 
 
 def auto_ghost_stale_applications(conn: sqlite3.Connection, days: int = 35) -> int:
