@@ -119,7 +119,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "manual_added":       "✅ Added to database. Run `python phase2_scorer.py` then refresh.",
         "manual_exists":      "⚠️ This URL already exists in the database.",
         # Right column
-        "select_prompt":      "← Select a job from the left",
+        "select_prompt":      "↑ Select a job from the table above",
         "not_found":          "Job not found, please refresh the page.",
         "translated_flag":    "　🔤 JD auto-translated (original: German)",
         # Status labels (for duplicate warning)
@@ -348,7 +348,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "manual_added":       "✅ 已加入資料庫。請執行 `python phase2_scorer.py` 後重新整理頁面。",
         "manual_exists":      "⚠️ 此 URL 已存在於資料庫中。",
         # Right column
-        "select_prompt":      "← 從左側選擇一筆職缺",
+        "select_prompt":      "↑ 請從上方列表選擇一筆職缺",
         "not_found":          "找不到該職缺，請重新整理頁面。",
         "translated_flag":    "　🔤 JD 已自動翻譯（原文德語）",
         # Status labels
