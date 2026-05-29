@@ -193,6 +193,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "apply_btn":          "✅ Applied",
         "skip_btn":           "⏭️ Skip",
         "unskip_btn":         "↩️ Restore to Review",
+        "ghosted_revive_hint": "This job was auto-ghosted. If you received an interview invite, click below.",
         "rescore_btn":        "🔄 Re-score",
         "rescore_spinner":    "Scoring…",
         "copied_ok":          "Copied ✓",
@@ -422,6 +423,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "apply_btn":          "✅ 已投遞",
         "skip_btn":           "⏭️ 略過",
         "unskip_btn":         "↩️ 還原至待審閱",
+        "ghosted_revive_hint": "此職缺已被自動標記為無聲卡。若收到面試邀請，請點擊下方按鈕。",
         "rescore_btn":        "🔄 重新評分",
         "rescore_spinner":    "評分中…",
         "copied_ok":          "已複製 ✓",
@@ -1532,6 +1534,26 @@ with right:
                 with btn_cols[1]:
                     if st.button(T("unskip_btn"), use_container_width=True, key=f"unskip_{job['id']}"):
                         _transition("scored")
+
+            elif cur_status == "ghosted":
+                st.info(T("ghosted_revive_hint"))
+                btn_cols = st.columns(2)
+                with btn_cols[0]:
+                    st.link_button(T("open_job_btn"), job["url"], use_container_width=True)
+                with btn_cols[1]:
+                    if st.button(T("iv1_btn"), use_container_width=True, type="primary", key=f"iv1_{job['id']}"):
+                        import os
+                        from dotenv import load_dotenv
+                        from phase2_scorer import generate_brief_for_job
+                        load_dotenv()
+                        with st.spinner(T("iv1_spinner")):
+                            generate_brief_for_job(
+                                job["id"],
+                                db_path=os.getenv("DB_PATH", "./data/jobs.db"),
+                                qdrant_path=os.getenv("QDRANT_PATH", "./qdrant_data"),
+                                lang=_lang(),
+                            )
+                        _transition("interview_1")
 
             else:  # offer / rejected / expired — terminal, open only
                 if cur_status == "expired":
