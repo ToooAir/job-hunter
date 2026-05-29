@@ -251,6 +251,8 @@ STRINGS: dict[str, dict[str, str]] = {
         "filter_location":    "Location Search",
         "filter_location_ph": "e.g. Hamburg",
         "filter_remote":      "Also include global remote sources (Remotive / WWR / Jobicy)",
+        "filter_age":         "Max Age",
+        "filter_age_no_limit": "No limit",
         # Lang toggle
         "lang_toggle_label":  "🌐 Language",
     },
@@ -478,6 +480,8 @@ STRINGS: dict[str, dict[str, str]] = {
         "filter_location":    "地點搜尋",
         "filter_location_ph": "例：Hamburg",
         "filter_remote":      "也包含全球 Remote 來源（Remotive / WWR / Jobicy）",
+        "filter_age":         "最大天數",
+        "filter_age_no_limit": "不限",
         # Lang toggle
         "lang_toggle_label":  "🌐 語言",
     },
@@ -691,7 +695,7 @@ def fetch_kpis(conn) -> dict:
 
 
 def fetch_jobs(conn, grades, langs, sources, statuses,
-               location_kw: str = "") -> pd.DataFrame:
+               location_kw: str = "", max_age_days: int | None = None) -> pd.DataFrame:
     if not (grades and langs and sources and statuses):
         return pd.DataFrame()
 
@@ -713,6 +717,12 @@ def fetch_jobs(conn, grades, langs, sources, statuses,
                 location_params.append(f"%{pattern}%")
         location_clause = f"AND ({' OR '.join(parts)})"
 
+    age_clause = ""
+    age_params: list = []
+    if max_age_days is not None:
+        age_clause = "AND (julianday('now') - julianday(fetched_at)) < ?"
+        age_params = [max_age_days]
+
     # error / un-scored jobs have no fit_grade — bypass that filter for them
     sql = f"""
         SELECT id, title, company, location,
@@ -723,11 +733,12 @@ def fetch_jobs(conn, grades, langs, sources, statuses,
           AND source           IN ({placeholders(sources)})
           AND status           IN ({placeholders(statuses)})
           {location_clause}
+          {age_clause}
         ORDER BY
             CASE fit_grade WHEN 'A' THEN 1 WHEN 'B' THEN 2 ELSE 3 END,
             match_score DESC
     """
-    params = grades + langs + sources + statuses + location_params
+    params = grades + langs + sources + statuses + location_params + age_params
     rows = conn.execute(sql, params).fetchall()
     return pd.DataFrame([dict(r) for r in rows])
 
@@ -1043,7 +1054,7 @@ with st.expander(T("filter_expander"), expanded=True):
             default=["scored"],
             key="filter_status",
         )
-    _fl1, _fl2 = st.columns([4, 1])
+    _fl1, _fl2, _fl3 = st.columns([3, 1, 1.5])
     with _fl1:
         location_filter = st.text_input(
             T("filter_location"),
@@ -1051,6 +1062,12 @@ with st.expander(T("filter_expander"), expanded=True):
             key="filter_location",
         )
     with _fl2:
+        _age_options = [14, 30, 45, 60, T("filter_age_no_limit")]
+        _age_sel = st.selectbox(
+            T("filter_age"), _age_options, index=2, key="filter_age",
+        )
+        max_age_days = None if _age_sel == T("filter_age_no_limit") else int(_age_sel)
+    with _fl3:
         st.write("")
         remote_filter = st.checkbox(T("filter_remote"), value=False, key="filter_remote")
 
@@ -1062,7 +1079,7 @@ effective_sources = (
     if remote_filter else source_filter
 )
 df = fetch_jobs(conn, fit_grade_filter, lang_filter, effective_sources, status_filter,
-                location_kw=location_filter)
+                location_kw=location_filter, max_age_days=max_age_days)
 
 if df.empty:
     st.info(T("no_jobs"))
