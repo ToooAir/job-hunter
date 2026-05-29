@@ -722,7 +722,11 @@ def fetch_jobs(conn, grades, langs, sources, statuses,
     age_clause = ""
     age_params: list = []
     if max_age_days is not None:
-        age_clause = "AND (julianday('now') - julianday(fetched_at)) < ?"
+        # Age filter only applies to unreviewed jobs; tracked jobs (applied, ghosted, …) are always shown.
+        age_clause = """AND (
+            status NOT IN ('scored', 'un-scored')
+            OR (julianday('now') - julianday(fetched_at)) < ?
+        )"""
         age_params = [max_age_days]
 
     # error / un-scored jobs have no fit_grade — bypass that filter for them
