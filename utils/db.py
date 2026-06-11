@@ -47,6 +47,9 @@ SCHEMA_COLUMNS = [
     ("salary_estimate",    "TEXT"),
     ("visa_analysis",      "TEXT"),
     ("translated_jd_text", "TEXT"),
+    ("ats",                "TEXT"),   # ATS hosting the apply form (ats_scan.py)
+    ("apply_url",          "TEXT"),   # direct link to the apply form, when known
+    ("ats_checked_at",     "TEXT"),   # last liveness/ATS check; queue requires <= 7 days
     ("status",             "TEXT NOT NULL DEFAULT 'un-scored'"),
 ]
 
@@ -63,6 +66,34 @@ INTERVIEW_RECORD_COLUMNS = [
     ("impressions",    "TEXT"),            # free text
     ("created_at",     "TEXT NOT NULL"),
 ]
+
+
+# One row = the full lifecycle of one application attempt for one job.
+# Doubles as the queue carrier (DB-as-queue): Stage 1 writes a draft,
+# the user approves it, Stage 2 submits it.
+APPLICATION_SNAPSHOT_COLUMNS = [
+    ("id",              "INTEGER PRIMARY KEY AUTOINCREMENT"),
+    ("job_id",          "TEXT NOT NULL"),                      # indexed
+    ("created_at",      "TEXT NOT NULL"),
+    ("status",          "TEXT NOT NULL DEFAULT 'draft'"),      # draft|approved|submitted|failed|abandoned
+    ("tier",            "INTEGER"),                            # 1|2|3 risk tier (assigned in Step 4)
+    ("channel",         "TEXT"),                               # e.g. generic-form | ashby | indeed-prefill
+    ("apply_url",       "TEXT"),
+    ("approved_at",     "TEXT"),                               # Tier 2 approval signal
+    ("submitted_at",    "TEXT"),
+    ("submitted_by",    "TEXT"),                               # agent | human
+    ("form_payload",    "TEXT"),                               # JSON: field -> filled value
+    ("cover_letter",    "TEXT"),
+    ("custom_qa",       "TEXT"),                               # JSON: free-text question -> answer
+    ("verifier_report", "TEXT"),                               # JSON
+    ("screenshot_path", "TEXT"),
+    ("notes",           "TEXT"),
+]
+
+SNAPSHOT_STATUSES = ("draft", "approved", "submitted", "failed", "abandoned")
+# Statuses that mean "an application for this job is in motion or done" —
+# used by the queue to avoid creating a second snapshot for the same job.
+IN_FLIGHT_SNAPSHOT_STATUSES = ("draft", "approved", "submitted")
 
 
 PIPELINE_RUN_COLUMNS = [
@@ -90,6 +121,12 @@ def init_db(db_path: str) -> sqlite3.Connection:
 
     pr_defs = ",\n    ".join(f"{name} {typ}" for name, typ in PIPELINE_RUN_COLUMNS)
     conn.execute(f"CREATE TABLE IF NOT EXISTS pipeline_runs (\n    {pr_defs}\n);")
+
+    snap_defs = ",\n    ".join(f"{name} {typ}" for name, typ in APPLICATION_SNAPSHOT_COLUMNS)
+    conn.execute(f"CREATE TABLE IF NOT EXISTS application_snapshots (\n    {snap_defs}\n);")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_snapshots_job_id ON application_snapshots(job_id)"
+    )
     conn.commit()
 
     # Backfill any columns added after initial creation
@@ -493,3 +530,84 @@ def finish_pipeline_run(
         (status, _now_local_iso(), error, run_id),
     )
     conn.commit()
+
+
+# ── ATS resolution (ats_scan.py → apply queue) ─────────────────────────────────
+
+def set_job_ats(
+    conn: sqlite3.Connection,
+    job_id: str,
+    ats: str,
+    apply_url: str | None = None,
+    checked_at: str | None = None,
+) -> bool:
+    """Record the ATS resolution for a job. Returns True if the row existed."""
+    cur = conn.execute(
+        "UPDATE jobs SET ats = ?, apply_url = ?, ats_checked_at = ? WHERE id = ?",
+        (ats, apply_url, checked_at or _now_local_iso(), job_id),
+    )
+    conn.commit()
+    return cur.rowcount == 1
+
+
+# ── Application snapshots (semi-auto apply, Step 2+) ───────────────────────────
+
+_SNAPSHOT_JSON_FIELDS = ("form_payload", "custom_qa", "verifier_report")
+_SNAPSHOT_WRITABLE = {name for name, _ in APPLICATION_SNAPSHOT_COLUMNS} - {"id", "job_id", "created_at"}
+
+
+def _encode_snapshot_fields(fields: dict) -> dict:
+    unknown = set(fields) - _SNAPSHOT_WRITABLE
+    if unknown:
+        raise ValueError(f"unknown snapshot field(s): {sorted(unknown)}")
+    status = fields.get("status")
+    if status is not None and status not in SNAPSHOT_STATUSES:
+        raise ValueError(f"invalid snapshot status {status!r}, expected one of {SNAPSHOT_STATUSES}")
+    out = dict(fields)
+    for key in _SNAPSHOT_JSON_FIELDS:
+        if key in out and not isinstance(out[key], (str, type(None))):
+            out[key] = json.dumps(out[key], ensure_ascii=False)
+    return out
+
+
+def create_application_snapshot(conn: sqlite3.Connection, job_id: str, **fields) -> int:
+    """Insert a snapshot for a job (dict/list values are JSON-encoded). Returns row id."""
+    record = {"job_id": job_id, "created_at": _now_local_iso(), **_encode_snapshot_fields(fields)}
+    cols = ", ".join(record.keys())
+    placeholders = ", ".join("?" for _ in record)
+    cur = conn.execute(
+        f"INSERT INTO application_snapshots ({cols}) VALUES ({placeholders})",
+        list(record.values()),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def update_application_snapshot(conn: sqlite3.Connection, snapshot_id: int, **fields) -> None:
+    if not fields:
+        return
+    record = _encode_snapshot_fields(fields)
+    assignments = ", ".join(f"{k} = ?" for k in record)
+    conn.execute(
+        f"UPDATE application_snapshots SET {assignments} WHERE id = ?",
+        [*record.values(), snapshot_id],
+    )
+    conn.commit()
+
+
+def get_application_snapshots(conn: sqlite3.Connection, job_id: str) -> list[dict]:
+    """All snapshots for a job, newest first."""
+    rows = conn.execute(
+        "SELECT * FROM application_snapshots WHERE job_id = ? ORDER BY id DESC", (job_id,)
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_in_flight_snapshots(conn: sqlite3.Connection) -> list[dict]:
+    """Snapshots whose application is in motion or done (draft/approved/submitted)."""
+    placeholders = ",".join("?" for _ in IN_FLIGHT_SNAPSHOT_STATUSES)
+    rows = conn.execute(
+        f"SELECT * FROM application_snapshots WHERE status IN ({placeholders}) ORDER BY id",
+        IN_FLIGHT_SNAPSHOT_STATUSES,
+    ).fetchall()
+    return [dict(r) for r in rows]
