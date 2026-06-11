@@ -8,6 +8,9 @@ config/search_targets.yaml
 # ── Personal data ─────────────────────────────────────────────────────────────
 candidate_kb/*.md
 !candidate_kb/*.md.example
+candidate_kb/*.yaml
+!candidate_kb/*.yaml.example
+candidate_kb/cv/
 
 # ── Runtime data ──────────────────────────────────────────────────────────────
 data/
