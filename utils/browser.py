@@ -18,6 +18,7 @@ import os
 import re
 from contextlib import contextmanager
 from pathlib import Path
+from urllib.parse import urljoin
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 from playwright.sync_api import sync_playwright
@@ -61,6 +62,21 @@ APPLY_BUTTON_PATTERNS = [
 ]
 
 _CAPTCHA_MARKERS = ("recaptcha", "hcaptcha", "turnstile", "cf-challenge", "geetest")
+
+# Fallback for JS apply buttons whose popup gets blocked (async window.open
+# loses the user-gesture token): the destination usually also exists in the
+# DOM as a plain anchor. Prefer off-site hrefs — that's where apply flows go.
+_APPLY_HREF_JS = """
+() => {
+  const cand = [...document.querySelectorAll('a[href]')].filter(a => {
+    const raw = a.getAttribute('href') || '';
+    if (/^(javascript:|#|mailto:)/i.test(raw)) return false;
+    return /apply|bewerb/i.test((a.innerText || '') + ' ' + raw);
+  });
+  const ext = cand.find(a => a.host && a.host !== location.host);
+  return (ext || cand[0]) ? (ext || cand[0]).href : null;
+}
+"""
 
 # Counted by control class: an application form is recognised by text-entry
 # fields and uploads, NOT by checkbox/search-box noise (board pages are full
@@ -310,14 +326,27 @@ def goto_apply_page(page, url: str) -> dict:
             loc, pattern = _find_apply_control(page)
             if loc is not None:
                 report["clicked_apply"] = pattern
+                href = None
                 try:
-                    # apply buttons on board/career pages often target=_blank
-                    with page.context.expect_page(timeout=4_000) as popup:
-                        loc.click(timeout=CLICK_TIMEOUT_MS * 3)
-                    active = popup.value
-                    report["opened_new_tab"] = True
+                    href = loc.get_attribute("href", timeout=1_000)
                 except Exception:
-                    pass  # no popup — same-tab navigation (or a no-op click)
+                    pass
+                if href and not href.lower().startswith(("javascript:", "#", "mailto:")):
+                    # a real link: navigating its href beats simulating a click
+                    # (immune to overlay interception and target=_blank races)
+                    page.goto(urljoin(page.url, href),
+                              wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+                else:
+                    try:
+                        # apply buttons on board/career pages often target=_blank;
+                        # generous timeouts — SPA buttons aren't actionable until
+                        # hydration finishes (WAD needs ~5-8s on a cold profile)
+                        with page.context.expect_page(timeout=12_000) as popup:
+                            loc.click(timeout=8_000)
+                        active = popup.value
+                        report["opened_new_tab"] = True
+                    except Exception:
+                        pass  # no popup — same-tab navigation (or a no-op click)
                 try:
                     active.wait_for_load_state("domcontentloaded", timeout=NAV_TIMEOUT_MS)
                     _settle(active)
@@ -326,6 +355,20 @@ def goto_apply_page(page, url: str) -> dict:
                     controls = count_form_controls(active)
                 except Exception:
                     pass
+                if active is page and not looks_like_application_form(controls):
+                    # click led nowhere (blocked popup / no-op) — try a DOM href
+                    try:
+                        href2 = page.evaluate(_APPLY_HREF_JS)
+                        if href2:
+                            page.goto(href2, wait_until="domcontentloaded",
+                                      timeout=NAV_TIMEOUT_MS)
+                            _settle(page)
+                            report["cookie_clicked"] = (report["cookie_clicked"]
+                                                        or dismiss_cookie_banner(page))
+                            report["clicked_apply"] = f"{pattern} (href fallback)"
+                            controls = count_form_controls(page)
+                    except Exception:
+                        pass
 
         report["page"] = active
         report["final_url"] = active.url

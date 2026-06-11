@@ -67,9 +67,17 @@ def fetch_targets(limit=None, source=None):
     return [dict(r) for r in rows]
 
 
+# Boards we never auto-submit on (account walls / bot-hostile). A WAD or
+# board job whose apply link lands here is a Tier 3 answer-sheet case.
+EXTERNAL_BOARDS = ("xing.com", "indeed.com", "linkedin.com", "stepstone.de")
+
+
 def verdict_of(report, tree):
     if report["error"]:
         return "nav-error"
+    host = (report.get("final_url") or "").lower()
+    if any(b in host for b in EXTERNAL_BOARDS):
+        return "external-board"
     if report["captcha"]:
         return "captcha"
     if tree and tree["fields"]:

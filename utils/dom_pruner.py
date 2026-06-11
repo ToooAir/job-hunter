@@ -81,9 +81,15 @@ def _selector_for(el: Tag, soup: BeautifulSoup) -> str:
     """Stable selector: #id → tag[name=] (+[value=] for radios) → nth-of-type path."""
     el_id = el.get("id")
     if el_id:
-        sel = f"#{_css_escape(el_id)}"
-        if len(soup.select(sel)) == 1:
-            return sel
+        # ids starting with a digit (UUIDs — Personio does this) are invalid
+        # in #-notation; attribute form works for anything
+        sel = (f"#{_css_escape(el_id)}" if re.match(r"^[A-Za-z_]", el_id)
+               else f'[id="{el_id}"]')
+        try:
+            if len(soup.select(sel)) == 1:
+                return sel
+        except Exception:
+            pass
     name = el.get("name")
     if name:
         sel = f'{el.name}[name="{name}"]'
