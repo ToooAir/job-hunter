@@ -4,7 +4,7 @@ services:
   pipeline:
     build: .
     image: job-hunter-app:latest        # tag the built image so dashboard can reuse it
-    command: python scheduler.py 7 30   # arg1=hour arg2=minute (Europe/Berlin local time)
+    command: python scheduler.py        # interval-based catch-up (PIPELINE_MIN_INTERVAL_HOURS, default 20h)
     env_file: .env
     environment:
       - TZ=Europe/Berlin

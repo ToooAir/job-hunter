@@ -65,6 +65,16 @@ INTERVIEW_RECORD_COLUMNS = [
 ]
 
 
+PIPELINE_RUN_COLUMNS = [
+    ("id",           "INTEGER PRIMARY KEY AUTOINCREMENT"),
+    ("started_at",   "TEXT NOT NULL"),
+    ("completed_at", "TEXT"),
+    ("status",       "TEXT NOT NULL DEFAULT 'running'"),  # running | success | failed
+    ("stages_done",  "TEXT NOT NULL DEFAULT ''"),         # comma-separated stage names
+    ("last_error",   "TEXT"),
+]
+
+
 def init_db(db_path: str) -> sqlite3.Connection:
     os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
     conn = sqlite3.connect(db_path, check_same_thread=False)
@@ -77,6 +87,9 @@ def init_db(db_path: str) -> sqlite3.Connection:
 
     ir_defs = ",\n    ".join(f"{name} {typ}" for name, typ in INTERVIEW_RECORD_COLUMNS)
     conn.execute(f"CREATE TABLE IF NOT EXISTS interview_records (\n    {ir_defs}\n);")
+
+    pr_defs = ",\n    ".join(f"{name} {typ}" for name, typ in PIPELINE_RUN_COLUMNS)
+    conn.execute(f"CREATE TABLE IF NOT EXISTS pipeline_runs (\n    {pr_defs}\n);")
     conn.commit()
 
     # Backfill any columns added after initial creation
@@ -416,5 +429,67 @@ def set_follow_up(conn: sqlite3.Connection, job_id: str, follow_up_at: str | Non
     conn.execute(
         "UPDATE jobs SET follow_up_at = ? WHERE id = ?",
         (follow_up_at, job_id),
+    )
+    conn.commit()
+
+
+# ── Pipeline run tracking (catch-up scheduler) ─────────────────────────────────
+# A "run" is one daily pipeline attempt. Stage completions are recorded so an
+# interrupted run (sleep, offline, crash) resumes from the first unfinished
+# stage instead of restarting from scratch.
+
+def _now_local_iso() -> str:
+    return datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def get_open_pipeline_run(conn: sqlite3.Connection) -> dict | None:
+    """Latest run still in progress (status='running'), or None."""
+    row = conn.execute(
+        "SELECT * FROM pipeline_runs WHERE status = 'running' ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def get_last_pipeline_completed_at(conn: sqlite3.Connection) -> str | None:
+    """completed_at of the most recent finished run (success OR failed).
+
+    Failed runs also gate the next attempt — a hard (non-transient) failure
+    should be retried on the normal daily cadence, not every tick.
+    """
+    row = conn.execute(
+        "SELECT completed_at FROM pipeline_runs "
+        "WHERE completed_at IS NOT NULL ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    return row["completed_at"] if row else None
+
+
+def start_pipeline_run(conn: sqlite3.Connection) -> int:
+    cur = conn.execute(
+        "INSERT INTO pipeline_runs (started_at) VALUES (?)", (_now_local_iso(),)
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def mark_pipeline_stage_done(conn: sqlite3.Connection, run_id: int, stage: str) -> None:
+    row = conn.execute(
+        "SELECT stages_done FROM pipeline_runs WHERE id = ?", (run_id,)
+    ).fetchone()
+    done = [s for s in (row["stages_done"] or "").split(",") if s]
+    if stage not in done:
+        done.append(stage)
+    conn.execute(
+        "UPDATE pipeline_runs SET stages_done = ? WHERE id = ?",
+        (",".join(done), run_id),
+    )
+    conn.commit()
+
+
+def finish_pipeline_run(
+    conn: sqlite3.Connection, run_id: int, status: str, error: str | None = None
+) -> None:
+    conn.execute(
+        "UPDATE pipeline_runs SET status = ?, completed_at = ?, last_error = ? WHERE id = ?",
+        (status, _now_local_iso(), error, run_id),
     )
     conn.commit()

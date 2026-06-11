@@ -151,6 +151,31 @@ def _detect_german(text: str, job_id: str = "") -> bool:
     return is_german
 
 
+EXIT_TRANSIENT = 75  # EX_TEMPFAIL — tells the scheduler to retry later, not mark failed
+
+
+class TransientAbort(RuntimeError):
+    """Scoring aborted on a network-class failure.
+
+    Jobs that were not scored stay 'un-scored' (NOT 'error') so the next
+    pipeline run retries them automatically once connectivity is back.
+    """
+
+
+def _is_transient_llm_error(exc: Exception) -> bool:
+    """Network-class failures that must not permanently mark a job as error.
+
+    Covers connection drops / timeouts (laptop sleep, train Wi-Fi) and
+    provider 5xx outages. Content-level failures (validation, refusal,
+    4xx) still go through mark_error as before.
+    """
+    if isinstance(exc, openai.APIConnectionError):  # includes APITimeoutError
+        return True
+    if isinstance(exc, openai.APIStatusError) and exc.status_code >= 500:
+        return True
+    return False
+
+
 def _translate_to_english(text: str, client) -> str | None:
     """Translate German JD text to English. Returns translated text or None on failure."""
     for attempt in range(1, 4):
@@ -550,9 +575,14 @@ def score_jobs(
     # Tune via env var MISTRAL_MAX_CONCURRENT if needed.
     max_concurrent = int(os.getenv("MISTRAL_MAX_CONCURRENT", "3"))
     db_lock = threading.Lock()
+    abort_event = threading.Event()   # set on first transient (network-class) failure
+    skipped: list[str] = []           # job ids left un-scored for the next run
 
     def _llm_score_job(job: dict) -> ScoringResult | None:
         """LLM call + immediate DB write. Concurrency capped by max_workers."""
+        if abort_event.is_set():
+            skipped.append(job["id"])  # list.append is thread-safe (GIL)
+            return None
         context = contexts.get(job["id"], "(候選人背景資料未載入)")
         effective_jd = (job.get("translated_jd_text") or job["raw_jd_text"])[:6000]
         system_prompt, user_prompt = build_prompt(
@@ -575,6 +605,14 @@ def score_jobs(
                 time.sleep(60)
             except Exception as exc:
                 last_exc = exc
+                if _is_transient_llm_error(exc):
+                    abort_event.set()
+                    skipped.append(job["id"])
+                    log.warning(
+                        "Transient failure for job %s (%s @ %s) — kept un-scored for retry: %s",
+                        job["id"], job["title"], job["company"], exc,
+                    )
+                    return None
                 log.error(
                     "Scoring failed for job %s (%s @ %s): %s",
                     job["id"], job["title"], job["company"], exc,
@@ -636,9 +674,16 @@ def score_jobs(
             if result is not None:
                 scored.append(result)
 
-    failed = len(jobs) - len(scored)
-    log.info("完成：%d 筆成功，%d 筆失敗（error）", len(scored), failed)
+    failed = len(jobs) - len(scored) - len(skipped)
+    log.info(
+        "完成：%d 筆成功，%d 筆失敗（error），%d 筆保持 un-scored（網路問題，待重試）",
+        len(scored), failed, len(skipped),
+    )
     conn.close()
+    if abort_event.is_set():
+        raise TransientAbort(
+            f"network-class failure — {len(skipped)} job(s) left un-scored for the next run"
+        )
     return scored
 
 
@@ -651,7 +696,11 @@ def score_single_job(
     conn = init_db(db_path)
     reset_to_unscored(conn, [job_id])
     conn.close()
-    results = score_jobs(db_path=db_path, qdrant_path=qdrant_path, job_ids=[job_id])
+    try:
+        results = score_jobs(db_path=db_path, qdrant_path=qdrant_path, job_ids=[job_id])
+    except TransientAbort as exc:
+        log.warning("score_single_job: %s", exc)
+        return None
     return results[0] if results else None
 
 
@@ -921,7 +970,11 @@ if __name__ == "__main__":
         help="Reset all error-status jobs to un-scored so they will be retried",
     )
     args = parser.parse_args()
-    scored = score_jobs(rescore=args.rescore, reset_errors=args.reset_errors)
+    try:
+        scored = score_jobs(rescore=args.rescore, reset_errors=args.reset_errors)
+    except TransientAbort as exc:
+        log.warning("中止本輪評分（%s）— exit %d，scheduler 將於網路恢復後重試", exc, EXIT_TRANSIENT)
+        sys.exit(EXIT_TRANSIENT)
 
     n = len(scored)
     log.info("完成評分 %d 筆", n)
