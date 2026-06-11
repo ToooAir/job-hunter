@@ -31,6 +31,8 @@ CDP_ENDPOINT = os.getenv("CDP_ENDPOINT", "http://127.0.0.1:9222")
 NAV_TIMEOUT_MS = 30_000
 SETTLE_TIMEOUT_MS = 8_000
 CLICK_TIMEOUT_MS = 1_200
+FRAME_OP_TIMEOUT_MS = 3_000  # per-frame evaluate/content cap — ad/tracker
+                             # iframes may never get an execution context
 
 # Ordered decline-first patterns (user decision 2026-06-11: necessary only,
 # never "Alle akzeptieren"). Most specific first.
@@ -60,21 +62,33 @@ APPLY_BUTTON_PATTERNS = [
 
 _CAPTCHA_MARKERS = ("recaptcha", "hcaptcha", "turnstile", "cf-challenge", "geetest")
 
+# Counted by control class: an application form is recognised by text-entry
+# fields and uploads, NOT by checkbox/search-box noise (board pages are full
+# of "copy job id" checkboxes and search inputs).
 _COUNT_CONTROLS_JS = """
 () => {
-  const SEL = 'input:not([type=hidden]):not([type=submit]):not([type=button]), textarea, select';
-  let light = document.querySelectorAll(SEL).length;
-  let shadow = 0;
+  const T = 'input[type=text],input[type=email],input[type=tel],input[type=url],input:not([type]),textarea';
+  const F = 'input[type=file]';
+  const S = 'select';
+  const CR = 'input[type=checkbox],input[type=radio]';
+  const res = {textish: 0, file: 0, select: 0, checkbox_radio: 0, shadow: 0};
+  const add = (root) => {
+    res.textish += root.querySelectorAll(T).length;
+    res.file += root.querySelectorAll(F).length;
+    res.select += root.querySelectorAll(S).length;
+    res.checkbox_radio += root.querySelectorAll(CR).length;
+  };
+  add(document);
   const walk = (root) => {
     for (const el of root.querySelectorAll('*')) {
       if (el.shadowRoot) {
-        shadow += el.shadowRoot.querySelectorAll(SEL).length;
+        res.shadow += el.shadowRoot.querySelectorAll(T + ',' + F + ',' + S).length;
         walk(el.shadowRoot);
       }
     }
   };
   walk(document);
-  return {light, shadow};
+  return res;
 }
 """
 
@@ -149,7 +163,7 @@ def dismiss_cookie_banner(page) -> str | None:
     (Cookiebot) are searched too. Best effort: a missed banner shows up later
     as form_found=False in the probe report, not as a crash.
     """
-    scopes = [page] + [f for f in page.frames if f is not page.main_frame]
+    scopes = list(_interesting_frames(page))
     for pattern in COOKIE_DECLINE_PATTERNS:
         rx = re.compile(pattern, re.IGNORECASE)
         for scope in scopes:
@@ -176,17 +190,66 @@ def _settle(page) -> None:
         pass  # SPAs with long-poll/analytics never go idle — proceed anyway
 
 
-def count_form_controls(page) -> dict:
-    """{'light': n, 'shadow': n} summed over all frames."""
-    total = {"light": 0, "shadow": 0}
+@contextmanager
+def _frame_op_guard(page, ms: int = FRAME_OP_TIMEOUT_MS):
+    """Cap per-frame operations so a stuck third-party iframe can't eat the
+    default 30s timeout once per frame (news-ish pages embed a dozen)."""
+    page.context.set_default_timeout(ms)
+    try:
+        yield
+    finally:
+        page.context.set_default_timeout(NAV_TIMEOUT_MS)
+
+
+def _interesting_frames(page):
+    """Main frame plus child frames that could plausibly host a form.
+
+    evaluate()/content() have NO timeout parameter and block until the frame
+    has an execution context — a stuck tracker iframe blocks forever. So:
+    filter known ad/analytics hosts, then probe readiness with the
+    timeout-governed wait_for_load_state before yielding.
+    """
     for frame in page.frames:
+        url = (frame.url or "").lower()
+        if frame is not page.main_frame and any(
+            bad in url for bad in ("doubleclick", "googletagmanager", "google-analytics",
+                                   "facebook.", "consent.", "adsystem", "adservice")
+        ):
+            continue
         try:
-            counts = frame.evaluate(_COUNT_CONTROLS_JS)
-            total["light"] += counts["light"]
-            total["shadow"] += counts["shadow"]
+            frame.wait_for_load_state("domcontentloaded", timeout=FRAME_OP_TIMEOUT_MS)
         except Exception:
             continue
+        yield frame
+
+
+def count_form_controls(page) -> dict:
+    """Per-class control counts summed over all (plausible) frames."""
+    total = {"textish": 0, "file": 0, "select": 0, "checkbox_radio": 0, "shadow": 0}
+    with _frame_op_guard(page):
+        for frame in _interesting_frames(page):
+            try:
+                counts = frame.evaluate(_COUNT_CONTROLS_JS)
+                for key in total:
+                    total[key] += counts[key]
+            except Exception:
+                continue
+    total["light"] = (total["textish"] + total["file"]
+                      + total["select"] + total["checkbox_radio"])
     return total
+
+
+def looks_like_application_form(counts: dict) -> bool:
+    """Text entry is the signature of an apply form; checkboxes alone are not.
+
+    Shadow-only forms (>=2 controls hidden in shadow roots) count as found —
+    the probe downgrades them to 'shadow-only' for special handling.
+    """
+    return (
+        counts["textish"] + counts["file"] >= 2
+        or (counts["textish"] >= 1 and counts["select"] >= 1)
+        or counts["shadow"] >= 2
+    )
 
 
 def detect_captcha(page) -> bool:
@@ -220,46 +283,59 @@ def _find_apply_control(page):
     return None, None
 
 
-def goto_apply_page(page, url: str, min_controls: int = 2) -> dict:
+def goto_apply_page(page, url: str) -> dict:
     """Navigate to a job URL and end up on its application form if possible.
 
-    Strategy: load → settle → answer cookie wall (necessary only) → if no form
-    is visible, follow one apply-looking button/link → settle → cookie again.
-    Returns a report dict; never raises on 'form not found'.
+    Strategy: load → settle → answer cookie wall (necessary only) → if what's
+    visible doesn't look like an apply form, follow one apply-looking
+    button/link (new-tab aware) → settle → cookie again.
+
+    Returns a report dict; report['page'] is the page that ends up holding
+    the form (a popup if the apply button opened one) — callers that
+    serialise the report must pop it first. Never raises on 'form not found'.
     """
     report = {
         "url": url, "final_url": None, "cookie_clicked": None,
-        "clicked_apply": None, "form_found": False, "captcha": False,
-        "controls": {"light": 0, "shadow": 0}, "error": None,
+        "clicked_apply": None, "opened_new_tab": False, "form_found": False,
+        "captcha": False, "controls": {}, "error": None, "page": page,
     }
+    active = page
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
         _settle(page)
         report["cookie_clicked"] = dismiss_cookie_banner(page)
         controls = count_form_controls(page)
 
-        if controls["light"] + controls["shadow"] < min_controls:
+        if not looks_like_application_form(controls):
             loc, pattern = _find_apply_control(page)
             if loc is not None:
+                report["clicked_apply"] = pattern
                 try:
-                    loc.click(timeout=CLICK_TIMEOUT_MS * 3)
-                    report["clicked_apply"] = pattern
-                    page.wait_for_load_state("domcontentloaded", timeout=NAV_TIMEOUT_MS)
-                    _settle(page)
-                    cookie2 = dismiss_cookie_banner(page)
+                    # apply buttons on board/career pages often target=_blank
+                    with page.context.expect_page(timeout=4_000) as popup:
+                        loc.click(timeout=CLICK_TIMEOUT_MS * 3)
+                    active = popup.value
+                    report["opened_new_tab"] = True
+                except Exception:
+                    pass  # no popup — same-tab navigation (or a no-op click)
+                try:
+                    active.wait_for_load_state("domcontentloaded", timeout=NAV_TIMEOUT_MS)
+                    _settle(active)
+                    cookie2 = dismiss_cookie_banner(active)
                     report["cookie_clicked"] = report["cookie_clicked"] or cookie2
-                    controls = count_form_controls(page)
+                    controls = count_form_controls(active)
                 except Exception:
                     pass
 
-        report["final_url"] = page.url
+        report["page"] = active
+        report["final_url"] = active.url
         report["controls"] = controls
-        report["form_found"] = controls["light"] + controls["shadow"] >= min_controls
-        report["captcha"] = detect_captcha(page)
+        report["form_found"] = looks_like_application_form(controls)
+        report["captcha"] = detect_captcha(active)
     except Exception as exc:
         report["error"] = f"{type(exc).__name__}: {exc}"[:300]
         try:
-            report["final_url"] = page.url
+            report["final_url"] = active.url
         except Exception:
             pass
     return report
@@ -307,7 +383,7 @@ def extract_form_tree(page) -> dict:
             node = node.parent_frame
         return tuple(reversed(path))
 
-    for frame in page.frames:
+    for frame in _interesting_frames(page):
         try:
             html = frame.content()
         except Exception:
