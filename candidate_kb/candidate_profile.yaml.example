@@ -1,0 +1,141 @@
+# candidate_profile.yaml — single source of truth for deterministic form filling.
+#
+# The apply agent maps standard form fields from this file WITHOUT any LLM call:
+# a form field is matched when its label/name/id contains one of the aliases
+# (case-insensitive). Open-ended questions are routed to the LLM instead.
+#
+# Conventions:
+# - `value` is what gets typed into the field.
+# - `date_value: "+N days"` lets the agent compute a concrete date for
+#   date-picker fields (e.g. earliest start) at fill time.
+# - Aliases cover both English and German labels — German self-hosted career
+#   portals are the long tail this file exists for.
+# - Fill every TODO before the first run.
+
+meta:
+  cl_language: en                      # always English — decided 2026-06-10
+  cv_path: candidate_kb/cv/cv.pdf      # TODO: path to your one fixed CV PDF
+
+fields:
+  salutation:
+    value: "Herr"
+    aliases: [salutation, anrede, title of address]
+
+  first_name:
+    value: "TODO"                      # passport romanization, e.g. "Max"
+    aliases: [first name, given name, vorname]
+
+  last_name:
+    value: "TODO"                      # e.g. "Mustermann"
+    aliases: [last name, family name, surname, nachname, familienname]
+
+  full_name:
+    value: "TODO"                      # e.g. "Max Mustermann"
+    aliases: [full name, name, vollständiger name]
+
+  email:
+    value: "TODO"                      # e.g. "max.mustermann@example.com"
+    aliases: [email, e-mail, mail, e-mail-adresse]
+
+  phone:
+    value: "TODO"                      # international format, e.g. "+49 151 2345678"
+    aliases: [phone, telephone, mobile, telefon, telefonnummer, handy, mobilnummer]
+
+  street_address:
+    value: "TODO"                      # e.g. "Musterstraße 12"
+    aliases: [street, address, straße, strasse, anschrift, adresse]
+
+  postal_code:
+    value: "TODO"                      # e.g. "20095"
+    aliases: [postal code, zip, plz, postleitzahl]
+
+  city:
+    value: "TODO"                      # e.g. "Berlin"
+    aliases: [city, town, stadt, ort, wohnort]
+
+  country:
+    value: "Germany"
+    aliases: [country, land, staat]
+
+  current_location:
+    value: "TODO"                      # e.g. "Berlin, Germany"
+    aliases: [current location, location, aktueller wohnort, standort]
+
+  nationality:
+    value: "TODO"
+    aliases: [nationality, citizenship, staatsangehörigkeit, staatsbürgerschaft]
+
+  work_permit:
+    # Adjust to your permit type (e.g. Blue Card, Chancenkarte, permanent residence).
+    value: "Yes — I hold a valid German residence permit and am eligible to start immediately."
+    aliases: [work permit, work authorization, eligible to work, right to work,
+              arbeitserlaubnis, arbeitsgenehmigung, aufenthaltstitel]
+
+  requires_sponsorship:
+    # Chancenkarte = legal residence already in hand; conversion to a work
+    # permit is the holder's own process, not US-style employer sponsorship.
+    # TODO: confirm this wording matches what you answer today in forms.
+    value: "No"
+    explanation: "I already hold a valid German residence permit."
+    aliases: [sponsorship, visa sponsorship, require visa, need visa]
+
+  earliest_start:
+    value: "Immediately"
+    date_value: "+14 days"             # used when the form wants a concrete date
+    aliases: [earliest start, start date, availability, available from,
+              frühestmöglicher eintrittstermin, eintrittstermin, eintrittsdatum,
+              verfügbar ab, verfügbarkeit, startdatum]
+
+  notice_period:
+    value: "None — available immediately"
+    aliases: [notice period, kündigungsfrist]
+
+  salary_expectation:
+    value: "TODO"                      # e.g. "€65,000 gross per year (negotiable)"
+    value_eur_year: 0                  # TODO: bare number for numeric-only fields, e.g. 65000
+    aliases: [salary expectation, expected salary, desired salary, compensation,
+              gehaltsvorstellung, gehaltswunsch, jahresgehalt, gehalt]
+
+  linkedin:
+    value: "TODO"                      # full URL or "" to leave blank
+    aliases: [linkedin, linkedin profile, linkedin url]
+
+  github:
+    value: "TODO"                      # e.g. "https://github.com/your-handle"
+    aliases: [github, github profile, portfolio, website, webseite]
+
+  languages:
+    value: "TODO"                      # e.g. "English (fluent), German (B1)"
+    aliases: [languages, language skills, sprachkenntnisse, sprachen]
+
+  german_level:
+    value: "TODO"                      # honest CEFR level — the verifier checks language claims
+    aliases: [german, german level, deutschkenntnisse, deutsch]
+
+  english_level:
+    value: "Fluent"
+    aliases: [english, english level, englischkenntnisse, englisch]
+
+  relocation:
+    value: "Not required — I am already based in Germany."
+    aliases: [relocation, willing to relocate, umzugsbereitschaft, umzug]
+
+  how_did_you_hear:
+    value: "Job posting"
+    aliases: [how did you hear, source, referral source,
+              wie haben sie von uns erfahren, aufmerksam geworden]
+
+# Consent checkboxes the agent may tick automatically.
+consents:
+  auto_accept_aliases: [privacy policy, data protection, datenschutz,
+                        datenschutzerklärung, einwilligung]
+
+# Fields the agent must NEVER fill — leave blank and flag for human review.
+# (German forms may legally ask some of these; answering is optional.)
+never_fill:
+  - date of birth / geburtsdatum      # only fill manually if hard-required
+  - photo / bewerbungsfoto
+  - religion / konfession
+  - marital status / familienstand
+  - gender / geschlecht
+  - disability / schwerbehinderung
