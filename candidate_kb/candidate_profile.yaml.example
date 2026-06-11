@@ -125,6 +125,23 @@ fields:
     aliases: [how did you hear, source, referral source,
               wie haben sie von uns erfahren, aufmerksam geworden]
 
+
+  # ── Optional disclosures ─────────────────────────────────────────────────
+  # German portals commonly ask these. Filling them is your choice: define
+  # them here to let the agent auto-fill, or delete them (and add to
+  # never_fill below) to be asked per-form instead.
+  date_of_birth:
+    value: "TODO"                      # German forms usually want DD.MM.YYYY
+    aliases: [date of birth, birth date, geburtsdatum, geburtstag]
+
+  gender:
+    value: "TODO"                      # e.g. "Männlich" / "Weiblich" / "Divers"
+    aliases: [gender, geschlecht]
+
+  disability_status:
+    value: "TODO"                      # e.g. "Nein" — Schwerbehinderung is a standard German HR question
+    aliases: [disability, severely disabled, schwerbehinderung, schwerbehindert]
+
 # Consent checkboxes the agent may tick automatically.
 consents:
   auto_accept_aliases: [privacy policy, data protection, datenschutz,
@@ -133,9 +150,23 @@ consents:
 # Fields the agent must NEVER fill — leave blank and flag for human review.
 # (German forms may legally ask some of these; answering is optional.)
 never_fill:
-  - date of birth / geburtsdatum      # only fill manually if hard-required
   - photo / bewerbungsfoto
   - religion / konfession
   - marital status / familienstand
-  - gender / geschlecht
-  - disability / schwerbehinderung
+
+# Structured CV data — for portals that want manual education/work-history
+# entry (most ATS parse the uploaded CV PDF instead, and agent support for
+# repeating sections arrives with the multi-step wizard; until then this
+# feeds the answer cheat-sheet for manual filling).
+education:
+  - degree: "TODO"                     # e.g. "BSc Computer Science"
+    institution: "TODO"
+    from: "TODO"                       # e.g. "2014-09"
+    to: "TODO"
+
+work_history:
+  - title: "TODO"
+    company: "TODO"
+    from: "TODO"
+    to: "TODO"                         # or "present"
+    summary: "TODO"                    # one line, mirrors your CV — no embellishment

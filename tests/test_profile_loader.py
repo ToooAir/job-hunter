@@ -85,6 +85,9 @@ class ExampleTemplateTest(unittest.TestCase):
             "fields.salary_expectation.value_eur_year",
             "fields.linkedin.value",
             "fields.github.value",
+            "fields.date_of_birth.value",
+            "fields.gender.value",
+            "fields.disability_status.value",
         }
         self.assertEqual(todos, expected)
 
@@ -124,9 +127,16 @@ class ExampleTemplateTest(unittest.TestCase):
         self.assertIsNone(self.profile.match_field("Why do you want to work here?"))
 
     def test_never_fill(self):
-        self.assertTrue(self.profile.is_never_fill("Geburtsdatum *"))
+        self.assertTrue(self.profile.is_never_fill("Bewerbungsfoto"))
         self.assertTrue(self.profile.is_never_fill("Marital status"))
+        # Geburtsdatum was promoted to an optional field (common on German forms)
+        self.assertFalse(self.profile.is_never_fill("Geburtsdatum *"))
         self.assertFalse(self.profile.is_never_fill("First name"))
+
+    def test_optional_disclosure_fields_match(self):
+        self.assertEqual(self.profile.match_field("Geburtsdatum").key, "date_of_birth")
+        self.assertEqual(self.profile.match_field("Geschlecht").key, "gender")
+        self.assertEqual(self.profile.match_field("Schwerbehinderung").key, "disability_status")
 
     def test_auto_consent(self):
         self.assertTrue(self.profile.is_auto_consent("Ich akzeptiere die Datenschutzerklärung"))
