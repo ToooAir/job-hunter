@@ -1,0 +1,191 @@
+"""Tests for utils/dom_pruner.py (offline, fixtures use fictional data only).
+
+Run:  python -m unittest tests.test_dom_pruner -v
+"""
+
+import sys
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from utils.dom_pruner import extract_fields, prune_html  # noqa: E402
+
+GERMAN_FORM = """\
+<html><head><script>tracking();</script><style>.x{color:red}</style></head>
+<body>
+<nav><a href="/">Start</a><a href="/jobs">Jobs</a></nav>
+<header><h1>Mustermann GmbH Karriere</h1></header>
+<!-- application form below -->
+<main>
+<p>Werden Sie Teil unseres Teams in Beispielstadt.</p>
+<form action="/apply" method="post" class="apply-form" data-track="x">
+  <input type="hidden" name="csrf" value="token123">
+  <label for="vorname">Vorname *</label>
+  <input type="text" id="vorname" name="first_name" required>
+  <label for="nachname">Nachname *</label>
+  <input type="text" id="nachname" name="last_name" required>
+  <label for="email">E-Mail-Adresse</label>
+  <input type="email" id="email" name="email" autocomplete="email">
+  <input type="tel" name="phone" placeholder="Telefonnummer">
+  <div>
+    <label for="gehalt">Gehaltsvorstellung (brutto / Jahr)</label>
+    <input type="number" id="gehalt" name="salary">
+  </div>
+  <fieldset>
+    <legend>Anrede</legend>
+    <label><input type="radio" name="anrede" value="herr"> Herr</label>
+    <label><input type="radio" name="anrede" value="frau"> Frau</label>
+    <label><input type="radio" name="anrede" value="divers"> Divers</label>
+  </fieldset>
+  <label for="land">Land</label>
+  <select id="land" name="country">
+    <option value="">Bitte wählen</option>
+    <option value="de">Deutschland</option>
+    <option value="at">Österreich</option>
+  </select>
+  <label for="cl">Anschreiben</label>
+  <textarea id="cl" name="cover_letter"></textarea>
+  <label for="cv">Lebenslauf hochladen *</label>
+  <input type="file" id="cv" name="resume" accept=".pdf,.docx" required>
+  <label><input type="checkbox" name="privacy" required> Ich akzeptiere die Datenschutzerklärung</label>
+  <input type="submit" value="Bewerbung absenden">
+</form>
+</main>
+<footer><p>© Mustermann GmbH</p></footer>
+</body></html>
+"""
+
+NO_FORM_TAG_SPA = """\
+<html><body>
+<div id="app">
+  <div class="application">
+    <span>Vollständiger Name</span>
+    <input type="text" name="full_name">
+    <div role="combobox" aria-label="Standort" id="loc-picker">Standort wählen</div>
+    <textarea aria-label="Warum möchten Sie bei uns arbeiten?" name="motivation"></textarea>
+  </div>
+</div>
+</body></html>
+"""
+
+
+class ExtractFieldsTest(unittest.TestCase):
+    def setUp(self):
+        self.fields = extract_fields(GERMAN_FORM)
+        self.by_name = {f.name: f for f in self.fields}
+
+    def test_hidden_and_submit_skipped(self):
+        self.assertNotIn("csrf", self.by_name)
+        self.assertFalse(any(f.kind in ("hidden", "submit") for f in self.fields))
+
+    def test_label_via_for_attribute(self):
+        self.assertEqual(self.by_name["first_name"].label, "Vorname *")
+        self.assertEqual(self.by_name["salary"].label, "Gehaltsvorstellung (brutto / Jahr)")
+
+    def test_placeholder_fallback_label(self):
+        self.assertEqual(self.by_name["phone"].label, "Telefonnummer")
+        self.assertEqual(self.by_name["phone"].kind, "tel")
+
+    def test_required_detection(self):
+        self.assertTrue(self.by_name["first_name"].required)   # required attr
+        self.assertFalse(self.by_name["email"].required)
+        self.assertTrue(self.by_name["resume"].required)
+
+    def test_radio_group_collapsed_with_legend_label(self):
+        anrede = self.by_name["anrede"]
+        self.assertEqual(anrede.kind, "radio")
+        self.assertEqual(anrede.label, "Anrede")
+        self.assertEqual(anrede.options, ["Herr", "Frau", "Divers"])
+        # only ONE field for the whole group
+        self.assertEqual(sum(1 for f in self.fields if f.name == "anrede"), 1)
+
+    def test_select_options_extracted(self):
+        country = self.by_name["country"]
+        self.assertEqual(country.kind, "select")
+        self.assertIn("Deutschland", country.options)
+
+    def test_file_input_marked_with_accept(self):
+        cv = self.by_name["resume"]
+        self.assertEqual(cv.kind, "file")
+        self.assertEqual(cv.accept, ".pdf,.docx")
+        self.assertEqual(cv.label, "Lebenslauf hochladen *")
+
+    def test_checkbox_with_wrapping_label(self):
+        privacy = self.by_name["privacy"]
+        self.assertEqual(privacy.kind, "checkbox")
+        self.assertIn("Datenschutzerklärung", privacy.label)
+
+    def test_selectors_unique_and_resolvable(self):
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(GERMAN_FORM, "html.parser")
+        for f in self.fields:
+            with self.subTest(field=f.name or f.label):
+                self.assertEqual(len(soup.select(f.selector)), 1, f.selector)
+
+    def test_id_preferred_in_selector(self):
+        self.assertEqual(self.by_name["email"].selector, "#email")
+
+    def test_frame_path_passthrough(self):
+        fields = extract_fields(GERMAN_FORM, frame_path=("iframe#apply",))
+        self.assertEqual(fields[0].frame_path, ("iframe#apply",))
+        self.assertEqual(fields[0].to_dict()["frame_path"], ["iframe#apply"])
+
+    def test_autocomplete_kept(self):
+        self.assertEqual(self.by_name["email"].autocomplete, "email")
+
+
+class SpaWithoutFormTagTest(unittest.TestCase):
+    def setUp(self):
+        self.fields = extract_fields(NO_FORM_TAG_SPA)
+
+    def test_custom_widget_detected(self):
+        custom = [f for f in self.fields if f.kind == "custom"]
+        self.assertEqual(len(custom), 1)
+        # aria-label takes priority over inner text for custom widgets
+        self.assertEqual(custom[0].label, "Standort")
+
+    def test_sibling_text_label(self):
+        name = next(f for f in self.fields if f.name == "full_name")
+        self.assertEqual(name.label, "Vollständiger Name")
+
+    def test_aria_label_textarea(self):
+        motivation = next(f for f in self.fields if f.name == "motivation")
+        self.assertEqual(motivation.label, "Warum möchten Sie bei uns arbeiten?")
+
+
+class PruneHtmlTest(unittest.TestCase):
+    def test_scripts_styles_chrome_comments_removed(self):
+        out = prune_html(GERMAN_FORM)
+        for forbidden in ("tracking()", "color:red", "<nav", "<footer", "application form below"):
+            self.assertNotIn(forbidden, out)
+
+    def test_form_and_semantics_kept(self):
+        out = prune_html(GERMAN_FORM)
+        for required in ("Vorname", "Gehaltsvorstellung", 'name="resume"',
+                         "Datenschutzerklärung", 'autocomplete="email"'):
+            self.assertIn(required, out)
+
+    def test_non_semantic_attributes_dropped(self):
+        out = prune_html(GERMAN_FORM)
+        self.assertNotIn("data-track", out)
+        self.assertNotIn("apply-form", out)  # class attr dropped
+
+    def test_no_form_tag_fallback(self):
+        out = prune_html(NO_FORM_TAG_SPA)
+        self.assertIn('name="full_name"', out)
+        self.assertIn("combobox", out)
+
+    def test_budget_enforced_on_bloated_page(self):
+        filler = "".join(
+            f"<p>Absatz {i} über unsere Unternehmenskultur und Geschichte.</p>" for i in range(2000)
+        )
+        bloated = GERMAN_FORM.replace("<form", filler + "<form")
+        out = prune_html(bloated, budget=20_000)
+        # form survives; the dropped filler was outside the form root anyway
+        self.assertIn('name="first_name"', out)
+        self.assertLess(len(out.encode()), 25_000)
+
+
+if __name__ == "__main__":
+    unittest.main()
