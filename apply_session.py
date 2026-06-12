@@ -368,12 +368,13 @@ def run_watch(args) -> None:
                     except Exception:
                         continue
                     key = id(page)
-                    if seen_urls.get(key) == url:
-                        continue
+                    url_changed = seen_urls.get(key) != url
                     seen_urls[key] = url
                     host = urlparse(url).netloc
                     snap = match_watched_snapshot(host, watched)
                     if snap is None:
+                        if not url_changed:
+                            continue
                         # Tier 3 snapshots carry the board posting's host,
                         # but the real apply flow often lives elsewhere
                         # (e.g. join.com) — surface the confirmation
@@ -384,7 +385,17 @@ def run_watch(args) -> None:
                             print("    （若這是你剛送出的申請，用"
                                   " --book <snapshot_id> 手動入帳）")
                         continue
-                    if snap["id"] in booked or not page_confirms(page):
+                    if snap["id"] in booked:
+                        continue
+                    # matched pages are re-checked EVERY poll even with an
+                    # unchanged URL — inline (AJAX) submissions like
+                    # arbeitnow's swap in the success text without navigating
+                    if not page_confirms(page):
+                        if url_changed and url not in warned:
+                            warned.add(url)
+                            print(f"  · 看見 [{snap['id']}] "
+                                  f"{snap['job'].get('company')} 的頁面，"
+                                  f"等待確認文字…")
                         continue
                     shot = take_screenshot(page, snap["id"], suffix="-confirmed")
                     report_result(conn, snap["id"], "submitted",
