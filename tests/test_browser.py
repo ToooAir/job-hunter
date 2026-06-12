@@ -16,11 +16,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-try:
-    import playwright  # noqa: F401
-    HAS_PLAYWRIGHT = True
-except ImportError:
-    HAS_PLAYWRIGHT = False
+from tests.playwright_guard import has_chromium
+
+HAS_PLAYWRIGHT = has_chromium()  # package alone is not enough on the host
 
 if HAS_PLAYWRIGHT:
     from utils.browser import (
