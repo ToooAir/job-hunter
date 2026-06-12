@@ -303,6 +303,44 @@ _ATS_HREF_JS = """
 """
 
 
+# Wording that means the posting itself is gone (not just form-less).
+_GONE_TEXT_RE = re.compile(
+    r"nicht\s+mehr\s+(?:verfügbar|aktiv|online|vakant)|bereits\s+besetzt|"
+    r"stelle\s+(?:ist|wurde)\s+(?:besetzt|deaktiviert|geschlossen)|"
+    r"(?:anzeige|stellenanzeige)\s+(?:ist\s+)?abgelaufen|"
+    r"no\s+longer\s+(?:available|active|accepting)|"
+    r"position\s+has\s+been\s+filled|job\s+(?:has\s+)?expired|"
+    r"vacancy\s+(?:is\s+)?closed|this\s+job\s+is\s+no\s+longer|"
+    r"page\s+not\s+found|seite\s+nicht\s+gefunden", re.I)
+
+_LOCALE_SEGMENT_RE = re.compile(r"^[a-z]{2}([_-][a-z]{2})?$", re.I)
+
+
+def _gone_signal(page, requested_url: str, check_text: bool = True) -> str | None:
+    """Posting-disappeared heuristics. The homepage-redirect check is pure
+    URL logic and always meaningful — homepages carry search boxes that fool
+    the raw control counts (Zenjob/heyjobs lesson). Gone wording is only
+    consulted when the caller saw no acceptable form."""
+    try:
+        req, fin = urlparse(requested_url), urlparse(page.url)
+        deep = [s for s in req.path.split("/") if s]
+        shallow = [s for s in fin.path.split("/") if s]
+        if (req.netloc == fin.netloc and len(deep) >= 2
+                and (not shallow or (len(shallow) == 1
+                                     and _LOCALE_SEGMENT_RE.match(shallow[0])))):
+            return "redirected-to-homepage"
+        if not check_text:
+            return None
+        text = page.evaluate(
+            "() => document.body ? document.body.innerText.slice(0, 8000) : ''")
+        m = _GONE_TEXT_RE.search(text or "")
+        if m:
+            return f"gone-text: {m.group(0)[:60]}"
+    except Exception:
+        pass
+    return None
+
+
 def _find_ats_href(page) -> str | None:
     """An anchor on the page that points into a known ATS, if any."""
     try:
@@ -357,6 +395,7 @@ def goto_apply_page(page, url: str) -> dict:
         "url": url, "final_url": None, "cookie_clicked": None,
         "clicked_apply": None, "opened_new_tab": False, "form_found": False,
         "captcha": False, "controls": {}, "error": None, "page": page,
+        "gone_signal": None,
     }
     active = page
     try:
@@ -435,6 +474,8 @@ def goto_apply_page(page, url: str) -> dict:
         report["final_url"] = active.url
         report["controls"] = controls
         report["form_found"] = _acceptable_form(controls)
+        report["gone_signal"] = _gone_signal(
+            active, url, check_text=not report["form_found"])
         report["captcha"] = detect_captcha(active)
     except Exception as exc:
         report["error"] = f"{type(exc).__name__}: {exc}"[:300]

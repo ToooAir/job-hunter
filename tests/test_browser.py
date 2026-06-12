@@ -243,5 +243,68 @@ class AtsPullThroughTest(unittest.TestCase):
         self.assertGreater(report["controls"]["password"], 0)  # account-wall
 
 
+GONE_HTML = """<!doctype html><html><head><meta charset="utf-8"></head><body>
+<h1>Diese Stelle ist leider nicht mehr verfügbar.</h1>
+</body></html>"""
+
+
+@unittest.skipUnless(HAS_PLAYWRIGHT, "playwright not installed on this host")
+class GoneSignalTest(unittest.TestCase):
+    """Vanished postings: explicit gone wording, or a same-site redirect
+    from a deep job URL to the (locale) homepage (Zenjob/heyjobs lesson)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        root = Path(cls.tmp.name)
+        (root / "site").mkdir()
+        (root / "site" / "gone.html").write_text(GONE_HTML, encoding="utf-8")
+        # search boxes on purpose: raw control counts must not mask the
+        # redirect signal (the actual Zenjob/heyjobs failure mode)
+        (root / "site" / "index.html").write_text(
+            "<!doctype html><html><body><h1>Jobs Portal</h1>"
+            '<input name="q"><input name="city"><input name="radius">'
+            "</body></html>", encoding="utf-8")
+
+        class Redirecting(SimpleHTTPRequestHandler):
+            def do_GET(self):
+                if self.path.startswith("/jobs/"):  # deep job URL → homepage
+                    self.send_response(302)
+                    self.send_header("Location", "/")
+                    self.end_headers()
+                    return
+                super().do_GET()
+
+        handler = partial(Redirecting, directory=str(root / "site"))
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+        cls.base = f"http://127.0.0.1:{cls.server.server_port}"
+        cls.session_cm = headless_session(profile_dir=root / "profile")
+        cls.context = cls.session_cm.__enter__()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.session_cm.__exit__(None, None, None)
+        cls.server.shutdown()
+        cls.tmp.cleanup()
+
+    def setUp(self):
+        self.page = self.context.new_page()
+
+    def tearDown(self):
+        self.page.close()
+
+    def test_gone_wording_is_detected(self):
+        report = goto_apply_page(self.page, f"{self.base}/gone.html")
+        self.assertFalse(report["form_found"])
+        self.assertIn("gone-text", report["gone_signal"] or "")
+
+    def test_deep_url_redirected_to_homepage_is_gone(self):
+        report = goto_apply_page(self.page, f"{self.base}/jobs/dev-123")
+        # the homepage's search boxes fool the raw control count — the
+        # URL-based redirect signal must be set regardless
+        self.assertEqual(report["gone_signal"], "redirected-to-homepage")
+
+
 if __name__ == "__main__":
     unittest.main()

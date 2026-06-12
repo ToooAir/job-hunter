@@ -60,6 +60,25 @@ class TestVerdictOf(unittest.TestCase):
         self.assertEqual(
             verdict_of(report(), {"fields": fields("text")}), "weak-form")
 
+    def test_gone_signal_without_form_is_gone(self):
+        r = report(gone_signal="redirected-to-homepage")
+        self.assertEqual(verdict_of(r, None), "gone")
+
+    def test_form_beats_gone_signal(self):
+        r = report(gone_signal="gone-text: abgelaufen")
+        tree = {"fields": fields("text", "email", "file")}
+        self.assertEqual(verdict_of(r, tree), "ok")
+
+    def test_pruned_empty_tree_with_redirect_is_gone(self):
+        # homepage search boxes: raw form_found True, pruned tree empty
+        r = report(gone_signal="redirected-to-homepage")
+        self.assertEqual(verdict_of(r, {"fields": []}), "gone")
+
+    def test_gone_beats_account_wall(self):
+        r = report(gone_signal="redirected-to-homepage")
+        r["controls"]["password"] = 1
+        self.assertEqual(verdict_of(r, None), "gone")
+
     def test_password_without_form_is_account_wall(self):
         r = report()
         r["controls"]["password"] = 1

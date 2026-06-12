@@ -68,6 +68,8 @@ def verdict_of(report: dict, tree: dict | None) -> str:
         return "captcha"
     if tree and tree["fields"]:
         return "ok" if _has_apply_signature(tree["fields"]) else "weak-form"
+    if report.get("gone_signal"):
+        return "gone"
     if report["controls"].get("password"):
         return "account-wall"
     if report["controls"]["shadow"] > 0 and report["controls"]["light"] == 0:
@@ -196,6 +198,17 @@ def main() -> None:
     states = run_pass_a(jobs)
     if not args.dry_run:
         refresh_liveness(conn, states)
+    gone = [s for s in states if s["verdict"] == "gone"]
+    if gone:
+        # a vanished posting gets no draft — expire it instead of wasting
+        # LLM calls and review time on a Tier 3 shell (Zenjob lesson)
+        if not args.dry_run:
+            from utils.db import mark_expired
+            mark_expired(conn, [s["job"]["id"] for s in gone])
+        for s in gone:
+            print(f"  ✗ 職缺已下架（{s['job']['company'][:30]}）→ 標 expired，"
+                  f"不生成草稿", flush=True)
+        states = [s for s in states if s["verdict"] != "gone"]
     conn.close()
 
     from utils.apply_llm import CALL_STATS
