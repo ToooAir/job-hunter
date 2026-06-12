@@ -117,12 +117,13 @@ def run_pass_a(jobs: list[dict]) -> list[dict]:
                     "verdict": verdict_of(report, tree),
                     "fields": [f.to_dict() for f in tree["fields"]] if tree else [],
                     "pruned": tree["pruned"] if tree else {},
-                    # final_url is only trustworthy as an apply link when a
-                    # form was actually found there; otherwise the probe may
-                    # have drifted (listing page, homepage) and persisting it
-                    # would poison the next run's target.
+                    # final_url is only trustworthy as an apply link when the
+                    # PRUNED tree has fields — form_found counts raw controls,
+                    # and a homepage's search boxes pass that bar (Zenjob
+                    # lesson). Otherwise the probe may have drifted and
+                    # persisting the URL would poison the next run's target.
                     "apply_url": (report.get("final_url")
-                                  if report.get("form_found") else None),
+                                  if tree and tree.get("fields") else None),
                     "notes": [note],
                 })
             except Exception as exc:  # one bad site never kills the sweep
@@ -167,6 +168,8 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=None, help="cap jobs this run")
     parser.add_argument("--budget", type=int, default=None)
     parser.add_argument("--source", default=None, help="only this source (debug)")
+    parser.add_argument("--job-ids", default=None,
+                        help="comma-separated job ids — regenerate just these")
     parser.add_argument("--dry-run", action="store_true",
                         help="no DB writes (snapshots, liveness)")
     parser.add_argument("--db", default=DEFAULT_DB_PATH)
@@ -179,6 +182,12 @@ def main() -> None:
     queue = build_queue(conn, budget=args.budget)["queue"]
     if args.source:
         queue = [j for j in queue if j["source"] == args.source]
+    if args.job_ids:
+        wanted = {x.strip() for x in args.job_ids.split(",") if x.strip()}
+        queue = [j for j in queue if j["id"] in wanted]
+        missing = wanted - {j["id"] for j in queue}
+        if missing:
+            print(f"⚠ 不在佇列中(可能 in-flight/不合格):{', '.join(sorted(missing))}")
     if args.limit:
         queue = queue[:args.limit]
     jobs = enrich_jobs(conn, queue)
