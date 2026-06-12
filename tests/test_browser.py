@@ -164,5 +164,84 @@ class HeadlessFlowTest(unittest.TestCase):
         self.assertTrue(report["form_found"])  # form is still there — just flagged
 
 
+LOGIN_TRAP_HTML = """<!doctype html><html><body>
+<h1>Stellenanzeige — Mustermann GmbH</h1>
+<form action="/login">
+  <label>Benutzername <input name="user"></label>
+  <label>E-Mail <input name="email" type="email"></label>
+  <label>Telefon <input name="phone"></label>
+  <label>Passwort <input name="pass" type="password"></label>
+</form>
+<a href="__ATS_FORM__">Zum Stellenportal</a>
+</body></html>"""
+# anchor text deliberately matches neither APPLY_BUTTON_PATTERNS nor
+# /apply|bewerb/ — only the ATS-host pull-through can follow it
+
+LOGIN_ONLY_HTML = LOGIN_TRAP_HTML.replace(
+    '<a href="__ATS_FORM__">Zum Stellenportal</a>', "")
+
+
+@unittest.skipUnless(HAS_PLAYWRIGHT, "playwright not installed on this host")
+class AtsPullThroughTest(unittest.TestCase):
+    """A login form must not count as the application, and a known-ATS link
+    on the page must be followed one more hop (lokale-kleinanzeigen lesson).
+    Two servers so the ATS hop crosses netlocs like in the wild."""
+
+    @classmethod
+    def setUpClass(cls):
+        import utils.browser as bw
+        cls.tmp = tempfile.TemporaryDirectory()
+        root = Path(cls.tmp.name)
+        for sub in ("board", "ats"):
+            (root / sub).mkdir()
+        (root / "ats" / "jobform.html").write_text(FORM_HTML, encoding="utf-8")
+
+        def serve(sub):
+            handler = partial(SimpleHTTPRequestHandler, directory=str(root / sub))
+            srv = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+            return srv
+
+        cls.board_srv, cls.ats_srv = serve("board"), serve("ats")
+        ats_url = f"http://127.0.0.1:{cls.ats_srv.server_port}/jobform.html"
+        (root / "board" / "trap.html").write_text(
+            LOGIN_TRAP_HTML.replace("__ATS_FORM__", ats_url), encoding="utf-8")
+        (root / "board" / "loginonly.html").write_text(
+            LOGIN_ONLY_HTML, encoding="utf-8")
+        cls.base = f"http://127.0.0.1:{cls.board_srv.server_port}"
+
+        cls._ats_hosts = bw._ATS_HOSTS
+        bw._ATS_HOSTS = ("127.0.0.1",)  # fixture server stands in for join.com
+        cls.session_cm = headless_session(profile_dir=root / "profile")
+        cls.context = cls.session_cm.__enter__()
+
+    @classmethod
+    def tearDownClass(cls):
+        import utils.browser as bw
+        bw._ATS_HOSTS = cls._ats_hosts
+        cls.session_cm.__exit__(None, None, None)
+        cls.board_srv.shutdown()
+        cls.ats_srv.shutdown()
+        cls.tmp.cleanup()
+
+    def setUp(self):
+        self.page = self.context.new_page()
+
+    def tearDown(self):
+        self.page.close()
+
+    def test_login_form_is_rejected_and_ats_link_followed(self):
+        report = goto_apply_page(self.page, f"{self.base}/trap.html")
+        self.assertTrue(report["form_found"], report)
+        self.assertTrue(report["final_url"].endswith("jobform.html"))
+        self.assertIn("ats-pull-through", report["clicked_apply"] or "")
+        self.assertEqual(report["controls"]["password"], 0)
+
+    def test_login_form_without_ats_link_is_not_an_application(self):
+        report = goto_apply_page(self.page, f"{self.base}/loginonly.html")
+        self.assertFalse(report["form_found"])
+        self.assertGreater(report["controls"]["password"], 0)  # account-wall
+
+
 if __name__ == "__main__":
     unittest.main()

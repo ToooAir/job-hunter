@@ -18,7 +18,7 @@ import os
 import re
 from contextlib import contextmanager
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 from playwright.sync_api import sync_playwright
@@ -271,6 +271,46 @@ def looks_like_application_form(counts: dict) -> bool:
     )
 
 
+def _acceptable_form(counts: dict) -> bool:
+    """A password field means login/registration, not an application
+    (lokale-kleinanzeigen lesson: its login form passed the size bar and
+    the probe stopped one hop short of the real join.com form)."""
+    return looks_like_application_form(counts) and not counts.get("password")
+
+
+# Hosts whose presence in an anchor marks the real application destination.
+# Tests may monkeypatch this to point at the fixture server.
+_ATS_HOSTS = (
+    "join.com", "greenhouse.io", "lever.co", "personio.de", "personio.com",
+    "workable.com", "ashbyhq.com", "successfactors", "smartrecruiters.com",
+    "recruitee.com", "softgarden", "myworkdayjobs.com", "teamtailor.com",
+    "onlyfy", "heyrecruit",
+)
+
+_ATS_HREF_JS = """
+(ats) => {
+  const bad = /\\/(terms|privacy|legal|imprint|impressum|datenschutz|agb|login|signin|register)\\b/i;
+  const cand = [...document.querySelectorAll('a[href]')].filter(a => {
+    let u; try { u = new URL(a.href); } catch { return false; }
+    if (!/^https?:$/.test(u.protocol) || bad.test(u.pathname)) return false;
+    if (u.pathname === '/' || u.pathname === '') return false;
+    return ats.some(d => u.hostname === d || u.hostname.endsWith('.' + d)
+                         || u.hostname.includes(d));
+  });
+  const pref = cand.find(a => /bewerb|apply/i.test((a.innerText || '') + a.href));
+  return (pref || cand[0]) ? (pref || cand[0]).href : null;
+}
+"""
+
+
+def _find_ats_href(page) -> str | None:
+    """An anchor on the page that points into a known ATS, if any."""
+    try:
+        return page.evaluate(_ATS_HREF_JS, list(_ATS_HOSTS))
+    except Exception:
+        return None
+
+
 def detect_captcha(page) -> bool:
     for frame in page.frames:
         try:
@@ -325,7 +365,7 @@ def goto_apply_page(page, url: str) -> dict:
         report["cookie_clicked"] = dismiss_cookie_banner(page)
         controls = count_form_controls(page)
 
-        if not looks_like_application_form(controls):
+        if not _acceptable_form(controls):
             loc, pattern = _find_apply_control(page)
             if loc is not None:
                 report["clicked_apply"] = pattern
@@ -358,7 +398,7 @@ def goto_apply_page(page, url: str) -> dict:
                     controls = count_form_controls(active)
                 except Exception:
                     pass
-                if active is page and not looks_like_application_form(controls):
+                if active is page and not _acceptable_form(controls):
                     # click led nowhere (blocked popup / no-op) — try a DOM href
                     try:
                         href2 = page.evaluate(_APPLY_HREF_JS)
@@ -373,10 +413,28 @@ def goto_apply_page(page, url: str) -> dict:
                     except Exception:
                         pass
 
+        if not _acceptable_form(controls):
+            # last resort: boards/classifieds reposts often bury the real
+            # application one more hop away behind a known-ATS link
+            ats_href = _find_ats_href(active)
+            if (ats_href and urlparse(ats_href).netloc
+                    != urlparse(active.url).netloc):
+                try:
+                    active.goto(ats_href, wait_until="domcontentloaded",
+                                timeout=NAV_TIMEOUT_MS)
+                    _settle(active)
+                    report["cookie_clicked"] = (report["cookie_clicked"]
+                                                or dismiss_cookie_banner(active))
+                    report["clicked_apply"] = ((report.get("clicked_apply") or "")
+                                               + " +ats-pull-through").strip()
+                    controls = count_form_controls(active)
+                except Exception:
+                    pass
+
         report["page"] = active
         report["final_url"] = active.url
         report["controls"] = controls
-        report["form_found"] = looks_like_application_form(controls)
+        report["form_found"] = _acceptable_form(controls)
         report["captcha"] = detect_captcha(active)
     except Exception as exc:
         report["error"] = f"{type(exc).__name__}: {exc}"[:300]
