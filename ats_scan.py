@@ -292,9 +292,39 @@ def load_results_from_csv(csv_path):
     return results
 
 
+# scan_text_for_ats matches ATS domains anywhere in raw HTML, so evidence
+# can be a script src (…successfactors.eu/…/jquery.js) or a footer link
+# (join.com/terms). Such evidence still proves WHICH ats hosts the job,
+# but must never be stored as the apply link.
+_STATIC_ASSET_EXTS = (".js", ".css", ".map", ".json", ".png", ".jpg", ".jpeg",
+                      ".gif", ".svg", ".ico", ".woff", ".woff2", ".ttf")
+_JUNK_PATH_RE = re.compile(
+    r"/(terms|privacy(-policy)?|legal|imprint|impressum|datenschutz|agb|"
+    r"cookies?|cookie-richtlinie)(/|$|\?)", re.I)
+_LOCALE_ONLY_PATH_RE = re.compile(r"^/?[a-z]{2}([_-][a-z]{2})?/?$", re.I)
+
+
+def plausible_apply_url(url):
+    """True when the URL could be a real apply page — rejects static assets,
+    terms/privacy pages, and bare (or locale-only) homepages."""
+    u = (url or "").strip()
+    if u.startswith("mailto:"):
+        return True
+    if not u.startswith(("http://", "https://")):
+        return False
+    path = urlparse(u).path
+    if path in ("", "/") or _LOCALE_ONLY_PATH_RE.match(path):
+        return False
+    if path.rstrip("/").lower().endswith(_STATIC_ASSET_EXTS):
+        return False
+    if _JUNK_PATH_RE.search(path):
+        return False
+    return True
+
+
 def _evidence_to_apply_url(evidence):
     ev = (evidence or "").strip()
-    return ev if ev.startswith(("http://", "https://", "mailto:")) else None
+    return ev if plausible_apply_url(ev) else None
 
 
 def write_results_to_db(results, checked_at, db_path=DB_PATH):

@@ -113,7 +113,12 @@ def run_pass_a(jobs: list[dict]) -> list[dict]:
                     "verdict": verdict_of(report, tree),
                     "fields": [f.to_dict() for f in tree["fields"]] if tree else [],
                     "pruned": tree["pruned"] if tree else {},
-                    "apply_url": report.get("final_url") or target,
+                    # final_url is only trustworthy as an apply link when a
+                    # form was actually found there; otherwise the probe may
+                    # have drifted (listing page, homepage) and persisting it
+                    # would poison the next run's target.
+                    "apply_url": (report.get("final_url")
+                                  if report.get("form_found") else None),
                     "notes": [note],
                 })
             except Exception as exc:  # one bad site never kills the sweep
