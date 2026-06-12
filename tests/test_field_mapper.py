@@ -129,6 +129,21 @@ class TestChoiceFields(unittest.TestCase):
         self.assertIsNone(ground_option("no", ["Nordrhein-Westfalen kennen"]))
         self.assertEqual(ground_option("no", ["Ja", "Nein"]), "Nein")
 
+    def test_placeholder_options_never_ground(self):
+        # 'wählen' must not win a substring match either
+        self.assertIsNone(ground_option("wählen", ["Bitte wählen", "Hamburg"]))
+        self.assertEqual(
+            ground_option("Hamburg", ["Bitte wählen", "Hamburg", "Berlin"]),
+            "Hamburg")
+
+    def test_is_placeholder_option(self):
+        from utils.field_mapper import is_placeholder_option
+        for text in ("Bitte wählen", "bitte auswählen", "Please select",
+                     "Select...", "Choose an option", "--", "—", "", "  "):
+            self.assertTrue(is_placeholder_option(text), text)
+        for text in ("Hamburg", "Ja", "Nein", "1-3 Jahre", "Select GmbH"):
+            self.assertFalse(is_placeholder_option(text), text)
+
 
 class TestCheckboxes(unittest.TestCase):
     def test_privacy_consent_auto_checked(self):

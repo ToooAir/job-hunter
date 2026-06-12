@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 import re
 
-from utils.field_mapper import _action
+from utils.field_mapper import _action, is_placeholder_option
 
 # utils.llm (and its openai import) is loaded lazily: tests inject a fake
 # client, and the host venv intentionally lacks the LLM stack.
@@ -49,7 +49,9 @@ You map job-application form fields to answers for one candidate.
 Use ONLY the candidate facts provided. Never invent information.
 For each field choose a decision:
 - "value": answerable from the facts. For select/radio fields copy the value
-  VERBATIM from the field's options. For checkbox fields use value "check"
+  VERBATIM from the field's options; never pick placeholder entries such as
+  "Bitte wählen", "Please select" or "--" — if no real option fits the facts,
+  use "skip" or "needs_human" instead. For checkbox fields use value "check"
   only if ticking it is clearly in the candidate's interest and truthful.
 - "open_question": the field wants a free-text, job-specific answer
   (motivation, experience, "why us"). Do not write the answer here.
@@ -177,7 +179,13 @@ def map_pending_fields(
         value, reason = str(row.get("value") or ""), str(row.get("reason") or "")
 
         if decision == "value":
-            if f.get("kind") in ("select", "radio") and value not in (f.get("options") or []):
+            if is_placeholder_option(value):
+                # 'Bitte wählen' is in the options list, so the verbatim
+                # guard alone would accept it — a placeholder is a non-answer
+                # for any field kind (momox lesson)
+                result["unfilled"].append(_unfilled(f, "llm-picked-placeholder"))
+            elif (f.get("kind") in ("select", "radio")
+                    and value not in (f.get("options") or [])):
                 result["unfilled"].append(_unfilled(f, "llm-option-mismatch"))
             elif f.get("kind") == "checkbox":
                 if value.strip().lower() == "check":

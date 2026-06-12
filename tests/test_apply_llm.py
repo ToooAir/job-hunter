@@ -112,6 +112,26 @@ class TestMapPendingFields(unittest.TestCase):
         self.assertFalse(out["actions"])
         self.assertEqual(out["unfilled"][0]["reason"], "llm-option-mismatch")
 
+    def test_placeholder_option_is_rejected_even_when_verbatim(self):
+        # 'Bitte wählen' IS in the options list — verbatim alone is not enough
+        client = FakeClient([respond(
+            [{"index": 0, "decision": "value", "value": "Bitte wählen"}])])
+        out = map_pending_fields(
+            [fld(kind="select", label="Bundesstaat",
+                 options=["Bitte wählen", "Hamburg", "Berlin"])],
+            PROFILE, JOB, client=client, model="m")
+        self.assertFalse(out["actions"])
+        self.assertEqual(out["unfilled"][0]["reason"], "llm-picked-placeholder")
+
+    def test_placeholder_fill_value_is_rejected(self):
+        client = FakeClient([respond(
+            [{"index": 0, "decision": "value", "value": "Please select"}])])
+        out = map_pending_fields(
+            [fld(kind="custom", label="Bundesstaat, Bitte wählen")],
+            PROFILE, JOB, client=client, model="m")
+        self.assertFalse(out["actions"])
+        self.assertEqual(out["unfilled"][0]["reason"], "llm-picked-placeholder")
+
     def test_checkbox_check_value(self):
         client = FakeClient([respond(
             [{"index": 0, "decision": "value", "value": "check"}])])

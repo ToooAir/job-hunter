@@ -88,11 +88,26 @@ def _to_iso_date(value: str) -> str:
     return f"{m.group(3)}-{m.group(2)}-{m.group(1)}" if m else value
 
 
+# "Bitte wählen" sits in the options list like any other entry, so an
+# exact-match guard alone happily selects it (momox lesson) — placeholder
+# choices must be rejected everywhere a value is decided.
+_PLACEHOLDER_OPTION_RE = re.compile(
+    r"^\s*(?:bitte\s+(?:aus)?wähle[nr]?|please\s+(?:select|choose)|"
+    r"(?:select|choose)(?:\s+(?:one|an?\s+option))?|auswählen|auswahl|"
+    r"keine\s+auswahl|-+|—+|–+|\.{2,})\s*[.…:]*\s*$", re.I)
+
+
+def is_placeholder_option(text: str) -> bool:
+    """True for non-choices like 'Bitte wählen' / 'Please select' / '--'."""
+    return not (text or "").strip() or bool(_PLACEHOLDER_OPTION_RE.match(text))
+
+
 def ground_option(value: str, options: list[str]) -> str | None:
     """The option that represents `value`, or None when nothing matches safely."""
     val = value.strip().casefold()
     if not val:
         return None
+    options = [o for o in options if not is_placeholder_option(o)]
     by_fold = {opt.strip().casefold(): opt for opt in options}
     if val in by_fold:
         return by_fold[val]
