@@ -24,8 +24,8 @@ import json
 
 # Pass A verdicts that mean "this form cannot be auto-filled here".
 TIER3_VERDICTS = {
-    "captcha", "external-board", "no-form", "shadow-only", "email-only",
-    "nav-error", "account-wall", "probe-crash",
+    "captcha", "external-board", "no-form", "weak-form", "shadow-only",
+    "email-only", "nav-error", "account-wall", "probe-crash",
 }
 # Boards/ATS we never auto-submit on (account walls / ToS / ban risk).
 TIER3_ATS = {"join", "indeed", "stepstone"}

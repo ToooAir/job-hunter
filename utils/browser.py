@@ -417,6 +417,8 @@ def extract_form_tree(page) -> dict:
     fields: list[FormField] = []
     pruned: dict[str, str] = {}
     frames_used: list[str] = []
+    seen: set[tuple] = set()  # the same widget often renders in main doc AND
+                              # an iframe — one (selector, kind, label) is enough
 
     def frame_path_of(frame) -> tuple[str, ...] | None:
         path: list[str] = []
@@ -437,9 +439,13 @@ def extract_form_tree(page) -> dict:
         path = frame_path_of(frame)
         if path is None:
             continue
-        frame_fields = extract_fields(html, frame_path=path)
+        frame_fields = [
+            f for f in extract_fields(html, frame_path=path)
+            if (f.selector, f.kind, f.label) not in seen
+        ]
         if not frame_fields:
             continue
+        seen.update((f.selector, f.kind, f.label) for f in frame_fields)
         key = " > ".join(path) or "(main)"
         fields.extend(frame_fields)
         pruned[key] = prune_html(html)

@@ -1,15 +1,19 @@
-"""Routing/wiring tests for the Stage 1 per-job graph (utils/apply_graph.py).
+"""Tests for the Stage 1 per-job graph (utils/apply_graph.py).
 
-These pin the graph topology, not node behaviour: recorder nodes are
-injected via build_graph(overrides=...) so the tests stay green while the
-real node bodies land in sub-tasks 4.1-4.4.
+Topology tests inject recorder nodes via build_graph(overrides=...);
+the end-to-end test runs the real node bodies with a fake LLM client and
+dry_run config (no DB, no network). Fictional Max Mustermann data only.
 """
 
+import json
 import sys
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from tests.test_apply_llm import FakeClient  # noqa: E402
+from utils.profile_loader import CandidateProfile  # noqa: E402
 
 try:
     import langgraph  # noqa: F401
@@ -25,6 +29,18 @@ FIELDS_SAMPLE = [
     {"selector": '[name="first_name"]', "kind": "text", "label": "Vorname *"},
     {"selector": '[name="cv"]', "kind": "file", "label": "Lebenslauf"},
 ]
+
+PROFILE = CandidateProfile({
+    "meta": {"cv_path": "candidate_kb/cv/cv.pdf"},
+    "fields": {
+        "first_name": {"value": "Max", "aliases": ["vorname"]},
+    },
+})
+
+
+def config_for(client):
+    return {"configurable": {"profile": PROFILE, "dry_run": True,
+                             "client": client, "model": "m"}}
 
 
 def _recorders(seen: list):
@@ -69,24 +85,66 @@ class TestGraphWiring(unittest.TestCase):
         app.invoke({"job": {"id": "j3"}, "verdict": "captcha", "fields": FIELDS_SAMPLE})
         self.assertEqual(seen, list(NODE_ORDER))
 
-    def test_notes_accumulate_through_stub_nodes(self):
-        app = build_graph()
-        out = app.invoke({"job": {"id": "j4"}, "verdict": "ok", "fields": FIELDS_SAMPLE})
-        self.assertEqual(len(out["notes"]), len(NODE_ORDER))
-        self.assertTrue(all("stub" in n for n in out["notes"]))
-
     def test_unknown_override_rejected(self):
         with self.assertRaises(ValueError):
             build_graph(overrides={"not_a_node": lambda s: {}})
 
-    def test_state_keys_survive_invoke(self):
+
+@unittest.skipUnless(HAS_LANGGRAPH, "langgraph not installed (container-only dep)")
+class TestEndToEndDryRun(unittest.TestCase):
+    """Real node bodies, fake LLM, dry_run — the full Pass B for one job."""
+
+    JOB = {"id": "j9", "title": "Backend Engineer", "company": "Mustermann GmbH",
+           "ats": "unknown", "dedup": "ok",
+           "cover_letter_draft": "I build backends."}
+
+    FIELDS = [
+        {"selector": "#vn", "kind": "text", "label": "Vorname *", "required": True},
+        {"selector": "#why", "kind": "textarea", "label": "Warum wir?"},
+    ]
+
+    def test_full_pipeline_produces_reviewed_tier2_draft(self):
+        client = FakeClient([
+            json.dumps({"fields": [{"index": 0, "decision": "open_question"}]}),
+            json.dumps({"answers": [{"index": 0, "answer": "Because backends."}]}),
+            json.dumps({"pass": True, "issues": []}),
+        ])
         app = build_graph()
-        out = app.invoke({
-            "job": {"id": "j5"}, "verdict": "ok", "fields": FIELDS_SAMPLE,
-            "apply_url": "https://example.com/apply",
-        })
+        out = app.invoke(
+            {"job": self.JOB, "verdict": "ok", "fields": self.FIELDS,
+             "apply_url": "https://example.com/apply"},
+            config=config_for(client),
+        )
+        values = {a["selector"]: a["value"] for a in out["actions"]}
+        self.assertEqual(values, {"#vn": "Max", "#why": "Because backends."})
+        self.assertEqual(out["tier"], 2)  # CL + LLM answer → review floor
+        self.assertEqual(out["cover_letter"], "I build backends.")
+        self.assertEqual(out["custom_qa"][0]["answer"], "Because backends.")
+        self.assertTrue(out["verifier_report"]["pass"])
+        self.assertNotIn("snapshot_id", out)  # dry run wrote nothing
         self.assertEqual(out["apply_url"], "https://example.com/apply")
-        self.assertEqual(out["job"]["id"], "j5")
+
+    def test_weak_form_fields_skip_mapping_chain(self):
+        client = FakeClient([])  # junk field table must not reach the LLM
+        app = build_graph()
+        out = app.invoke(
+            {"job": {**self.JOB, "id": "j11"}, "verdict": "weak-form",
+             "fields": [{"selector": "#q", "kind": "text", "label": "Find a role"}]},
+            config=config_for(client),
+        )
+        self.assertEqual(out["tier"], 3)
+        self.assertEqual(client.calls, [])
+
+    def test_no_fields_job_gets_tier3_without_llm_calls(self):
+        client = FakeClient([])  # raises if any LLM call happens
+        app = build_graph()
+        out = app.invoke(
+            {"job": {**self.JOB, "id": "j10"}, "verdict": "external-board",
+             "fields": []},
+            config=config_for(client),
+        )
+        self.assertEqual(out["tier"], 3)
+        self.assertEqual(client.calls, [])
 
 
 if __name__ == "__main__":

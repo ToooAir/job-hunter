@@ -41,6 +41,9 @@ MAX_FIELDS_PER_CALL = 40
 MAX_ANSWER_WORDS = 150
 _COVER_LETTER_REASON = "cover-letter-slot"
 
+# Process-wide LLM request counter (the orchestrator reports it per run).
+CALL_STATS = {"calls": 0}
+
 _MAP_SYSTEM = """\
 You map job-application form fields to answers for one candidate.
 Use ONLY the candidate facts provided. Never invent information.
@@ -78,6 +81,7 @@ def _chat_json(client, model, system, user, max_tokens=1500) -> dict | None:
     from utils.llm import rate_limit
     for _ in range(2):
         rate_limit()
+        CALL_STATS["calls"] += 1
         resp = client.chat.completions.create(
             model=model,
             response_format={"type": "json_object"},
