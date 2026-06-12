@@ -84,7 +84,8 @@ def fetch_work(conn: sqlite3.Connection, status: str = "approved") -> list[dict]
     (title/company/url/status) for dedup re-checks and session pacing."""
     rows = conn.execute(
         """SELECT s.*, j.title AS j_title, j.company AS j_company,
-                  j.url AS j_url, j.status AS j_status
+                  j.url AS j_url, j.status AS j_status,
+                  j.match_score AS j_match_score, j.fit_grade AS j_fit_grade
            FROM application_snapshots s JOIN jobs j ON j.id = s.job_id
            WHERE s.status = ?
            ORDER BY COALESCE(s.approved_at, s.created_at), s.id""",
@@ -96,7 +97,9 @@ def fetch_work(conn: sqlite3.Connection, status: str = "approved") -> list[dict]
         snap["job"] = {"title": snap.pop("j_title"),
                        "company": snap.pop("j_company"),
                        "url": snap.pop("j_url"),
-                       "status": snap.pop("j_status")}
+                       "status": snap.pop("j_status"),
+                       "match_score": snap.pop("j_match_score"),
+                       "fit_grade": snap.pop("j_fit_grade")}
         work.append(_decode(snap))
     return work
 
