@@ -358,6 +358,7 @@ def run_watch(args) -> None:
 
     seen_urls: dict[int, str] = {}
     booked: set[int] = set()
+    warned: set[str] = set()
     try:
         with cdp_session(args.endpoint or None) as context:
             while len(booked) < len(watched):
@@ -372,7 +373,18 @@ def run_watch(args) -> None:
                     seen_urls[key] = url
                     host = urlparse(url).netloc
                     snap = match_watched_snapshot(host, watched)
-                    if snap is None or snap["id"] in booked or not page_confirms(page):
+                    if snap is None:
+                        # Tier 3 snapshots carry the board posting's host,
+                        # but the real apply flow often lives elsewhere
+                        # (e.g. join.com) — surface the confirmation
+                        # instead of dropping it silently.
+                        if url not in warned and page_confirms(page):
+                            warned.add(url)
+                            print(f"  ⚠ 確認頁對不到監看中的 snapshot：{url}")
+                            print("    （若這是你剛送出的申請，用"
+                                  " --book <snapshot_id> 手動入帳）")
+                        continue
+                    if snap["id"] in booked or not page_confirms(page):
                         continue
                     shot = take_screenshot(page, snap["id"], suffix="-confirmed")
                     report_result(conn, snap["id"], "submitted",
@@ -387,6 +399,26 @@ def run_watch(args) -> None:
     print(f"\nWatch 結束:記錄 {len(booked)} 筆 applied。")
 
 
+def run_book(args) -> None:
+    """Manually book a human submission watch couldn't attribute by host."""
+    from utils.db import init_db
+    from utils.snapshot_io import report_result
+
+    conn = init_db(args.db)
+    snap = conn.execute(
+        "SELECT s.id, s.status, j.company, j.title FROM application_snapshots s"
+        " JOIN jobs j ON j.id = s.job_id WHERE s.id = ?", (args.book,)).fetchone()
+    if snap is None:
+        print(f"找不到 snapshot {args.book}。")
+        return
+    report_result(conn, args.book, "submitted",
+                  note="booked manually via --book "
+                       "(human submission outside watched hosts)",
+                  submitted_by="human")
+    print(f"已記錄 [{snap['id']}] {snap['company']} — {snap['title']}"
+          f" 為人工送出,職缺轉 applied。")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Stage 2 submission session (host)")
     ap.add_argument("--db", default=str(ROOT / "data" / "jobs.db"))
@@ -397,8 +429,12 @@ def main() -> None:
                     help="auto-submit when all gates pass (default: prepare)")
     ap.add_argument("--watch", action="store_true",
                     help="monitor manual Tier 3 submissions instead")
+    ap.add_argument("--book", type=int, metavar="SNAPSHOT_ID",
+                    help="record a manual submission watch missed (no browser)")
     args = ap.parse_args()
-    if args.watch:
+    if args.book:
+        run_book(args)
+    elif args.watch:
         run_watch(args)
     else:
         run_session(args)

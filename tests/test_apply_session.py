@@ -120,6 +120,52 @@ class SessionDedupTest(unittest.TestCase):
             self.conn, {"job_id": "c", "job": {"company": "Beispiel AG"}}))
 
 
+class RunBookTest(unittest.TestCase):
+    """--book: manual booking for submissions watch couldn't attribute."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = str(Path(self.tmp.name) / "t.db")
+        conn = init_db(self.db)
+        conn.execute(
+            "INSERT INTO jobs (id, company, title, url, source, raw_jd_text,"
+            " fetched_at, status) VALUES ('j1', 'Mustermann GmbH', 'Engineer',"
+            " 'https://board.test/j1', 's', 'jd', '2026-06-12', 'scored')")
+        self.sid = create_application_snapshot(
+            conn, "j1", status="draft", tier=3, channel="no-form",
+            apply_url="https://board.test/j1")
+        conn.commit()
+        self.conn = conn
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def _args(self, book):
+        import argparse
+        return argparse.Namespace(db=self.db, book=book)
+
+    def test_books_tier3_draft_as_human_submission(self):
+        apply_session.run_book(self._args(self.sid))
+        row = self.conn.execute(
+            "SELECT status, submitted_by, notes FROM application_snapshots"
+            " WHERE id=?", (self.sid,)).fetchone()
+        self.assertEqual(row["status"], "submitted")
+        self.assertEqual(row["submitted_by"], "human")
+        self.assertIn("--book", row["notes"])
+        job = self.conn.execute(
+            "SELECT status, applied_at FROM jobs WHERE id='j1'").fetchone()
+        self.assertEqual(job["status"], "applied")
+        self.assertTrue(job["applied_at"])
+
+    def test_unknown_snapshot_is_a_noop(self):
+        apply_session.run_book(self._args(999))  # must not raise
+        row = self.conn.execute(
+            "SELECT status FROM application_snapshots WHERE id=?",
+            (self.sid,)).fetchone()
+        self.assertEqual(row["status"], "draft")
+
+
 FORM_HTML = """<!doctype html><html><body>
 <form action="danke.html" method="get">
   <label for="fn">Vorname</label><input id="fn" name="first_name">
