@@ -39,7 +39,11 @@ from utils.profile_loader import load_profile  # noqa: E402
 OUT_JSON = Path(__file__).parent / "data" / "stage1_run.json"
 
 # Boards we never auto-submit on; landing there means Tier 3 answer sheet.
-EXTERNAL_BOARDS = ("xing.com", "indeed.com", "linkedin.com", "stepstone.de")
+# germantechjobs.de hosts its own quick-apply form, but it redirects
+# unpredictably and its field markup drifts (milia lesson) —
+# treat it like the other boards: Tier 3 answer sheet, human submits.
+EXTERNAL_BOARDS = ("xing.com", "indeed.com", "linkedin.com", "stepstone.de",
+                   "germantechjobs.de")
 
 
 def _has_apply_signature(fields) -> bool:
