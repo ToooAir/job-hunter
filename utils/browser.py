@@ -87,12 +87,14 @@ _COUNT_CONTROLS_JS = """
   const F = 'input[type=file]';
   const S = 'select';
   const CR = 'input[type=checkbox],input[type=radio]';
-  const res = {textish: 0, file: 0, select: 0, checkbox_radio: 0, shadow: 0};
+  const res = {textish: 0, file: 0, select: 0, checkbox_radio: 0, shadow: 0,
+               password: 0};
   const add = (root) => {
     res.textish += root.querySelectorAll(T).length;
     res.file += root.querySelectorAll(F).length;
     res.select += root.querySelectorAll(S).length;
     res.checkbox_radio += root.querySelectorAll(CR).length;
+    res.password += root.querySelectorAll('input[type=password]').length;
   };
   add(document);
   const walk = (root) => {
@@ -241,7 +243,8 @@ def _interesting_frames(page):
 
 def count_form_controls(page) -> dict:
     """Per-class control counts summed over all (plausible) frames."""
-    total = {"textish": 0, "file": 0, "select": 0, "checkbox_radio": 0, "shadow": 0}
+    total = {"textish": 0, "file": 0, "select": 0, "checkbox_radio": 0,
+             "shadow": 0, "password": 0}
     with _frame_op_guard(page):
         for frame in _interesting_frames(page):
             try:

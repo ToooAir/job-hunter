@@ -154,6 +154,73 @@ class SpaWithoutFormTagTest(unittest.TestCase):
         self.assertEqual(motivation.label, "Warum möchten Sie bei uns arbeiten?")
 
 
+# Board page shaped like the Step 3 probe's jobware false positive: a site
+# search in the header, cookie-preference checkboxes, and the actual apply
+# controls in SPA markup (no <form> tag).
+BOARD_CHROME_PAGE = """\
+<html><body>
+<header>
+  <form action="/suche" id="job-search">
+    <input type="text" name="keyword" placeholder="Stichwort, Jobtitel oder Firma">
+    <input type="text" name="location" placeholder="PLZ, Ort oder Land">
+  </form>
+</header>
+<div class="usercentrics-root">
+  <label><input type="checkbox" name="consent_stats"> Statistik</label>
+  <label><input type="checkbox" name="consent_marketing"> Marketing</label>
+</div>
+<main>
+  <div id="apply-widget">
+    <span>Vorname</span>
+    <input type="text" name="first_name">
+    <span>E-Mail-Adresse</span>
+    <input type="email" name="applicant_email">
+  </div>
+</main>
+</body></html>
+"""
+
+# Login form next to the real application form (Step 3 probe saw exactly
+# this on a wearedevelopers company site).
+LOGIN_PLUS_APPLY = """\
+<html><body>
+<form action="/login" id="login">
+  <label>E-Mail:</label><input type="email" name="login_email">
+  <label>Passwort:</label><input type="password" name="password">
+</form>
+<form action="/bewerbung" id="apply">
+  <label for="afn">Vorname</label><input id="afn" type="text" name="first_name">
+  <label for="aln">Nachname</label><input id="aln" type="text" name="last_name">
+  <label for="acv">Lebenslauf</label><input id="acv" type="file" name="cv">
+</form>
+</body></html>
+"""
+
+
+class FormScopingTest(unittest.TestCase):
+    def test_search_and_cookie_chrome_filtered_on_formless_page(self):
+        names = {f.name for f in extract_fields(BOARD_CHROME_PAGE)}
+        self.assertEqual(names, {"first_name", "applicant_email"})
+
+    def test_login_form_never_chosen_as_application_form(self):
+        names = {f.name for f in extract_fields(LOGIN_PLUS_APPLY)}
+        self.assertEqual(names, {"first_name", "last_name", "cv"})
+
+    def test_password_inputs_always_skipped(self):
+        fields = extract_fields(LOGIN_PLUS_APPLY, scope_to_form=False)
+        self.assertFalse(any(f.name == "password" for f in fields))
+
+    def test_scoping_can_be_disabled(self):
+        names = {f.name for f in extract_fields(LOGIN_PLUS_APPLY, scope_to_form=False)}
+        self.assertIn("login_email", names)
+
+    def test_real_form_page_unchanged_by_scoping(self):
+        names = {f.name for f in extract_fields(GERMAN_FORM)}
+        self.assertEqual(names, {"first_name", "last_name", "email", "phone",
+                                 "salary", "anrede", "country", "cover_letter",
+                                 "resume", "privacy"})
+
+
 class PruneHtmlTest(unittest.TestCase):
     def test_scripts_styles_chrome_comments_removed(self):
         out = prune_html(GERMAN_FORM)

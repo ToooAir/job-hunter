@@ -24,7 +24,15 @@ _STRIP_TAGS = ("script", "style", "svg", "noscript", "template", "link", "meta")
 # Page chrome stripped when it does not contain the form.
 _CHROME_TAGS = ("nav", "header", "footer", "aside")
 
-_SKIP_INPUT_TYPES = {"hidden", "submit", "button", "image", "reset"}
+_SKIP_INPUT_TYPES = {"hidden", "submit", "button", "image", "reset",
+                     "search", "password"}
+
+# Containers whose controls are page chrome, never application fields
+# (cookie-consent managers, search bars). Matched against id/class of any
+# ancestor; nav/header/footer/aside ancestors disqualify too.
+_NOISE_CONTAINER_RE = re.compile(
+    r"cookie|consent|usercentrics|onetrust|didomi|cookiebot|cmp-|gdpr", re.I)
+_SEARCH_FORM_RE = re.compile(r"search|suche", re.I)
 
 # Attributes worth keeping on pruned HTML / reporting in the field table.
 _SEMANTIC_ATTRS = (
@@ -164,19 +172,73 @@ def _input_kind(el: Tag) -> str | None:
     return None
 
 
-def extract_fields(html: str, frame_path: tuple[str, ...] = ()) -> list[FormField]:
-    """Field node table for one document. Radio groups collapse to one field."""
+def _is_noise(el: Tag) -> bool:
+    """True for page-chrome controls: anything inside nav/header/footer/aside,
+    a cookie-consent container, or a site-search form."""
+    node = el
+    while isinstance(node, Tag):
+        if node.name in _CHROME_TAGS or node.get("role") == "search":
+            return True
+        if node.name == "form" and _SEARCH_FORM_RE.search(
+                f"{node.get('action') or ''} {node.get('id') or ''}"):
+            return True
+        idcls = " ".join([node.get("id") or ""] + (node.get("class") or []))
+        if idcls.strip() and _NOISE_CONTAINER_RE.search(idcls):
+            return True
+        node = node.parent
+    return False
+
+
+def _application_form(soup: BeautifulSoup) -> Tag | None:
+    """The <form> that plausibly IS the application form, or None.
+
+    Signature: a file upload, or at least two text-entry controls. Login
+    forms (password input), search forms, and consent containers never
+    qualify — board pages are full of those (Step 3 probe finding).
+    """
+    best, best_score = None, 0
+    for form in soup.find_all("form"):
+        if form.find("input", attrs={"type": "password"}) or _is_noise(form):
+            continue
+        textish = sum(
+            1 for c in form.find_all(("input", "textarea"))
+            if _input_kind(c) in ("text", "email", "tel", "url", "number",
+                                  "date", "textarea")
+        )
+        files = len(form.find_all("input", attrs={"type": "file"}))
+        if files == 0 and textish < 2:
+            continue
+        score = textish + 3 * files
+        if score > best_score:
+            best, best_score = form, score
+    return best
+
+
+def extract_fields(
+    html: str,
+    frame_path: tuple[str, ...] = (),
+    scope_to_form: bool = True,
+) -> list[FormField]:
+    """Field node table for one document. Radio groups collapse to one field.
+
+    With scope_to_form (the default) extraction is confined to the detected
+    application <form>; on form-less SPA markup it falls back to the whole
+    document minus page chrome (search bars, cookie consents, nav).
+    """
     soup = BeautifulSoup(html, "html.parser")
+    scope = (_application_form(soup) if scope_to_form else None) or soup
     fields: list[FormField] = []
     seen_radio_groups: set[str] = set()
 
-    candidates = soup.find_all(("input", "textarea", "select")) + [
-        el for el in soup.find_all(attrs={"role": True})
+    candidates = scope.find_all(("input", "textarea", "select")) + [
+        el for el in scope.find_all(attrs={"role": True})
         if el.get("role") in _CUSTOM_WIDGET_ROLES and el.name not in ("input", "textarea", "select")
     ]
     for el in candidates:
         kind = _input_kind(el)
         if kind is None:
+            continue
+        if scope is soup and scope_to_form and _is_noise(el):
             continue
 
         if kind == "radio":
@@ -184,7 +246,7 @@ def extract_fields(html: str, frame_path: tuple[str, ...] = ()) -> list[FormFiel
             if group in seen_radio_groups:
                 continue
             seen_radio_groups.add(group)
-            radios = soup.find_all("input", attrs={"type": "radio", "name": group}) if group else [el]
+            radios = scope.find_all("input", attrs={"type": "radio", "name": group}) if group else [el]
             options = [_label_for(r, soup) or (r.get("value") or "") for r in radios]
             group_label = _group_label(radios[0], soup) or group.replace("_", " ")
             fields.append(FormField(
