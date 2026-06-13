@@ -261,6 +261,25 @@ class SchedulerExecuteRunTest(unittest.TestCase):
         self.assertEqual(row["status"], "failed")
         self.assertIn("exited 1", row["last_error"])
 
+    def test_best_effort_stage_failure_does_not_fail_run(self):
+        # apply_stage1 is best-effort: scrape+score already succeeded, so a
+        # draft-gen crash logs loudly but the run still counts as success.
+        ok = self._script("ok.py", 0)
+        draft = self._script("draft.py", 1)
+        if get_open_pipeline_run(self.conn) is None:
+            start_pipeline_run(self.conn)
+        run = get_open_pipeline_run(self.conn)
+        with mock.patch.object(scheduler, "STAGES", (ok, draft)), \
+             mock.patch.object(scheduler, "BEST_EFFORT_STAGES", frozenset({draft})), \
+             mock.patch.object(scheduler, "LOG_FILE", self.log_file):
+            self.sched._execute_run(self.conn, run)
+        self.assertIsNone(get_open_pipeline_run(self.conn))
+        row = self.conn.execute(
+            "SELECT status, stages_done FROM pipeline_runs WHERE id = ?", (run["id"],)
+        ).fetchone()
+        self.assertEqual(row["status"], "success")
+        self.assertEqual(row["stages_done"], f"{ok},{draft}")  # both marked done
+
 
 if __name__ == "__main__":
     unittest.main()
