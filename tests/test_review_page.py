@@ -111,6 +111,22 @@ class ReviewPageTest(unittest.TestCase):
             "SELECT status FROM application_snapshots WHERE id=?", (sid,)).fetchone()
         self.assertEqual(row["status"], "abandoned")
 
+    def test_low_severity_only_is_not_alarming(self):
+        # watchlist #13: a draft whose only verifier issues are low-severity
+        # must not render as a red error (collapsed into a muted expander).
+        self._draft("job-a", tier=2, verifier_report={
+            "pass": False, "llm_checked": True,
+            "issues": [{"where": "cover_letter", "issue": "slightly verbose",
+                        "severity": "low"}]})
+        at = self._run()
+        self.assertFalse(any("slightly verbose" in str(e.value) for e in at.error))
+
+    def test_friction_badge_renders_for_mixed_queue(self):
+        self._draft("job-a", tier=2)
+        self._draft("job-b", tier=3, verifier_report={})
+        at = self._run()  # renders without exception; badges in expander labels
+        self.assertFalse(at.exception, at.exception)
+
     def test_last_failure_shown_on_regenerated_draft(self):
         first = self._draft("job-a", tier=2)
         approve_snapshot(self.conn, first)

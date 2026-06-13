@@ -36,6 +36,9 @@ _STRINGS = {
         "match": "匹配", "created": "建立於", "channel": "管道",
         "last_fail": "上次執行失敗", "verifier_pass": "verifier 通過",
         "verifier_issues": "verifier 發現的問題", "verifier_skip": "verifier 未跑(無生成內容)",
+        "verifier_blocking": "需處理的阻擋問題", "verifier_minor": "次要提醒",
+        "friction_easy": "易投", "friction_medium": "需審", "friction_painful": "填好待按",
+        "friction_account": "需手動/帳號",
         "tab_actions": "填值表", "tab_cl": "Cover Letter", "tab_qa": "自訂問答",
         "tab_sheet": "小抄(點右上複製)",
         "unfilled": "未填欄位", "never_fill": "拒填欄位(never_fill)",
@@ -56,6 +59,9 @@ _STRINGS = {
         "match": "Match", "created": "Created", "channel": "Channel",
         "last_fail": "Last execution failure", "verifier_pass": "verifier passed",
         "verifier_issues": "Verifier issues", "verifier_skip": "verifier skipped (nothing generated)",
+        "verifier_blocking": "Blocking issues", "verifier_minor": "Minor notes",
+        "friction_easy": "easy", "friction_medium": "review", "friction_painful": "fill+press",
+        "friction_account": "manual/account",
         "tab_actions": "Fill plan", "tab_cl": "Cover Letter", "tab_qa": "Custom Q&A",
         "tab_sheet": "Answer sheet (copy top-right)",
         "unfilled": "Unfilled fields", "never_fill": "Refused fields (never_fill)",
@@ -85,7 +91,14 @@ def _count(conn, status: str) -> int:
     ).fetchone()[0]
 
 
+def _issue_line(issue: dict) -> str:
+    return f"`{issue.get('where', '')}` — {issue.get('issue', '')}"
+
+
 def _verifier_block(report: dict | None) -> None:
+    """Triage display (watchlist #13): blocking issues stay loud and red,
+    minor notes collapse into a muted expander so a draft with only low-
+    severity nits doesn't read like a failure (alarm-fatigue fix)."""
     if not isinstance(report, dict) or not report:
         st.caption(T("verifier_skip"))
         return
@@ -93,13 +106,34 @@ def _verifier_block(report: dict | None) -> None:
     if report.get("pass") and not issues:
         st.success(T("verifier_pass"))
         return
-    st.markdown(f"**{T('verifier_issues')}**")
-    for issue in issues:
-        line = f"`{issue.get('where', '')}` — {issue.get('issue', '')}"
-        if issue.get("severity") == "high":
-            st.error(line)
-        else:
-            st.warning(line)
+    highs = [i for i in issues if i.get("severity") == "high"]
+    lows = [i for i in issues if i.get("severity") != "high"]
+    if highs:
+        st.error(f"⛔ {T('verifier_blocking')} ({len(highs)})")
+        for issue in highs:
+            st.error(_issue_line(issue))
+    if lows:
+        with st.expander(f"ℹ️ {T('verifier_minor')} ({len(lows)})", expanded=False):
+            for issue in lows:
+                st.caption(_issue_line(issue))
+
+
+# friction = how much manual work the human still owns after Stage 1.
+# Lower rank floats to the top of the review queue (high-value, low-effort
+# first). Tier is the coarse signal; channel/payload refine Tier 3.
+def _friction(snap: dict) -> tuple[int, str]:
+    tier = snap.get("tier") or 9
+    if tier == 1:
+        return 0, T("friction_easy")
+    if tier == 2:
+        return 1, T("friction_medium")
+    channel = (snap.get("channel") or "").lower()
+    manual = ("board" in channel or "indeed" in channel or "stepstone" in channel
+              or "account" in channel or "no-form" in channel)
+    has_fills = bool((snap.get("form_payload") or {}).get("actions"))
+    if not manual and has_fills:
+        return 2, T("friction_painful")    # captcha: filled, human just presses
+    return 3, T("friction_account")        # board / account wall: fully manual
 
 
 def _actions_tab(payload: dict) -> None:
@@ -146,7 +180,8 @@ def _draft_card(conn, snap: dict) -> None:
     payload = snap.get("form_payload") or {}
     tier = snap.get("tier")
     score = job.get("match_score")
-    header = (f"T{tier} · {job.get('company')} — {job.get('title')}"
+    _, friction_label = _friction(snap)
+    header = (f"T{tier} [{friction_label}] · {job.get('company')} — {job.get('title')}"
               + (f" · {T('match')} {score}" if score is not None else ""))
     with st.expander(header, expanded=False):
         st.caption(f"{T('channel')}: {snap.get('channel')} · "
@@ -214,7 +249,9 @@ elif tier_choice == "Tier 3":
 if not drafts:
     st.info(T("empty"))
 else:
-    drafts.sort(key=lambda d: (d.get("tier") or 9,
+    # friction first (least manual work left), then match score — surfaces
+    # high-value, low-effort drafts at the top of the queue.
+    drafts.sort(key=lambda d: (_friction(d)[0],
                                -(d["job"].get("match_score") or 0)))
     for snap in drafts:
         _draft_card(conn, snap)
