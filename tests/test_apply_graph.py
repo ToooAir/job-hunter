@@ -147,5 +147,47 @@ class TestEndToEndDryRun(unittest.TestCase):
         self.assertEqual(client.calls, [])
 
 
+@unittest.skipUnless(HAS_LANGGRAPH, "langgraph not installed (container-only dep)")
+class TestSaveDraftAutoApprove(unittest.TestCase):
+    """Tier 1 drafts auto-approve so a --submit run needs no dashboard click."""
+
+    def setUp(self):
+        import tempfile
+        from utils.db import init_db
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = str(Path(self.tmp.name) / "t.db")
+        self.conn = init_db(self.db_path)
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def _save(self, tier, **cfg):
+        from utils.apply_graph import save_draft
+        state = {"job": {"id": "j1", "url": "https://x/apply"}, "tier": tier,
+                 "verdict": "ok", "actions": [{"selector": "#a", "value": "Max"}],
+                 "unfilled": [], "never_fill_skipped": []}
+        out = save_draft(state, {"configurable": {"db_path": self.db_path, **cfg}})
+        return self.conn.execute(
+            "SELECT status, approved_at, notes FROM application_snapshots WHERE id=?",
+            (out["snapshot_id"],)).fetchone()
+
+    def test_tier1_is_auto_approved(self):
+        row = self._save(1)
+        self.assertEqual(row["status"], "approved")
+        self.assertTrue(row["approved_at"])
+        self.assertIn("auto-approved", row["notes"])
+
+    def test_tier2_stays_draft(self):
+        row = self._save(2)
+        self.assertEqual(row["status"], "draft")
+        self.assertIsNone(row["approved_at"])
+
+    def test_kill_switch_keeps_tier1_in_draft(self):
+        row = self._save(1, auto_approve_tier1=False)
+        self.assertEqual(row["status"], "draft")
+        self.assertIsNone(row["approved_at"])
+
+
 if __name__ == "__main__":
     unittest.main()

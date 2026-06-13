@@ -216,8 +216,21 @@ def save_draft(state: ApplyState, config) -> dict:
             f.key: f.value for f in cfg["profile"].fields.values()
         }
 
+    # Tier 1 = all-deterministic, no LLM free text, verifier pass, dedup ok
+    # (assign_tier only grants it under exactly those conditions). Auto-approve
+    # it so a --submit session fires without a per-job dashboard click; the
+    # three submission gates (--submit flag, human-started session, no live
+    # captcha/required-unfillable) still stand. auto_approve_tier1 is the
+    # kill-switch — default on per the Step 6 decision.
+    notes = list(state.get("notes") or [])
+    status, approved_at = "draft", None
+    if state.get("tier") == 1 and cfg.get("auto_approve_tier1", True):
+        from utils.db import _now_local_iso
+        status, approved_at = "approved", _now_local_iso()
+        notes.append("auto-approved: Tier 1 deterministic, no review needed")
+
     if cfg.get("dry_run"):
-        return {"notes": (state.get("notes") or []) + ["save_draft: dry-run, no write"]}
+        return {"notes": notes + ["save_draft: dry-run, no write"]}
 
     from utils.db import create_application_snapshot, init_db
     conn = init_db(cfg["db_path"])
@@ -225,7 +238,8 @@ def save_draft(state: ApplyState, config) -> dict:
         snapshot_id = create_application_snapshot(
             conn,
             job_id=job["id"],
-            status="draft",
+            status=status,
+            approved_at=approved_at,
             tier=state.get("tier"),
             channel=("company-form" if (state.get("verdict") or "ok") == "ok"
                      else state.get("verdict")),
@@ -234,7 +248,7 @@ def save_draft(state: ApplyState, config) -> dict:
             cover_letter=state.get("cover_letter") or "",
             custom_qa=state.get("custom_qa") or [],
             verifier_report=state.get("verifier_report") or {},
-            notes="; ".join(state.get("notes") or []),
+            notes="; ".join(notes),
         )
     finally:
         conn.close()
