@@ -221,6 +221,43 @@ class FormScopingTest(unittest.TestCase):
                                  "resume", "privacy"})
 
 
+# Misaligned markup (milia.io shape, watchlist #4): a control with no label of
+# its own, preceded by another field's label / an intervening input.
+LABEL_MISALIGN = """\
+<form action="/apply">
+  <input type="file" name="cv">
+  <span>Portfolio URL</span>
+  <input type="url" name="portfolio">
+  <label for="years">Years of Experience</label>
+  <input type="url" name="github">
+  <input type="number" name="years" id="years">
+</form>
+"""
+
+
+class LabelCrossValidationTest(unittest.TestCase):
+    def setUp(self):
+        self.by_name = {f.name: f for f in extract_fields(LABEL_MISALIGN)}
+
+    def test_sibling_text_label_is_used_but_flagged(self):
+        portfolio = self.by_name["portfolio"]
+        self.assertEqual(portfolio.label, "Portfolio URL")
+        self.assertTrue(portfolio.label_suspect)        # positional guess
+        self.assertTrue(portfolio.to_dict()["label_suspect"])
+
+    def test_does_not_borrow_other_fields_label(self):
+        # github sits after <label for="years"> — must NOT inherit it.
+        github = self.by_name["github"]
+        self.assertNotEqual(github.label, "Years of Experience")
+        self.assertEqual(github.label, "github")        # name fallback
+        self.assertFalse(github.label_suspect)
+
+    def test_explicit_for_label_is_trusted(self):
+        years = self.by_name["years"]
+        self.assertEqual(years.label, "Years of Experience")
+        self.assertFalse(years.label_suspect)
+
+
 class PruneHtmlTest(unittest.TestCase):
     def test_scripts_styles_chrome_comments_removed(self):
         out = prune_html(GERMAN_FORM)

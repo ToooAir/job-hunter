@@ -59,6 +59,8 @@ class FormField:
     required: bool = False
     autocomplete: str = ""
     accept: str = ""                    # file inputs: accepted MIME/extensions
+    label_suspect: bool = False         # label came from a positional guess —
+                                        # mapper flags the fill for human review
 
     def to_dict(self) -> dict:
         d = {"selector": self.selector, "kind": self.kind, "label": self.label}
@@ -74,6 +76,8 @@ class FormField:
             d["autocomplete"] = self.autocomplete
         if self.accept:
             d["accept"] = self.accept
+        if self.label_suspect:
+            d["label_suspect"] = True
         return d
 
 
@@ -116,18 +120,29 @@ def _selector_for(el: Tag, soup: BeautifulSoup) -> str:
     return " > ".join(reversed(parts))
 
 
-def _label_for(el: Tag, soup: BeautifulSoup) -> str:
-    """Best-effort human label, in priority order."""
+# Label provenance trusted enough that the text is bound to THIS control;
+# 'sibling'/'name' are positional/derived and get cross-checked (milia bug).
+_TRUSTED_LABEL_SOURCES = frozenset({"for", "wrap", "aria", "aria-ref"})
+
+
+def _label_for(el: Tag, soup: BeautifulSoup) -> tuple[str, str]:
+    """Best-effort human label and its provenance, in priority order.
+
+    Returns (label, source). source ∈ {for, wrap, aria, aria-ref, placeholder,
+    sibling, name}. The 'sibling' walk never crosses another form control and
+    never borrows a <label for=other-id> — both are the misalignment that
+    attached the wrong label to a field on milia.io (watchlist #4).
+    """
     el_id = el.get("id")
     if el_id:
         lab = soup.find("label", attrs={"for": el_id})
         if lab:
-            return _clean_text(lab.get_text(" "))
+            return _clean_text(lab.get_text(" ")), "for"
     wrapping = el.find_parent("label")
     if wrapping:
-        return _clean_text(wrapping.get_text(" "))
+        return _clean_text(wrapping.get_text(" ")), "wrap"
     if el.get("aria-label"):
-        return _clean_text(el["aria-label"])
+        return _clean_text(el["aria-label"]), "aria"
     labelledby = el.get("aria-labelledby")
     if labelledby:
         texts = []
@@ -136,16 +151,24 @@ def _label_for(el: Tag, soup: BeautifulSoup) -> str:
             if target:
                 texts.append(target.get_text(" "))
         if texts:
-            return _clean_text(" ".join(texts))
+            return _clean_text(" ".join(texts)), "aria-ref"
     if el.get("placeholder"):
-        return _clean_text(el["placeholder"])
-    # Nearby text: previous sibling label-ish element inside the same container.
-    prev = el.find_previous_sibling(("label", "span", "div", "p"))
-    if prev is not None:
-        text = _clean_text(prev.get_text(" "))
-        if 0 < len(text) <= 80:
-            return text
-    return _clean_text((el.get("name") or "").replace("_", " ").replace("-", " "))
+        return _clean_text(el["placeholder"]), "placeholder"
+    # Nearby text: nearest preceding sibling, but stop at a form control (a
+    # closer control owns any earlier label) and skip a <label for=other>.
+    for sib in el.previous_siblings:
+        if not isinstance(sib, Tag):
+            continue
+        if sib.name in ("input", "textarea", "select"):
+            break
+        if sib.name in ("label", "span", "div", "p"):
+            if sib.name == "label" and sib.get("for") and sib.get("for") != el_id:
+                break
+            text = _clean_text(sib.get_text(" "))
+            if 0 < len(text) <= 80:
+                return text, "sibling"
+            break
+    return _clean_text((el.get("name") or "").replace("_", " ").replace("-", " ")), "name"
 
 
 def _is_required(el: Tag, label: str) -> bool:
@@ -247,7 +270,7 @@ def extract_fields(
                 continue
             seen_radio_groups.add(group)
             radios = scope.find_all("input", attrs={"type": "radio", "name": group}) if group else [el]
-            options = [_label_for(r, soup) or (r.get("value") or "") for r in radios]
+            options = [_label_for(r, soup)[0] or (r.get("value") or "") for r in radios]
             group_label = _group_label(radios[0], soup) or group.replace("_", " ")
             fields.append(FormField(
                 selector=_selector_for(el, soup), frame_path=frame_path, kind="radio",
@@ -257,12 +280,13 @@ def extract_fields(
             ))
             continue
 
-        label = _label_for(el, soup)
+        label, label_src = _label_for(el, soup)
         f = FormField(
             selector=_selector_for(el, soup), frame_path=frame_path, kind=kind,
             label=label, name=el.get("name") or "",
             required=_is_required(el, label),
             autocomplete=el.get("autocomplete") or "",
+            label_suspect=label_src == "sibling",
         )
         if kind == "select":
             f.options = [

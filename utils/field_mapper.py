@@ -145,6 +145,9 @@ def _match_profile_field(
 
 def _action(f: dict, action: str, value: str, source: str,
             needs_review: bool = False) -> dict:
+    # A positionally-guessed label (dom_pruner couldn't bind it to the control)
+    # forces review no matter which mapping path produced the fill — the value
+    # may be landing on the wrong field (watchlist #4, milia misalignment).
     out = {
         "selector": f.get("selector", ""),
         "kind": f.get("kind", ""),
@@ -152,7 +155,7 @@ def _action(f: dict, action: str, value: str, source: str,
         "action": action,
         "value": value,
         "source": source,
-        "needs_review": needs_review,
+        "needs_review": needs_review or bool(f.get("label_suspect")),
     }
     if f.get("frame_path"):
         out["frame_path"] = f["frame_path"]
