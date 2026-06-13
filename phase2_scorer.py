@@ -23,6 +23,7 @@ from utils.db import (
     init_db, get_unscored_jobs, update_score, fetch_job_by_id,
     reset_to_unscored, reset_errors_to_unscored, mark_error, mark_expired,
     set_interview_brief, set_translated_jd, auto_expire_stale_jobs,
+    get_application_snapshots,
 )
 
 # ── Setup ──────────────────────────────────────────────────────────────────────
@@ -815,6 +816,15 @@ _BRIEF_SECTIONS = {
         "highlights_h": "(Select 2–3 experiences from the candidate background that best address this role)",
         "questions":    "### Likely Interview Questions",
         "questions_h":  "(5 specific questions the interviewer might ask based on this JD)",
+        # Submission evidence (appended deterministically — never LLM-generated)
+        "subm_title":   "## 📋 What You Actually Submitted",
+        "subm_meta":    "Submitted",
+        "subm_by":      "by",
+        "subm_channel": "Channel",
+        "subm_cl":      "### Cover Letter (submitted version)",
+        "subm_cl_draft": "### Cover Letter (draft — may differ from what was sent)",
+        "subm_qa":      "### Custom Questions & Answers",
+        "subm_none":    "(No submission snapshot on file for this job.)",
     },
     "zh": {
         "intro":        "請根據以下職缺與候選人背景，生成結構化的面試準備單（繁體中文，Markdown 格式）。",
@@ -836,6 +846,15 @@ _BRIEF_SECTIONS = {
         "highlights_h": "（從候選人背景中選出最相關的 2–3 項經歷，說明如何對應職缺需求）",
         "questions":    "### 可能被問到的問題",
         "questions_h":  "（根據此 JD 列出 5 個具體面試問題）",
+        # 投遞存證（確定性附加，永不經 LLM 生成）
+        "subm_title":   "## 📋 你當時實際提交的內容",
+        "subm_meta":    "投遞時間",
+        "subm_by":      "送出方",
+        "subm_channel": "管道",
+        "subm_cl":      "### Cover Letter（送出版本）",
+        "subm_cl_draft": "### Cover Letter（草稿 — 可能與實際送出不同）",
+        "subm_qa":      "### 自訂題 Q&A",
+        "subm_none":    "（此職缺沒有投遞存證快照。）",
     },
 }
 
@@ -873,6 +892,59 @@ BRIEF_PROMPT_TEMPLATE = """\
 {questions}
 {questions_h}\
 """
+
+
+def _submission_evidence(conn, job: dict, lang: str) -> str:
+    """Deterministic 'what you submitted' section for the interview brief.
+
+    Pulled verbatim from the latest submitted snapshot (or draft fallback) —
+    never passed through the LLM, so it answers 'did I oversell?' faithfully.
+    Returns "" when there is nothing on file (older jobs predate snapshots).
+    """
+    s = _BRIEF_SECTIONS.get(lang, _BRIEF_SECTIONS["en"])
+    snaps = get_application_snapshots(conn, job["id"])
+    submitted = next((x for x in snaps if x.get("status") == "submitted"), None)
+
+    cover_letter = ""
+    cl_header = ""
+    custom_qa: dict = {}
+    meta_line = ""
+
+    if submitted is not None:
+        cover_letter = (submitted.get("cover_letter") or "").strip()
+        cl_header = s["subm_cl"]
+        try:
+            custom_qa = json.loads(submitted.get("custom_qa") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            custom_qa = {}
+        parts = []
+        if submitted.get("submitted_at"):
+            parts.append(f"{s['subm_meta']}: {submitted['submitted_at']}")
+        if submitted.get("submitted_by"):
+            parts.append(f"{s['subm_by']}: {submitted['submitted_by']}")
+        if submitted.get("channel"):
+            parts.append(f"{s['subm_channel']}: {submitted['channel']}")
+        meta_line = " · ".join(parts)
+
+    # Fallback: no submitted snapshot → show the draft cover letter with a caveat.
+    if not cover_letter:
+        draft = (job.get("cover_letter_draft") or "").strip()
+        if not draft and not custom_qa:
+            return ""
+        if draft:
+            cover_letter = draft
+            cl_header = s["subm_cl_draft"]
+
+    lines = ["", "---", "", s["subm_title"], ""]
+    if meta_line:
+        lines += [meta_line, ""]
+    if cover_letter:
+        lines += [cl_header, "", cover_letter, ""]
+    if custom_qa:
+        lines += [s["subm_qa"], ""]
+        for q, a in custom_qa.items():
+            lines += [f"**Q:** {q}", "", f"**A:** {a}", ""]
+    return "\n".join(lines).rstrip()
 
 
 def generate_brief_for_job(
@@ -943,6 +1015,9 @@ def generate_brief_for_job(
             temperature=0.4,
         )
         brief = resp.choices[0].message.content.strip()
+        evidence = _submission_evidence(conn, job, lang)
+        if evidence:
+            brief = f"{brief}\n\n{evidence}"
         set_interview_brief(conn, job_id, brief)
         log.info("interview brief generated for job %s (%s @ %s)", job_id, job["title"], job["company"])
         conn.close()
