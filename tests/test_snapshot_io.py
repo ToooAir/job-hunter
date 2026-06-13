@@ -39,11 +39,11 @@ class SnapshotIOTest(unittest.TestCase):
         self.conn.close()
         self.tmp.cleanup()
 
-    def _job(self, job_id="job-1"):
+    def _job(self, job_id="job-1", company="Mustermann GmbH"):
         self.conn.execute(
             "INSERT INTO jobs (id, company, title, url, source, raw_jd_text,"
             " fetched_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, 'scored')",
-            (job_id, "Mustermann GmbH", "Backend Engineer",
+            (job_id, company, "Backend Engineer",
              f"https://example.com/{job_id}", "test", f"jd text {job_id}",
              "2026-06-12T08:00:00"),
         )
@@ -172,6 +172,39 @@ class SnapshotIOTest(unittest.TestCase):
             "SELECT notes FROM application_snapshots WHERE id=?", (sid,)).fetchone()
         self.assertIn("tier2: cover letter present", row["notes"])
         self.assertIn("failed: captcha appeared live", row["notes"])
+
+    # ── same-company dedup on submit (watchlist #2) ─────────────────────────
+
+    def test_submit_abandons_sibling_drafts_same_company(self):
+        # Two channels for the same company (suffix differs); applying via one
+        # must abandon the other so the manual path can't double-submit.
+        sid = self._snapshot(self._job("a", "Acme GmbH"))
+        other = self._snapshot(self._job("b", "Acme AG"))
+        approve_snapshot(self.conn, sid)
+        freed = report_result(self.conn, sid, "submitted")
+        self.assertEqual(freed, [other])
+        row = self.conn.execute(
+            "SELECT status, notes FROM application_snapshots WHERE id=?",
+            (other,)).fetchone()
+        self.assertEqual(row["status"], "abandoned")
+        self.assertIn(f"#{sid}", row["notes"])
+
+    def test_submit_leaves_other_companies_alone(self):
+        sid = self._snapshot(self._job("a", "Acme GmbH"))
+        keep = self._snapshot(self._job("b", "Globex SE"))
+        approve_snapshot(self.conn, sid)
+        freed = report_result(self.conn, sid, "submitted")
+        self.assertEqual(freed, [])
+        row = self.conn.execute(
+            "SELECT status FROM application_snapshots WHERE id=?",
+            (keep,)).fetchone()
+        self.assertEqual(row["status"], "draft")
+
+    def test_non_submit_outcomes_abandon_nothing(self):
+        sid = self._snapshot(self._job("a", "Acme GmbH"))
+        self._snapshot(self._job("b", "Acme AG"))
+        approve_snapshot(self.conn, sid)
+        self.assertEqual(report_result(self.conn, sid, "failed", note="x"), [])
 
     # ── review-page support ────────────────────────────────────────────────
 

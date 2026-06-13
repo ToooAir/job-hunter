@@ -130,6 +130,40 @@ def abandon_snapshot(conn: sqlite3.Connection, snapshot_id: int,
                 note=f"abandoned: {reason}" if reason else "abandoned")
 
 
+def _abandon_sibling_drafts(conn: sqlite3.Connection, submitted_snap: dict) -> list[int]:
+    """Abandon other in-flight drafts/approved snapshots for the SAME company.
+
+    The manual cheat-sheet path has no session-level dedup, so a second channel
+    for a company we just applied to would otherwise linger in the review queue
+    inviting a duplicate submit (watchlist #2 — already bit us once with
+    Matrix42). Company match uses the same suffix-stripping normaliser as the
+    apply queue's dedup gate. Returns the ids it abandoned."""
+    from utils.apply_queue import normalize_company  # pure; lazy to avoid cycle
+
+    row = conn.execute(
+        "SELECT company FROM jobs WHERE id = ?", (submitted_snap["job_id"],)
+    ).fetchone()
+    if row is None:
+        return []
+    target = normalize_company(row["company"])
+    if not target:
+        return []
+    siblings = conn.execute(
+        """SELECT s.id, j.company
+           FROM application_snapshots s JOIN jobs j ON j.id = s.job_id
+           WHERE s.status IN ('draft', 'approved') AND s.id != ?""",
+        (submitted_snap["id"],),
+    ).fetchall()
+    abandoned = []
+    for sib in siblings:
+        if normalize_company(sib["company"]) == target:
+            abandon_snapshot(
+                conn, sib["id"],
+                reason=f"company already applied via snapshot #{submitted_snap['id']}")
+            abandoned.append(sib["id"])
+    return abandoned
+
+
 # ── check-in (apply_session, 5.3) ──────────────────────────────────────────────
 
 def report_result(
@@ -139,16 +173,20 @@ def report_result(
     note: str = "",
     screenshot_path: str | None = None,
     submitted_by: str = "agent",
-) -> None:
+) -> list[int]:
     """Book a session outcome for one snapshot.
 
     outcome:
-      'submitted' — also flips the job to applied (applied_at = now),
-                    the one place job status and snapshot move together
+      'submitted' — also flips the job to applied (applied_at = now), the one
+                    place job status and snapshot move together; additionally
+                    abandons sibling drafts for the same company (returns their
+                    ids) so a manual second channel can't be double-submitted
       'failed'    — snapshot leaves IN_FLIGHT, the job re-queues; a reason
                     note is mandatory (never fail silently)
       'prepared'  — prepare mode: form filled, tab left for the human;
                     snapshot stays approved, screenshot/notes recorded
+
+    Returns the list of sibling snapshot ids abandoned (empty unless submitted).
     """
     snap = _get(conn, snapshot_id)
     extra = {"screenshot_path": screenshot_path} if screenshot_path else {}
@@ -159,6 +197,7 @@ def report_result(
                     note=note or None, submitted_at=now,
                     submitted_by=submitted_by, **extra)
         update_status(conn, snap["job_id"], "applied", applied_at=now)
+        return _abandon_sibling_drafts(conn, snap)
     elif outcome == "failed":
         if not note:
             raise ValueError("a failed result needs a reason note")
@@ -170,3 +209,4 @@ def report_result(
         update_application_snapshot(conn, snapshot_id, **fields)
     else:
         raise ValueError(f"unknown outcome {outcome!r}")
+    return []

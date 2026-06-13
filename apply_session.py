@@ -259,9 +259,11 @@ def _submit_and_book(conn, page, snap: dict, shot: str | None) -> str:
 
     shot2 = take_screenshot(page, snap["id"], suffix="-submitted") or shot
     if confirmed:
-        report_result(conn, snap["id"], "submitted", screenshot_path=shot2,
-                      submitted_by="agent", note=f"submit via {pattern}")
+        freed = report_result(conn, snap["id"], "submitted", screenshot_path=shot2,
+                              submitted_by="agent", note=f"submit via {pattern}")
         print("    ✓ 已送出並記錄 applied")
+        if freed:
+            print(f"    ↳ 同公司草稿已自動撤回:{', '.join(f'#{i}' for i in freed)}")
         return "submitted"
     report_result(conn, snap["id"], "failed", screenshot_path=shot2,
                   note="submit clicked but no confirmation detected")
@@ -398,12 +400,15 @@ def run_watch(args) -> None:
                                   f"等待確認文字…")
                         continue
                     shot = take_screenshot(page, snap["id"], suffix="-confirmed")
-                    report_result(conn, snap["id"], "submitted",
-                                  screenshot_path=shot, submitted_by="human",
-                                  note=f"watch: confirmation on {url}"[:300])
+                    freed = report_result(conn, snap["id"], "submitted",
+                                          screenshot_path=shot, submitted_by="human",
+                                          note=f"watch: confirmation on {url}"[:300])
                     booked.add(snap["id"])
                     print(f"  ✓ [{snap['id']}] {snap['job'].get('company')} "
                           f"確認頁偵測到,已記錄 applied")
+                    if freed:
+                        print(f"    ↳ 同公司草稿已自動撤回:"
+                              f"{', '.join(f'#{i}' for i in freed)}")
                 time.sleep(WATCH_POLL_S)
     except KeyboardInterrupt:
         pass
@@ -422,12 +427,14 @@ def run_book(args) -> None:
     if snap is None:
         print(f"找不到 snapshot {args.book}。")
         return
-    report_result(conn, args.book, "submitted",
-                  note="booked manually via --book "
-                       "(human submission outside watched hosts)",
-                  submitted_by="human")
+    freed = report_result(conn, args.book, "submitted",
+                          note="booked manually via --book "
+                               "(human submission outside watched hosts)",
+                          submitted_by="human")
     print(f"已記錄 [{snap['id']}] {snap['company']} — {snap['title']}"
           f" 為人工送出,職缺轉 applied。")
+    if freed:
+        print(f"  ↳ 同公司草稿已自動撤回:{', '.join(f'#{i}' for i in freed)}")
 
 
 def main() -> None:
