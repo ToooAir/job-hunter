@@ -349,6 +349,44 @@ def _find_ats_href(page) -> str | None:
         return None
 
 
+# Pick the anchor whose visible text matches the job title — and ONLY when it
+# is an unambiguous winner. A careers list page (Workato) drops you on a roster
+# of postings; the real form is one hop behind the matching title link.
+# Blind apply-button clicking here would risk submitting to the wrong job, so
+# we demand a clear title match instead (watchlist #10).
+_TITLE_HREF_JS = """
+(title) => {
+  const norm = s => (s || '').toLowerCase()
+      .replace(/[^a-z0-9äöüß ]+/g, ' ').replace(/\\s+/g, ' ').trim();
+  const tTok = new Set(norm(title).split(' ').filter(w => w.length > 2));
+  if (tTok.size === 0) return null;
+  const scored = [];
+  for (const a of document.querySelectorAll('a[href]')) {
+    let u; try { u = new URL(a.href); } catch { continue; }
+    if (!/^https?:$/.test(u.protocol)) continue;
+    const aTok = new Set(norm(a.innerText || a.textContent).split(' ').filter(w => w.length > 2));
+    if (aTok.size === 0) continue;
+    let inter = 0; for (const w of tTok) if (aTok.has(w)) inter++;
+    scored.push({ href: a.href, score: inter / tTok.size });
+  }
+  scored.sort((x, y) => y.score - x.score);
+  if (scored.length === 0 || scored[0].score < 0.8) return null;
+  if (scored.length > 1 && scored[1].score >= scored[0].score) return null;  // ambiguous
+  return scored[0].href;
+}
+"""
+
+
+def _find_title_href(page, title: str) -> str | None:
+    """Anchor whose text unambiguously matches the job title, if any."""
+    if not title:
+        return None
+    try:
+        return page.evaluate(_TITLE_HREF_JS, title)
+    except Exception:
+        return None
+
+
 def detect_captcha(page) -> bool:
     for frame in page.frames:
         try:
@@ -380,12 +418,14 @@ def _find_apply_control(page):
     return None, None
 
 
-def goto_apply_page(page, url: str) -> dict:
+def goto_apply_page(page, url: str, title: str | None = None) -> dict:
     """Navigate to a job URL and end up on its application form if possible.
 
     Strategy: load → settle → answer cookie wall (necessary only) → if what's
     visible doesn't look like an apply form, follow one apply-looking
-    button/link (new-tab aware) → settle → cookie again.
+    button/link (new-tab aware) → settle → cookie again. When a job `title`
+    is given and the page is still form-less, follow an unambiguous
+    title-matched link one hop (careers list → posting).
 
     Returns a report dict; report['page'] is the page that ends up holding
     the form (a popup if the apply button opened one) — callers that
@@ -466,6 +506,23 @@ def goto_apply_page(page, url: str) -> dict:
                                                 or dismiss_cookie_banner(active))
                     report["clicked_apply"] = ((report.get("clicked_apply") or "")
                                                + " +ats-pull-through").strip()
+                    controls = count_form_controls(active)
+                except Exception:
+                    pass
+
+        if title and not _acceptable_form(controls):
+            # careers list page (Workato): the form is behind the link whose
+            # text matches THIS job's title — follow it only if unambiguous
+            title_href = _find_title_href(active, title)
+            if title_href and title_href != active.url:
+                try:
+                    active.goto(title_href, wait_until="domcontentloaded",
+                                timeout=NAV_TIMEOUT_MS)
+                    _settle(active)
+                    report["cookie_clicked"] = (report["cookie_clicked"]
+                                                or dismiss_cookie_banner(active))
+                    report["clicked_apply"] = ((report.get("clicked_apply") or "")
+                                               + " +title-hop").strip()
                     controls = count_form_controls(active)
                 except Exception:
                     pass

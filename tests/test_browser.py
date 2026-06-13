@@ -243,6 +243,70 @@ class AtsPullThroughTest(unittest.TestCase):
         self.assertGreater(report["controls"]["password"], 0)  # account-wall
 
 
+CAREERS_LIST_HTML = """<!doctype html><html><head><meta charset="utf-8"></head>
+<body><h1>Open Roles</h1><ul>
+  <li><a href="ds.html">Senior Data Scientist</a></li>
+  <li><a href="be.html">Backend Engineer (m/w/d)</a></li>
+  <li><a href="fe.html">Frontend Developer</a></li>
+</ul></body></html>"""
+
+# Two links share the full title — the hop must refuse (ambiguous).
+CAREERS_AMBIGUOUS_HTML = """<!doctype html><html><head><meta charset="utf-8"></head>
+<body><h1>Open Roles</h1><ul>
+  <li><a href="be.html">Backend Engineer Berlin</a></li>
+  <li><a href="be2.html">Backend Engineer Hamburg</a></li>
+</ul></body></html>"""
+
+
+@unittest.skipUnless(HAS_PLAYWRIGHT, "playwright not installed on this host")
+class CareersListHopTest(unittest.TestCase):
+    """A careers list page (Workato lesson): the form is one hop behind the
+    link whose text matches the job title — followed only when unambiguous."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        root = Path(cls.tmp.name)
+        (root / "list.html").write_text(CAREERS_LIST_HTML, encoding="utf-8")
+        (root / "ambiguous.html").write_text(CAREERS_AMBIGUOUS_HTML, encoding="utf-8")
+        for page in ("be.html", "be2.html", "ds.html", "fe.html"):
+            (root / page).write_text(FORM_HTML, encoding="utf-8")
+        handler = partial(SimpleHTTPRequestHandler, directory=str(root))
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+        cls.base = f"http://127.0.0.1:{cls.server.server_port}"
+        cls.session_cm = headless_session(profile_dir=root / "profile")
+        cls.context = cls.session_cm.__enter__()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.session_cm.__exit__(None, None, None)
+        cls.server.shutdown()
+        cls.tmp.cleanup()
+
+    def setUp(self):
+        self.page = self.context.new_page()
+
+    def tearDown(self):
+        self.page.close()
+
+    def test_title_matched_link_is_followed(self):
+        report = goto_apply_page(self.page, f"{self.base}/list.html",
+                                 title="Backend Engineer")
+        self.assertTrue(report["form_found"], report)
+        self.assertTrue(report["final_url"].endswith("be.html"), report["final_url"])
+        self.assertIn("title-hop", report["clicked_apply"] or "")
+
+    def test_no_title_no_hop(self):
+        report = goto_apply_page(self.page, f"{self.base}/list.html")
+        self.assertFalse(report["form_found"])  # list page alone isn't a form
+
+    def test_ambiguous_titles_are_not_followed(self):
+        report = goto_apply_page(self.page, f"{self.base}/ambiguous.html",
+                                 title="Backend Engineer")
+        self.assertFalse(report["form_found"])  # tie → refuse to guess
+
+
 GONE_HTML = """<!doctype html><html><head><meta charset="utf-8"></head><body>
 <h1>Diese Stelle ist leider nicht mehr verfügbar.</h1>
 </body></html>"""

@@ -105,7 +105,7 @@ def run_pass_a(jobs: list[dict]) -> list[dict]:
                     continue
                 if job.get("source") == "heise":
                     target = _heise_original(page, job["url"]) or target
-                report = goto_apply_page(page, target)
+                report = goto_apply_page(page, target, title=job.get("title"))
                 active = report.pop("page", page)
                 tree = extract_form_tree(active) if report["form_found"] else None
                 if active is not page:
