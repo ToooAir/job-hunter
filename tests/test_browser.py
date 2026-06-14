@@ -243,6 +243,28 @@ class AtsPullThroughTest(unittest.TestCase):
         self.assertGreater(report["controls"]["password"], 0)  # account-wall
 
 
+class SkipFrameTest(unittest.TestCase):
+    """Offline: which child frames extraction must never read from. A captcha
+    iframe hosts its own controls (the live lever probe leaked an hCaptcha
+    language picker into the field table); they must never reach the mapper."""
+
+    def test_captcha_iframe_is_skipped(self):
+        from utils.browser import _skip_frame
+        url = ("https://newassets.hcaptcha.com/captcha/v1/abc/static/"
+               "hcaptcha-enclave.html#frame=enclave&host=jobs.lever.co")
+        self.assertTrue(_skip_frame(url))
+
+    def test_tracker_iframe_is_skipped(self):
+        from utils.browser import _skip_frame
+        self.assertTrue(_skip_frame("https://www.googletagmanager.com/ns.html?id=GTM-X"))
+
+    def test_real_form_frame_is_kept(self):
+        from utils.browser import _skip_frame
+        self.assertFalse(_skip_frame("https://jobs.lever.co/mistral/abc/apply"))
+        self.assertFalse(_skip_frame("https://wackler-group.softgarden.io/job/123"))
+        self.assertFalse(_skip_frame(""))
+
+
 CAREERS_LIST_HTML = """<!doctype html><html><head><meta charset="utf-8"></head>
 <body><h1>Open Roles</h1><ul>
   <li><a href="ds.html">Senior Data Scientist</a></li>

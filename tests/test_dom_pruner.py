@@ -197,6 +197,26 @@ LOGIN_PLUS_APPLY = """\
 """
 
 
+class ReactSelectComboboxTest(unittest.TestCase):
+    """A react-select text input carries role="combobox"; classifying it as
+    plain text makes the executor's fill() a silent no-op (the value never
+    sticks — live greenhouse probe). It must be classified as a custom widget."""
+
+    _HTML = """
+    <form action="/apply">
+      <label for="name">Name</label><input type="text" id="name" name="name">
+      <label for="email">Email</label><input type="email" id="email" name="email">
+      <label for="country">Country</label>
+      <input type="text" id="country" name="country" role="combobox"
+             aria-haspopup="true" aria-autocomplete="list" class="select__input">
+    </form>"""
+
+    def test_combobox_input_is_custom_not_text(self):
+        by_sel = {f.selector: f for f in extract_fields(self._HTML)}
+        self.assertEqual(by_sel["#name"].kind, "text")      # plain text untouched
+        self.assertEqual(by_sel["#country"].kind, "custom")  # react-select caught
+
+
 class FormScopingTest(unittest.TestCase):
     def test_search_and_cookie_chrome_filtered_on_formless_page(self):
         names = {f.name for f in extract_fields(BOARD_CHROME_PAGE)}
