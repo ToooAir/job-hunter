@@ -174,6 +174,8 @@ def main() -> None:
                         help="comma-separated job ids — regenerate just these")
     parser.add_argument("--dry-run", action="store_true",
                         help="no DB writes (snapshots, liveness)")
+    parser.add_argument("--no-agentic", action="store_true",
+                        help="kill-switch: skip the agentic long-tail fallback")
     parser.add_argument("--db", default=DEFAULT_DB_PATH)
     parser.add_argument("--out", default=str(OUT_JSON))
     args = parser.parse_args()
@@ -218,6 +220,7 @@ def main() -> None:
         "db_path": args.db,
         "dry_run": args.dry_run,
         "qdrant_path": str(Path(__file__).parent / "qdrant_data"),
+        "enable_agentic_fallback": not args.no_agentic,
     }}
 
     results, failures = [], []

@@ -3,6 +3,7 @@
 Run:  python -m unittest tests.test_dom_pruner -v
 """
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -309,6 +310,41 @@ class PruneHtmlTest(unittest.TestCase):
         # form survives; the dropped filler was outside the form root anyway
         self.assertIn('name="first_name"', out)
         self.assertLess(len(out.encode()), 25_000)
+
+
+# Lever posts each custom-question card as JSON in a hidden baseTemplate input;
+# the answer controls are cards[UUID][fieldN] whose only DOM label is that
+# opaque name. Fictional questions only.
+_CARD_JSON = json.dumps({"fields": [
+    {"type": "textarea", "text": "What is your favourite programming language?"},
+    {"type": "textarea", "text": "Why do you want to join Mustermann GmbH?"},
+]})
+LEVER_FORM = f"""\
+<html><body><form>
+  <input type="text" name="name" />
+  <input type="hidden" name="cards[abc-123][baseTemplate]" value='{_CARD_JSON}' />
+  <textarea name="cards[abc-123][field0]"></textarea>
+  <textarea name="cards[abc-123][field1]"></textarea>
+</form></body></html>"""
+
+
+class LeverCardQuestionTest(unittest.TestCase):
+    def test_opaque_card_fields_get_real_question(self):
+        by_name = {f.name: f for f in extract_fields(LEVER_FORM)}
+        self.assertEqual(by_name["cards[abc-123][field0]"].context_hint,
+                         "What is your favourite programming language?")
+        self.assertEqual(by_name["cards[abc-123][field1]"].context_hint,
+                         "Why do you want to join Mustermann GmbH?")
+
+    def test_context_hint_in_to_dict_only_when_present(self):
+        by_name = {f.name: f for f in extract_fields(LEVER_FORM)}
+        self.assertNotIn("context_hint", by_name["name"].to_dict())
+        self.assertIn("context_hint", by_name["cards[abc-123][field0]"].to_dict())
+
+    def test_malformed_card_json_is_ignored(self):
+        bad = LEVER_FORM.replace(_CARD_JSON, "{not json")
+        by_name = {f.name: f for f in extract_fields(bad)}  # must not raise
+        self.assertEqual(by_name["cards[abc-123][field0]"].context_hint, "")
 
 
 if __name__ == "__main__":

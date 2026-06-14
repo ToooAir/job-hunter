@@ -43,8 +43,11 @@ GENERATED parts of the draft. Tag every issue with the check it came from:
   expectation. Not mentioning salary is fine and must not be flagged.
 - "visa" — work-permit answers that do not match the background facts.
 - "language" — generated text not in English.
-- "oversharing" — religion, marital status, photos or similarly sensitive
-  topics volunteered unprompted.
+- "oversharing" — sensitive info (religion, marital status, health, photos)
+  VOLUNTEERED in free text (cover letter / open answers) that no field asked
+  for. A gender / diversity / disability question the FORM itself asks is
+  prompted, not volunteered: answering it from the candidate's profile is
+  NEVER oversharing — do not flag it.
 Be strict about fabrication, lenient about phrasing and tone. Do not flag
 omissions (information that could have been added but was not). fabrication,
 salary, visa and oversharing issues are ALWAYS severity "high".

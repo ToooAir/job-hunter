@@ -68,6 +68,7 @@ NODE_ORDER = (
     "map_deterministic",
     "map_llm",
     "gen_content",
+    "map_agentic",
     "verify",
     "assign_tier",
     "save_draft",
@@ -165,6 +166,47 @@ def gen_content(state: ApplyState, config) -> dict:
 
     return {"actions": actions, "unfilled": unfilled, "custom_qa": custom_qa,
             "cover_letter": cl, "kb_context": kb_context, "notes": notes}
+
+
+def map_agentic(state: ApplyState, config) -> dict:
+    """Hybrid fallback: the agentic mapper fills the long tail the deterministic
+    + LLM passes left empty. It sees the WHOLE field table (whole-page context
+    helps it answer — e.g. lever's context_hint questions the rule passes drop),
+    but only its actions for STILL-UNFILLED selectors are adopted; deterministic
+    / LLM actions stay authoritative. Every adopted action is needs_review, so
+    the draft can only reach Tier 2 (never auto-submit), and its free text is
+    audited by verify_draft's fabrication gate downstream.
+
+    Opt-out via config enable_agentic_fallback (default on). LLM-only; costs
+    +1 Mistral call per job, and only when an unfilled gap actually exists.
+    """
+    cfg = _cfg(config)
+    if not cfg.get("enable_agentic_fallback", True):
+        return {}
+    fields = state.get("fields") or []
+    actions = list(state.get("actions") or [])
+    actioned = {a.get("selector") for a in actions}
+    if not any(f.get("selector") not in actioned for f in fields):
+        return {}  # deterministic + LLM already covered every field — no call
+
+    from utils.agentic_mapper import map_page_agentic
+    out = map_page_agentic(fields, cfg["profile"], state["job"],
+                           client=cfg.get("client"), model=cfg.get("model"))
+    adopted = [a for a in out.get("actions", [])
+               if a.get("selector") and a.get("selector") not in actioned]
+    if not adopted:
+        return {}
+
+    adopted_sels = {a["selector"] for a in adopted}
+    adopted_vals = {a.get("value") for a in adopted}
+    unfilled = [u for u in (state.get("unfilled") or [])
+                if u.get("selector") not in adopted_sels]
+    custom_qa = list(state.get("custom_qa") or []) + [
+        q for q in out.get("custom_qa", []) if q.get("answer") in adopted_vals]
+    notes = list(state.get("notes") or [])
+    notes.append(f"agentic fallback: +{len(adopted)} gap fill(s)")
+    return {"actions": actions + adopted, "unfilled": unfilled,
+            "custom_qa": custom_qa, "notes": notes}
 
 
 def verify(state: ApplyState, config) -> dict:
@@ -285,7 +327,8 @@ def build_graph(overrides: dict | None = None):
     )
     g.add_edge("map_deterministic", "map_llm")
     g.add_edge("map_llm", "gen_content")
-    g.add_edge("gen_content", "verify")
+    g.add_edge("gen_content", "map_agentic")
+    g.add_edge("map_agentic", "verify")
     g.add_edge("verify", "assign_tier")
     g.add_edge("assign_tier", "save_draft")
     g.add_edge("save_draft", END)
