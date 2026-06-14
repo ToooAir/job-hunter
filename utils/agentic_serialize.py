@@ -25,6 +25,11 @@ def _field_line(idx: int, f: dict) -> str:
     line = f'[{idx}] {kind} "{label}"'
 
     flags: list[str] = []
+    hint = (f.get("context_hint") or "").strip()
+    if hint:
+        # the real question, recovered when the visible label is opaque (e.g.
+        # lever cards[uuid]) — it is what the answer must address, so lead with it
+        flags.append(f'asks: "{hint}"')
     if f.get("required"):
         flags.append("required")
     if f.get("label_suspect"):

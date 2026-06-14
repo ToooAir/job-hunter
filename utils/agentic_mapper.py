@@ -39,6 +39,10 @@ _SYSTEM = """\
 You are filling ONE job-application form for ONE candidate. You are shown the
 form as a numbered list of controls — each line is `[id] kind "label" — flags`.
 
+When a line carries `asks: "..."`, that is the control's REAL question (its
+visible label was opaque) — answer that question, not the label. If you cannot
+answer it truthfully from the facts, "skip" it; never paste an unrelated value.
+
 For EVERY control output one decision, referencing it by its exact [id]:
 - "fill": text/textarea/number/date/email/tel/custom field answerable from the
   candidate facts, OR a short free-text answer to a job question (motivation,

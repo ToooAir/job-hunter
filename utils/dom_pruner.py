@@ -13,6 +13,7 @@ unit-testable everywhere (host and container).
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from bs4 import BeautifulSoup, Comment, Tag
@@ -61,6 +62,10 @@ class FormField:
     accept: str = ""                    # file inputs: accepted MIME/extensions
     label_suspect: bool = False         # label came from a positional guess —
                                         # mapper flags the fill for human review
+    context_hint: str = ""              # real question text recovered when the
+                                        # visible label is opaque (e.g. lever's
+                                        # cards[uuid]); consumed by the agentic
+                                        # mapper only — deterministic ignores it
 
     def to_dict(self) -> dict:
         d = {"selector": self.selector, "kind": self.kind, "label": self.label}
@@ -78,6 +83,8 @@ class FormField:
             d["accept"] = self.accept
         if self.label_suspect:
             d["label_suspect"] = True
+        if self.context_hint:
+            d["context_hint"] = self.context_hint
         return d
 
 
@@ -237,6 +244,34 @@ def _application_form(soup: BeautifulSoup) -> Tag | None:
     return best
 
 
+_MAX_HINT_LEN = 280
+_LEVER_BASE_TEMPLATE_RE = re.compile(r"^cards\[([0-9a-f-]+)\]\[baseTemplate\]$", re.I)
+
+
+def _lever_card_questions(soup: BeautifulSoup) -> dict[str, str]:
+    """Recover lever custom-question text the label heuristics can't see.
+
+    Lever posts each question card as JSON in a hidden
+    `cards[UUID][baseTemplate]` input; the visible answer controls are
+    `cards[UUID][fieldN]` whose only DOM label is that opaque name. The JSON's
+    `fields[N].text` is the real question. Returns {control_name: question}.
+    """
+    out: dict[str, str] = {}
+    for el in soup.find_all("input"):
+        m = _LEVER_BASE_TEMPLATE_RE.match(el.get("name") or "")
+        if not m:
+            continue
+        try:
+            data = json.loads(el.get("value") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        for i, q in enumerate(data.get("fields", []) if isinstance(data, dict) else []):
+            text = " ".join((q.get("text") or "").split())[:_MAX_HINT_LEN]
+            if text:
+                out[f"cards[{m.group(1)}][field{i}]"] = text
+    return out
+
+
 def extract_fields(
     html: str,
     frame_path: tuple[str, ...] = (),
@@ -252,6 +287,7 @@ def extract_fields(
     scope = (_application_form(soup) if scope_to_form else None) or soup
     fields: list[FormField] = []
     seen_radio_groups: set[str] = set()
+    card_questions = _lever_card_questions(soup)
 
     candidates = scope.find_all(("input", "textarea", "select")) + [
         el for el in scope.find_all(attrs={"role": True})
@@ -277,6 +313,7 @@ def extract_fields(
                 label=_clean_text(group_label), name=group,
                 options=[o for o in options if o][:_MAX_OPTIONS],
                 required=any(_is_required(r, "") for r in radios),
+                context_hint=card_questions.get(group, ""),
             ))
             continue
 
@@ -287,6 +324,7 @@ def extract_fields(
             required=_is_required(el, label),
             autocomplete=el.get("autocomplete") or "",
             label_suspect=label_src == "sibling",
+            context_hint=card_questions.get(el.get("name") or "", ""),
         )
         if kind == "select":
             f.options = [

@@ -47,6 +47,13 @@ class SerializeTest(unittest.TestCase):
         lines = serialize_fields(FIELDS).splitlines()
         self.assertIn('"field_x"', lines[5])
 
+    def test_context_hint_rendered_as_question(self):
+        out = serialize_fields([
+            {"selector": "#q", "kind": "textarea", "label": "cards[abc][field0]",
+             "context_hint": "Why do you want to join us?"},
+        ])
+        self.assertIn('asks: "Why do you want to join us?"', out)
+
 
 class GroundTest(unittest.TestCase):
     def test_valid_index_returns_field(self):
