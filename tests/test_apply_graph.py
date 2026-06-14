@@ -148,6 +148,60 @@ class TestEndToEndDryRun(unittest.TestCase):
 
 
 @unittest.skipUnless(HAS_LANGGRAPH, "langgraph not installed (container-only dep)")
+class TestMapAgentic(unittest.TestCase):
+    """Hybrid fallback: agentic fills only the gaps, never overrides the
+    deterministic/LLM passes, and every adopted action is needs_review."""
+
+    FIELDS = [
+        {"selector": "#vn", "kind": "text", "label": "Vorname"},
+        {"selector": "#q", "kind": "textarea", "label": "cards[x][f0]",
+         "context_hint": "What languages do you speak?"},
+    ]
+
+    def _state(self):
+        # deterministic already filled #vn; #q was left unfilled (opaque label)
+        return {"job": {"id": "j", "title": "T", "company": "C"},
+                "fields": self.FIELDS,
+                "actions": [{"selector": "#vn", "action": "fill", "value": "Max",
+                             "source": "profile:first_name", "needs_review": False}],
+                "unfilled": [{"selector": "#q", "label": "cards[x][f0]",
+                              "reason": "llm-needs-human", "required": False}],
+                "custom_qa": []}
+
+    def test_adopts_gap_only_and_keeps_deterministic(self):
+        from utils.apply_graph import map_agentic
+        # agentic answers both ids; #vn is already actioned so it must be dropped
+        client = FakeClient([json.dumps({"fields": [
+            {"id": 0, "action": "fill", "value": "WRONG — must not override"},
+            {"id": 1, "action": "fill", "value": "German, English"},
+        ]})])
+        out = map_agentic(self._state(), config_for(client))
+        by_sel = {a["selector"]: a for a in out["actions"]}
+        self.assertEqual(by_sel["#vn"]["value"], "Max")            # deterministic kept
+        self.assertEqual(by_sel["#q"]["value"], "German, English")  # gap filled
+        self.assertEqual(by_sel["#q"]["source"], "agentic")
+        self.assertTrue(by_sel["#q"]["needs_review"])               # → Tier 2 only
+        self.assertFalse(any(u["selector"] == "#q" for u in out["unfilled"]))
+
+    def test_kill_switch_skips_without_calling_llm(self):
+        from utils.apply_graph import map_agentic
+        client = FakeClient([])  # raises if called
+        cfg = {"configurable": {"profile": PROFILE, "client": client, "model": "m",
+                                "enable_agentic_fallback": False}}
+        self.assertEqual(map_agentic(self._state(), cfg), {})
+        self.assertEqual(client.calls, [])
+
+    def test_no_gap_makes_no_llm_call(self):
+        from utils.apply_graph import map_agentic
+        client = FakeClient([])  # raises if called
+        state = self._state()
+        state["actions"].append({"selector": "#q", "action": "fill", "value": "x",
+                                 "source": "llm", "needs_review": True})
+        self.assertEqual(map_agentic(state, config_for(client)), {})
+        self.assertEqual(client.calls, [])
+
+
+@unittest.skipUnless(HAS_LANGGRAPH, "langgraph not installed (container-only dep)")
 class TestSaveDraftAutoApprove(unittest.TestCase):
     """Tier 1 drafts auto-approve so a --submit run needs no dashboard click."""
 
