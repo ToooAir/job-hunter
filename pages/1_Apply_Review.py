@@ -41,6 +41,7 @@ _STRINGS = {
         "friction_account": "需手動/帳號",
         "tab_actions": "填值表", "tab_cl": "Cover Letter", "tab_qa": "自訂問答",
         "tab_sheet": "小抄(點右上複製)",
+        "cl_flagged": "這封 cover letter 被標記的疑慮(送出前請確認)",
         "unfilled": "未填欄位", "never_fill": "拒填欄位(never_fill)",
         "no_actions": "無自動填值(Tier 3 頁面)", "no_cl": "本表單沒有 cover letter 欄位",
         "no_qa": "沒有自訂問題", "notes": "備註",
@@ -64,6 +65,7 @@ _STRINGS = {
         "friction_account": "manual/account",
         "tab_actions": "Fill plan", "tab_cl": "Cover Letter", "tab_qa": "Custom Q&A",
         "tab_sheet": "Answer sheet (copy top-right)",
+        "cl_flagged": "Flags on this cover letter (confirm before submitting)",
         "unfilled": "Unfilled fields", "never_fill": "Refused fields (never_fill)",
         "no_actions": "No automatic fills (Tier 3 page)", "no_cl": "No cover letter slot on this form",
         "no_qa": "No custom questions", "notes": "Notes",
@@ -93,6 +95,21 @@ def _count(conn, status: str) -> int:
 
 def _issue_line(issue: dict) -> str:
     return f"`{issue.get('where', '')}` — {issue.get('issue', '')}"
+
+
+def _cl_flags(report: dict | None) -> list[dict]:
+    """Verifier issues that bear on the cover letter — fabrication anywhere, or
+    anything the reviewer pinned to the cover_letter slot. Surfaced next to the
+    letter itself so a flagged claim is read in context, not buried in the
+    generic verifier block."""
+    if not isinstance(report, dict):
+        return []
+    # high-severity only — keep the alarm-fatigue fix (watchlist #13): a low
+    # cosmetic note about the letter stays in the muted verifier expander, it
+    # does not turn the Cover Letter tab red. fabrication is always high (B).
+    return [i for i in (report.get("issues") or [])
+            if i.get("severity") == "high"
+            and (i.get("kind") == "fabrication" or i.get("where") == "cover_letter")]
 
 
 def _verifier_block(report: dict | None) -> None:
@@ -200,6 +217,11 @@ def _draft_card(conn, snap: dict) -> None:
             _actions_tab(payload)
         with tab_cl:
             if snap.get("cover_letter"):
+                flags = _cl_flags(snap.get("verifier_report"))
+                if flags:
+                    st.error(f"⚠️ {T('cl_flagged')}")
+                    for issue in flags:
+                        st.error(_issue_line(issue))
                 st.code(snap["cover_letter"], language=None)
             else:
                 st.caption(T("no_cl"))
