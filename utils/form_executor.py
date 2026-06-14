@@ -87,7 +87,7 @@ def _do_radio(scope, action) -> str | None:
     return f"radio-option-not-found: {action.get('value')!r} not in {seen}"
 
 
-def _do_fill(scope, page, action) -> None:
+def _do_fill(scope, page, action) -> str | None:
     loc = scope.locator(action["selector"]).first
     value = action.get("value") or ""
     if action.get("kind") == "custom":
@@ -98,8 +98,22 @@ def _do_fill(scope, page, action) -> None:
         except Exception:
             loc.click(timeout=ACTION_TIMEOUT_MS)
             page.keyboard.type(value, delay=20)
-        return
+        return None
     loc.fill(value, timeout=ACTION_TIMEOUT_MS)
+    # landing guard: a non-empty value that reads back EMPTY never stuck —
+    # typically a JS combobox masquerading as a text input, where fill() is a
+    # silent no-op (live greenhouse probe). Make it a loud failure so drift
+    # recovery / review handles it. Only confirmed-empty fires, so a value the
+    # widget merely reformats (phone masks etc.) is not falsely flagged.
+    if value:
+        try:
+            stuck = bool((loc.input_value(timeout=ACTION_TIMEOUT_MS) or "").strip())
+        except Exception:
+            stuck = True  # can't read back ≠ definitely failed; don't false-flag
+        if not stuck:
+            return ("fill-not-retained (likely combobox): value did not stick; "
+                    "needs widget interaction or review")
+    return None
 
 
 def _do_select(scope, action) -> None:
@@ -135,7 +149,7 @@ def execute_action(page, action: dict) -> dict:
     try:
         scope = _scope(page, action.get("frame_path"))
         if act == "fill":
-            _do_fill(scope, page, action)
+            res["error"] = _do_fill(scope, page, action)
         elif act == "select_option":
             if action.get("kind") == "radio":
                 res["error"] = _do_radio(scope, action)

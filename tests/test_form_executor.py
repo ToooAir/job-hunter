@@ -39,6 +39,8 @@ FORM_HTML = """<!doctype html><html><body>
   <label for="fn">Vorname</label><input id="fn" name="first_name">
   <label for="em">E-Mail</label><input id="em" type="email" name="email">
   <label for="msg">Anschreiben</label><textarea id="msg" name="message"></textarea>
+  <label for="ghost">Land (combobox)</label>
+  <input id="ghost" name="ghost" oninput="this.value=''">
   <label for="country">Land</label>
   <select id="country" name="country">
     <option value="">Bitte wählen</option>
@@ -162,6 +164,14 @@ class ExecutorTest(unittest.TestCase):
         self.assertIsNotNone(out["results"][0]["error"])
         self.assertTrue(out["results"][1]["ok"])  # batch continued
         self.assertEqual(self.page.input_value("#fn"), "Max")
+
+    def test_fill_that_does_not_stick_is_a_loud_failure(self):
+        # #ghost clears itself on input — exactly how a react-select combobox
+        # behaves when fill() types text it never commits. The landing guard
+        # must report failure, not a silent ok, so review/drift can take over.
+        res = execute_action(self.page, action("#ghost", "fill", "Germany"))
+        self.assertFalse(res["ok"])
+        self.assertIn("fill-not-retained", res["error"])
 
     def test_skip_action_is_a_successful_noop(self):
         res = execute_action(self.page, action("#fn", "skip"))

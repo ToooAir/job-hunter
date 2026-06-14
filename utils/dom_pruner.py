@@ -196,6 +196,13 @@ def _input_kind(el: Tag) -> str | None:
             return None
         if itype in ("checkbox", "radio", "file", "email", "tel", "number", "date", "url"):
             return itype
+        # A text input that is really a JS combobox (react-select & friends
+        # carry role="combobox") must be caught BEFORE the plain-text fallback:
+        # classifying it "text" makes the executor's fill() a silent no-op — the
+        # value never sticks (live lever/greenhouse probe lesson). Mark it custom
+        # so it routes to widget handling / review, not a fake text fill.
+        if el.get("role") in _CUSTOM_WIDGET_ROLES:
+            return "custom"
         return "text"
     if el.get("role") in _CUSTOM_WIDGET_ROLES or el.get("contenteditable") == "true":
         return "custom"

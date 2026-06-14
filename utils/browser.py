@@ -219,20 +219,30 @@ def _frame_op_guard(page, ms: int = FRAME_OP_TIMEOUT_MS):
         page.context.set_default_timeout(NAV_TIMEOUT_MS)
 
 
+_SKIP_FRAME_HOSTS = ("doubleclick", "googletagmanager", "google-analytics",
+                     "facebook.", "consent.", "adsystem", "adservice")
+
+
+def _skip_frame(url: str) -> bool:
+    """A child-frame URL we must not extract from: ad/analytics trackers, or a
+    captcha frame. A captcha iframe hosts its own controls (language pickers,
+    challenge inputs) — those must never leak into the field table or be filled
+    (red line). Captcha is still DETECTED separately via detect_captcha."""
+    u = (url or "").lower()
+    return (any(h in u for h in _SKIP_FRAME_HOSTS)
+            or any(m in u for m in _CAPTCHA_MARKERS))
+
+
 def _interesting_frames(page):
     """Main frame plus child frames that could plausibly host a form.
 
     evaluate()/content() have NO timeout parameter and block until the frame
     has an execution context — a stuck tracker iframe blocks forever. So:
-    filter known ad/analytics hosts, then probe readiness with the
+    filter known ad/analytics/captcha hosts, then probe readiness with the
     timeout-governed wait_for_load_state before yielding.
     """
     for frame in page.frames:
-        url = (frame.url or "").lower()
-        if frame is not page.main_frame and any(
-            bad in url for bad in ("doubleclick", "googletagmanager", "google-analytics",
-                                   "facebook.", "consent.", "adsystem", "adservice")
-        ):
+        if frame is not page.main_frame and _skip_frame(frame.url):
             continue
         try:
             frame.wait_for_load_state("domcontentloaded", timeout=FRAME_OP_TIMEOUT_MS)
