@@ -149,6 +149,20 @@ class TestMapPendingFields(unittest.TestCase):
         q = out["open_questions"][0]
         self.assertEqual((q["selector"], q["question"]), ("#why", "Warum wir?"))
 
+    def test_context_hint_used_as_question_over_opaque_label(self):
+        # an opaque label (lever cards[uuid]) carrying a recovered real question
+        # must route that question to the answerer — not the opaque label — and
+        # the classifier payload must carry it too, so neither works blind.
+        client = FakeClient([respond([{"index": 0, "decision": "open_question"}])])
+        out = map_pending_fields(
+            [fld(kind="textarea", label="cards[abc][field0]", selector="#c0",
+                 context_hint="What languages do you speak?")],
+            PROFILE, JOB, client=client, model="m")
+        self.assertEqual(out["open_questions"][0]["question"],
+                         "What languages do you speak?")
+        sent = client.calls[0]["messages"][1]["content"]
+        self.assertIn("What languages do you speak?", sent)
+
     def test_skip_and_needs_human_become_unfilled(self):
         client = FakeClient([respond([
             {"index": 0, "decision": "skip", "reason": "newsletter"},

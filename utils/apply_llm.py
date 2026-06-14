@@ -121,6 +121,11 @@ def _field_payload(pending: list[dict]) -> str:
             "kind": f.get("kind", "text"),
             "required": bool(f.get("required")),
         }
+        if f.get("context_hint"):
+            # the control's REAL question, recovered when its visible label is
+            # opaque (e.g. lever cards[uuid]). Without it the classifier and the
+            # answerer work blind and confabulate a plausible answer from the KB.
+            row["question"] = _sanitize(f["context_hint"])
         if f.get("options"):
             row["options"] = [_sanitize(o) for o in f["options"]]
         if f.get("suggestion") is not None:
@@ -196,7 +201,10 @@ def map_pending_fields(
                 act = "select_option" if f.get("kind") in ("select", "radio") else "fill"
                 result["actions"].append(_action(f, act, value, "llm", True))
         elif decision == "open_question":
-            result["open_questions"].append({**f, "question": f.get("label", "")})
+            # prefer the recovered real question over an opaque label, so the
+            # answerer addresses the actual question instead of guessing from KB
+            result["open_questions"].append(
+                {**f, "question": f.get("context_hint") or f.get("label", "")})
         elif decision == "skip":
             result["unfilled"].append(_unfilled(f, f"llm-skip: {reason}"))
         else:  # needs_human or anything unrecognized
