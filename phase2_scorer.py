@@ -757,6 +757,10 @@ Write a cover letter (English, 200–400 words, end on a complete sentence) for 
 Para 1 (2–3 sentences): role applied + core motivation.
 Para 2 (3–4 sentences): 1–2 relevant technical achievements with concrete results.
 Para 3 (1–2 sentences): company interest + polite close.
+Ground every claim in the candidate background above — no invented facts, numbers, or
+achievements it does not support. State a concrete result ONLY when the background
+contains it; otherwise describe the achievement without a fabricated metric. No
+embellishment, no superlatives the background does not support.
 Avoid clichés like "I am a passionate developer". Output the letter text only — no subject line, no date."""
 
     user_prompt = f"""## Candidate Background

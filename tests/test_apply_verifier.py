@@ -98,12 +98,28 @@ class TestVerifyDraft(unittest.TestCase):
 
     def test_low_issues_do_not_fail_a_passing_draft(self):
         client = FakeClient([report(True, [{"where": "cover_letter",
+                                            "kind": "language",
                                             "issue": "generic phrasing",
                                             "severity": "low"}])])
         out = verify_draft({"cover_letter": "ok text"}, PROFILE, JOB,
                            client=client, model="m")
         self.assertTrue(out["pass"])
         self.assertEqual(len(out["issues"]), 1)
+        self.assertEqual(out["issues"][0]["severity"], "low")
+
+    def test_fabrication_low_is_floored_to_high(self):
+        # The reviewer tries to mark a fabricated metric "low"; the floor must
+        # override so a false claim can never hide in the muted expander or
+        # slip past the Tier gate, no matter what severity the LLM emits.
+        client = FakeClient([report(True, [{"where": "cover_letter",
+                                            "kind": "fabrication",
+                                            "issue": "claims 100k users; not in background",
+                                            "severity": "low"}])])
+        out = verify_draft({"cover_letter": "Scaled the platform to 100k users."},
+                           PROFILE, JOB, client=client, model="m")
+        self.assertFalse(out["pass"])
+        self.assertEqual(out["issues"][0]["severity"], "high")
+        self.assertEqual(out["issues"][0]["kind"], "fabrication")
 
 
 class TestAssignTier(unittest.TestCase):

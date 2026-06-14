@@ -35,19 +35,28 @@ MAX_CL_WORDS = 400
 _VERIFY_SYSTEM = """\
 You are an independent reviewer of a job-application draft written on behalf
 of a candidate. You are given the candidate's REAL background and the
-GENERATED parts of the draft. Check:
-1. fabrication — any claim, number, or experience not supported by the background
-2. salary — a salary statement that CONTRADICTS the candidate's stated
-   expectation. Not mentioning salary is fine and must not be flagged.
-3. visa / work permit — answers must match the background facts
-4. language — generated text must be in English
-5. oversharing — religion, marital status, photos or similarly sensitive
-   topics must not be volunteered
+GENERATED parts of the draft. Tag every issue with the check it came from:
+- "fabrication" — any claim, number, or experience not supported by the
+  background. A concrete metric (e.g. "100k users", "40% faster") that the
+  background does not contain IS fabrication, even if plausible.
+- "salary" — a salary statement that CONTRADICTS the candidate's stated
+  expectation. Not mentioning salary is fine and must not be flagged.
+- "visa" — work-permit answers that do not match the background facts.
+- "language" — generated text not in English.
+- "oversharing" — religion, marital status, photos or similarly sensitive
+  topics volunteered unprompted.
 Be strict about fabrication, lenient about phrasing and tone. Do not flag
-omissions (information that could have been added but was not).
+omissions (information that could have been added but was not). fabrication,
+salary, visa and oversharing issues are ALWAYS severity "high".
 Respond with JSON only:
 {"pass": <bool>, "issues": [{"where": "<cover_letter|question|field label>",
+                             "kind": "fabrication|salary|visa|language|oversharing",
                              "issue": "<short>", "severity": "high|low"}]}"""
+
+# Issue kinds that ship something false or harmful on the candidate's behalf —
+# never let the LLM downgrade these to "low" where they'd hide in the muted
+# expander and slip past the Tier gate. fabrication is the user's core concern.
+_ALWAYS_HIGH = {"fabrication", "salary", "visa", "oversharing"}
 
 
 def _deterministic_checks(draft: dict, profile) -> list[dict]:
@@ -123,9 +132,14 @@ def verify_draft(
 
     for i in out.get("issues", []):
         if isinstance(i, dict) and i.get("issue"):
+            kind = str(i.get("kind", "")).strip().lower()
+            severity = "high" if i.get("severity") == "high" else "low"
+            if kind in _ALWAYS_HIGH:  # floor: never let a false claim hide as "low"
+                severity = "high"
             issues.append({"where": str(i.get("where", "")),
+                           "kind": kind,
                            "issue": str(i["issue"]),
-                           "severity": "high" if i.get("severity") == "high" else "low"})
+                           "severity": severity})
     llm_pass = bool(out.get("pass"))
     final = llm_pass and not any(i["severity"] == "high" for i in issues)
     return {"pass": final, "issues": issues, "llm_checked": True}

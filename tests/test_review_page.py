@@ -121,6 +121,18 @@ class ReviewPageTest(unittest.TestCase):
         at = self._run()
         self.assertFalse(any("slightly verbose" in str(e.value) for e in at.error))
 
+    def test_fabrication_flag_shown_on_cover_letter_tab(self):
+        # C: a fabrication issue is surfaced next to the letter (cl_flagged
+        # header on the Cover Letter tab), not only in the generic verifier
+        # block — so a flagged claim is read in context before approving.
+        self._draft("job-a", tier=2, verifier_report={
+            "pass": False, "llm_checked": True,
+            "issues": [{"where": "cover_letter", "kind": "fabrication",
+                        "issue": "claims an award not in the background",
+                        "severity": "high"}]})
+        at = self._run()
+        self.assertTrue(any("被標記的疑慮" in str(e.value) for e in at.error))
+
     def test_friction_badge_renders_for_mixed_queue(self):
         self._draft("job-a", tier=2)
         self._draft("job-b", tier=3, verifier_report={})
