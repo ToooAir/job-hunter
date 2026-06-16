@@ -36,9 +36,12 @@ _VERIFY_SYSTEM = """\
 You are an independent reviewer of a job-application draft written on behalf
 of a candidate. You are given the candidate's REAL background and the
 GENERATED parts of the draft. Tag every issue with the check it came from:
-- "fabrication" — any claim, number, or experience not supported by the
-  background. A concrete metric (e.g. "100k users", "40% faster") that the
+- "fabrication" — a claim, metric, or experience NOT present anywhere in the
+  background (invented). A concrete number / metric / version / named tool the
   background does not contain IS fabrication, even if plausible.
+- "misattribution" — REAL background work credited to the wrong project,
+  company, or context (the candidate genuinely did it, the answer just places
+  it elsewhere). Lower stakes than invention — flag it "low", not "high".
 - "salary" — a salary statement that CONTRADICTS the candidate's stated
   expectation. Not mentioning salary is fine and must not be flagged.
 - "visa" — work-permit answers that do not match the background facts.
@@ -53,7 +56,7 @@ omissions (information that could have been added but was not). fabrication,
 salary, visa and oversharing issues are ALWAYS severity "high".
 Respond with JSON only:
 {"pass": <bool>, "issues": [{"where": "<cover_letter|question|field label>",
-                             "kind": "fabrication|salary|visa|language|oversharing",
+                             "kind": "fabrication|misattribution|salary|visa|language|oversharing",
                              "issue": "<short>", "severity": "high|low"}]}"""
 
 # Issue kinds that ship something false or harmful on the candidate's behalf —
@@ -94,10 +97,14 @@ def _generated_parts(draft: dict) -> dict:
             {"question": q.get("question", ""), "answer": q.get("answer", "")}
             for q in draft["custom_qa"]
         ]
+    # an open-question answer is BOTH a fill action and a custom_qa record;
+    # audit it once (under "answers"), or the same text gets flagged twice.
+    answered = {q.get("answer", "") for q in draft.get("custom_qa", [])}
     llm_values = [
         {"field": a.get("label", ""), "value": a.get("value", "")}
         for a in draft.get("actions", [])
         if a.get("source") == "llm" and a.get("value")
+        and a.get("value") not in answered
     ]
     if llm_values:
         parts["field_values"] = llm_values

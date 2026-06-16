@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from utils.apply_verifier import assign_tier, verify_draft  # noqa: E402
+from utils.apply_verifier import _generated_parts, assign_tier, verify_draft  # noqa: E402
 from utils.profile_loader import CandidateProfile  # noqa: E402
 from tests.test_apply_llm import FakeClient  # noqa: E402
 
@@ -106,6 +106,30 @@ class TestVerifyDraft(unittest.TestCase):
         self.assertTrue(out["pass"])
         self.assertEqual(len(out["issues"]), 1)
         self.assertEqual(out["issues"][0]["severity"], "low")
+
+    def test_generated_parts_dedups_answer_and_field_value(self):
+        # an open-question answer is both a custom_qa record and an llm fill
+        # action — it must be audited once, not flagged twice.
+        draft = {"custom_qa": [{"question": "Why?", "answer": "Because RAG."}],
+                 "actions": [
+                     {"label": "Why us", "value": "Because RAG.", "source": "llm"},
+                     {"label": "Other", "value": "A different answer", "source": "llm"}]}
+        fv = [v["value"] for v in _generated_parts(draft).get("field_values", [])]
+        self.assertNotIn("Because RAG.", fv)      # already in "answers"
+        self.assertIn("A different answer", fv)    # genuine extra value kept
+
+    def test_misattribution_stays_low_and_passes(self):
+        # real work credited to the wrong project is defensible — flag for
+        # review (low), do not floor to high or fail the draft.
+        client = FakeClient([report(True, [{"where": "answers",
+                                            "kind": "misattribution",
+                                            "issue": "VisaFlow feature, wrong project",
+                                            "severity": "low"}])])
+        out = verify_draft({"cover_letter": "ok"}, PROFILE, JOB,
+                           client=client, model="m")
+        self.assertTrue(out["pass"])
+        self.assertEqual(out["issues"][0]["severity"], "low")
+        self.assertEqual(out["issues"][0]["kind"], "misattribution")
 
     def test_fabrication_low_is_floored_to_high(self):
         # The reviewer tries to mark a fabricated metric "low"; the floor must
