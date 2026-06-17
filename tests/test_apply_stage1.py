@@ -93,5 +93,67 @@ class TestVerdictOf(unittest.TestCase):
         self.assertEqual(verdict_of(report(), None), "no-form")
 
 
+class _FakeLink:
+    def __init__(self, href, attached=True):
+        self._href, self._attached = href, attached
+
+    def wait_for(self, state="attached", timeout=0):
+        if not self._attached:
+            raise RuntimeError("link never hydrated")
+
+    def get_attribute(self, name, timeout=0):
+        return self._href
+
+
+class _FakePage:
+    """Minimal Playwright page stand-in for _heise_original."""
+
+    def __init__(self, link, current_url):
+        self._link, self.url = link, current_url
+
+    def goto(self, url, **kw):
+        return None
+
+    def locator(self, *a, **kw):
+        return type("L", (), {"first": self._link})()
+
+
+class TestHeiseOriginal(unittest.TestCase):
+    """_heise_original must reach the EXTERNAL link and fail closed otherwise —
+    it must never return a target on heise's own application wizard."""
+
+    def setUp(self):
+        import utils.browser as b
+        self._b = b
+        self._saved = (b.dismiss_cookie_banner, b._settle)
+        b.dismiss_cookie_banner = lambda p: None  # browserless: no consent UI
+        b._settle = lambda p: None
+
+    def tearDown(self):
+        self._b.dismiss_cookie_banner, self._b._settle = self._saved
+
+    def _run(self, href, attached=True, page_url="https://jobs.heise.de/job?id=1"):
+        from apply_stage1 import _heise_original
+        return _heise_original(_FakePage(_FakeLink(href, attached), page_url), "u")
+
+    def test_external_link_is_returned(self):
+        url = "https://acme.softgarden.io/applications/x"
+        self.assertEqual(self._run(url), url)
+
+    def test_relative_redirect_endpoint_survives(self):
+        # heise often points Originalanzeige at its own /redirect?... endpoint
+        # that 302s out — a relative href must resolve, not be rejected.
+        self.assertEqual(self._run("/redirect?to=acme"),
+                         "https://jobs.heise.de/redirect?to=acme")
+
+    def test_heise_hosted_without_link_returns_none(self):
+        # useCompanyForm job: no Originalanzeige → fail closed, caller skips.
+        self.assertIsNone(self._run(None, attached=False))
+
+    def test_loopback_to_heise_wizard_is_rejected(self):
+        self.assertIsNone(
+            self._run("https://jobs.heise.de/application?useCompanyForm=1"))
+
+
 if __name__ == "__main__":
     unittest.main()

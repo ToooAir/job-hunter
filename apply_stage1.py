@@ -78,14 +78,34 @@ def verdict_of(report: dict, tree: dict | None) -> str:
 
 
 def _heise_original(page, url: str) -> str | None:
-    """heise detail page → the 'Originalanzeige' link to the original site."""
+    """heise detail page → the 'Originalanzeige' link to the EXTERNAL posting.
+
+    The apply box is hydrated client-side behind heise's consent wall, so a bare
+    goto + immediate locator misses the link — the run then silently fell back to
+    heise's own application wizard, which we never use (user decision). Dismiss
+    consent, let the box hydrate, then read the link. Returns None when the job
+    is heise-hosted (useCompanyForm: no Originalanzeige) or the link never
+    appears; the caller treats None as "skip — do not fill heise's own form".
+    Fail closed: a missed external link costs one manual application, whereas
+    filling heise's wizard submits on a channel we forbid.
+    """
+    from utils.browser import _settle, dismiss_cookie_banner
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=20_000)
+        dismiss_cookie_banner(page)
+        _settle(page)
         link = page.locator("a", has_text=re.compile("Originalanzeige", re.I)).first
+        link.wait_for(state="attached", timeout=8_000)
         href = link.get_attribute("href", timeout=3_000)
-        return urljoin(page.url, href) if href else None
     except Exception:
+        return None  # heise-hosted / link never hydrated → caller skips
+    if not href:
         return None
+    dest = urljoin(page.url, href)
+    # never accept a link that loops back into heise's own application wizard
+    if "jobs.heise.de/application" in dest.lower():
+        return None
+    return dest
 
 
 def run_pass_a(jobs: list[dict]) -> list[dict]:
@@ -104,7 +124,19 @@ def run_pass_a(jobs: list[dict]) -> list[dict]:
                                    "fields": [], "apply_url": target})
                     continue
                 if job.get("source") == "heise":
-                    target = _heise_original(page, job["url"]) or target
+                    original = _heise_original(page, job["url"])
+                    if not original:
+                        # heise-hosted (useCompanyForm) or link unreachable:
+                        # never fill heise's own wizard (user decision). Fail
+                        # closed → Tier 3 answer sheet, human applies manually.
+                        states.append({
+                            "job": job, "verdict": "heise-own-form",
+                            "fields": [], "apply_url": None,
+                            "notes": ["pass-a: no external Originalanzeige; "
+                                      "skipped heise's own application form"],
+                        })
+                        continue
+                    target = original
                 report = goto_apply_page(page, target, title=job.get("title"))
                 active = report.pop("page", page)
                 tree = extract_form_tree(active) if report["form_found"] else None
