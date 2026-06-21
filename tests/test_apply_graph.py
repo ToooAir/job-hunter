@@ -202,8 +202,8 @@ class TestMapAgentic(unittest.TestCase):
 
 
 @unittest.skipUnless(HAS_LANGGRAPH, "langgraph not installed (container-only dep)")
-class TestSaveDraftAutoApprove(unittest.TestCase):
-    """Tier 1 drafts auto-approve so a --submit run needs no dashboard click."""
+class TestSaveDraftStatus(unittest.TestCase):
+    """Every saved draft starts in review — there is no auto-submission path."""
 
     def setUp(self):
         import tempfile
@@ -223,22 +223,16 @@ class TestSaveDraftAutoApprove(unittest.TestCase):
                  "unfilled": [], "never_fill_skipped": []}
         out = save_draft(state, {"configurable": {"db_path": self.db_path, **cfg}})
         return self.conn.execute(
-            "SELECT status, approved_at, notes FROM application_snapshots WHERE id=?",
+            "SELECT status, approved_at FROM application_snapshots WHERE id=?",
             (out["snapshot_id"],)).fetchone()
 
-    def test_tier1_is_auto_approved(self):
+    def test_tier1_starts_as_draft(self):
         row = self._save(1)
-        self.assertEqual(row["status"], "approved")
-        self.assertTrue(row["approved_at"])
-        self.assertIn("auto-approved", row["notes"])
-
-    def test_tier2_stays_draft(self):
-        row = self._save(2)
         self.assertEqual(row["status"], "draft")
         self.assertIsNone(row["approved_at"])
 
-    def test_kill_switch_keeps_tier1_in_draft(self):
-        row = self._save(1, auto_approve_tier1=False)
+    def test_tier2_starts_as_draft(self):
+        row = self._save(2)
         self.assertEqual(row["status"], "draft")
         self.assertIsNone(row["approved_at"])
 

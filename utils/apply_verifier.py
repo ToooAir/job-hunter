@@ -11,11 +11,13 @@ assign_tier: pure rules, the user-approved table (2026-06-12):
   Tier 3 — Pass A verdict says the form is not fillable here (captcha,
            external board, account wall, ...) or the ATS is on the
            never-auto-submit list (join/indeed/stepstone)
-  Tier 2 — anything a human must read first: LLM values, cover letter,
-           custom answers, salary field (never auto-submit, decided
+  Tier 2 — anything a human must read first: LLM values, a cover letter
+           BOUND to a form slot (a generated-but-unsubmitted letter does
+           not count), salary field (never auto-submit, decided
            2026-06-11), dedup warning, verifier not passed, required
            fields unfilled
-  Tier 1 — fully deterministic payload, verifier passed, dedup ok
+  Tier 1 — fully deterministic payload, verifier passed, dedup ok, AND a
+           real application (has a CV upload — not a wizard/email gate)
 """
 
 from __future__ import annotations
@@ -54,6 +56,11 @@ GENERATED parts of the draft. Tag every issue with the check it came from:
 Be strict about fabrication, lenient about phrasing and tone. Do not flag
 omissions (information that could have been added but was not). fabrication,
 salary, visa and oversharing issues are ALWAYS severity "high".
+The employer name in the draft is taken from the job posting; the company
+label given above may be a parent/holding company while the posting names the
+operating subsidiary, or differ only by a legal-entity suffix. NEVER flag a
+company / employer name difference — a posting-consistent employer name is
+correct, not a fabrication.
 Respond with JSON only:
 {"pass": <bool>, "issues": [{"where": "<cover_letter|question|field label>",
                              "kind": "fabrication|misattribution|salary|visa|language|oversharing",
@@ -155,6 +162,16 @@ def verify_draft(
     return {"pass": final, "issues": issues, "llm_checked": True}
 
 
+def _has_cv_upload(actions: list[dict]) -> bool:
+    """A real, complete application uploads a CV (a file field). An email-only
+    gate / wizard step 1 — e.g. heise's useCompanyForm front door or
+    softgarden's 'Firmen E-Mail' page — fills a field or two and nothing else.
+    Requiring a CV upload before granting Tier 1 keeps those degenerate forms
+    out of the auto-approve path; they fall to Tier 2 for a human to confirm."""
+    return any(a.get("kind") == "file" or a.get("source") == "profile:cv"
+               for a in actions)
+
+
 def assign_tier(
     verdict: str,
     job: dict,
@@ -172,10 +189,16 @@ def assign_tier(
     actions = draft.get("actions", [])
     if any(a.get("source") == "llm" for a in actions):
         reasons.append("llm-generated values")
-    if draft.get("cover_letter"):
-        reasons.append("cover letter present")
-    if draft.get("custom_qa"):
-        reasons.append("custom answers")
+    # Block auto-pass only on free text that WILL be SUBMITTED. A cover letter
+    # is on the wire only when bound to a form slot (source="cover_letter", set
+    # in apply_graph.fill_generated); a generated-but-unbound letter — the form
+    # has no CL field — never reaches the employer, so it must not demote an
+    # otherwise deterministic draft. Checking draft.get("cover_letter") (text
+    # existence) was the "phantom cover letter" that made Tier 1 unreachable.
+    # custom_qa answers, when present, are bound as source=="llm" actions and
+    # are therefore already covered by the check above.
+    if any(a.get("source") == "cover_letter" for a in actions):
+        reasons.append("cover letter on form")
     if any(a.get("source") == "profile:salary_expectation" for a in actions):
         reasons.append("salary field (never auto-submit)")
     if dedup == "warn":
@@ -187,5 +210,11 @@ def assign_tier(
         reasons.append("required field unfilled")
     if any(a.get("needs_review") for a in actions):
         reasons.append("actions need review")
+    # Completeness gate (2026-06-17): Tier 1 auto-approves and a host --submit
+    # session fires it WITHOUT a dashboard click, so it must be a real, complete
+    # application — not a wizard step 1 / email gate. Only relevant to a draft
+    # that is otherwise clean (no reason above); a CV upload is the signal.
+    if not reasons and not _has_cv_upload(actions):
+        reasons.append("no CV upload — form may be incomplete (wizard/email gate)")
 
     return (2, reasons) if reasons else (1, [])

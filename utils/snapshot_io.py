@@ -1,22 +1,18 @@
-"""snapshot_io.py — check-out / check-in I/O between drafts and submission.
+"""snapshot_io.py — the draft queue the review UI reads and writes.
 
-Step 5.1. The submission host (apply_session.py) and the review UI talk to
-the snapshot queue only through this module; if the pipeline ever moves to
-a VPS, this is the single layer to swap for a fetch/deliver exchange — the
-callers don't change.
+The dashboard talks to the snapshot queue only through this module. Stage 1
+generates a draft (read the page, write the cover letter / answers, verify);
+the human reviews it in the dashboard, copies the answer sheet onto the real
+application form themselves, and marks it submitted. There is no automated
+submission step.
 
-Lifecycle (DB-as-queue): draft / approved / submitted are IN_FLIGHT and
-keep the job out of the apply queue. Marking a snapshot *failed* (or
-abandoned) releases the job: the next Stage 1 run regenerates a fresh
-draft against the live page and it goes through review again — that loop
-IS the drift recovery story, so failures must always land here with a
-reason in notes.
+Lifecycle (DB-as-queue): draft / submitted are IN_FLIGHT and keep the job out
+of the apply queue. Abandoning a snapshot releases the job: the next Stage 1
+run regenerates a fresh draft against the live page and it returns to review.
 
 Legal transitions enforced here:
-    draft    → approved | abandoned | submitted*   (*Tier 3 watch mode:
-               the human submits a never-approved draft; the watcher
-               books it as submitted_by='human')
-    approved → submitted | failed | abandoned
+    draft → submitted   (the human applied on the real site, marks it done)
+    draft → abandoned   (skip; the job re-queues for a fresh draft)
 """
 
 from __future__ import annotations
@@ -33,10 +29,8 @@ from utils.db import (
 _JSON_FIELDS = ("form_payload", "custom_qa", "verifier_report")
 
 _ALLOWED_TRANSITIONS = {
-    "approved": ("draft",),
-    "abandoned": ("draft", "approved"),
-    "submitted": ("draft", "approved"),
-    "failed": ("draft", "approved"),
+    "abandoned": ("draft",),
+    "submitted": ("draft",),
 }
 
 
@@ -77,18 +71,18 @@ def _transition(conn, snap: dict, new_status: str, note: str | None = None,
 
 # ── check-out ──────────────────────────────────────────────────────────────────
 
-def fetch_work(conn: sqlite3.Connection, status: str = "approved") -> list[dict]:
-    """Snapshots ready for a submission session, oldest approval first.
+def fetch_work(conn: sqlite3.Connection, status: str = "draft") -> list[dict]:
+    """Snapshots in the given lifecycle state, oldest first.
 
     JSON fields come back decoded and each snapshot carries a 'job' dict
-    (title/company/url/status) for dedup re-checks and session pacing."""
+    (title/company/url/status) for dedup re-checks and review display."""
     rows = conn.execute(
         """SELECT s.*, j.title AS j_title, j.company AS j_company,
                   j.url AS j_url, j.status AS j_status,
                   j.match_score AS j_match_score, j.fit_grade AS j_fit_grade
            FROM application_snapshots s JOIN jobs j ON j.id = s.job_id
            WHERE s.status = ?
-           ORDER BY COALESCE(s.approved_at, s.created_at), s.id""",
+           ORDER BY s.created_at, s.id""",
         (status,),
     ).fetchall()
     work = []
@@ -104,25 +98,7 @@ def fetch_work(conn: sqlite3.Connection, status: str = "approved") -> list[dict]
     return work
 
 
-def last_failure(conn: sqlite3.Connection, job_id: str) -> dict | None:
-    """Newest failed snapshot for a job — the review page shows its notes
-    next to the regenerated draft ('why did the last attempt bounce')."""
-    row = conn.execute(
-        """SELECT id, created_at, notes, screenshot_path
-           FROM application_snapshots
-           WHERE job_id = ? AND status = 'failed'
-           ORDER BY id DESC LIMIT 1""",
-        (job_id,),
-    ).fetchone()
-    return dict(row) if row else None
-
-
 # ── review decisions (dashboard, 5.2) ──────────────────────────────────────────
-
-def approve_snapshot(conn: sqlite3.Connection, snapshot_id: int) -> None:
-    _transition(conn, _get(conn, snapshot_id), "approved",
-                approved_at=_now_local_iso())
-
 
 def abandon_snapshot(conn: sqlite3.Connection, snapshot_id: int,
                      reason: str = "") -> None:
@@ -130,11 +106,67 @@ def abandon_snapshot(conn: sqlite3.Connection, snapshot_id: int,
                 note=f"abandoned: {reason}" if reason else "abandoned")
 
 
-def _abandon_sibling_drafts(conn: sqlite3.Connection, submitted_snap: dict) -> list[int]:
-    """Abandon other in-flight drafts/approved snapshots for the SAME company.
+def edit_snapshot(
+    conn: sqlite3.Connection,
+    snapshot_id: int,
+    *,
+    cover_letter: str | None = None,
+    action_values: dict | None = None,
+    note: str = "edited in review",
+) -> list[str]:
+    """Apply a human's review edits to a DRAFT snapshot before approval.
 
-    The manual cheat-sheet path has no session-level dedup, so a second channel
-    for a company we just applied to would otherwise linger in the review queue
+    A reviewer often needs to fix one word (a wrong 'where did you hear about
+    us' value, an overstated line in the cover letter) on an otherwise good
+    draft; without this the only options are approve-as-is or abandon-and-
+    regenerate. Human-edited text is reviewed text by definition, so the
+    verifier is NOT re-run — the stored verifier_report stays as the record of
+    what was originally flagged.
+
+    cover_letter   — full replacement text; also written into the bound
+                     cover-letter action (source=="cover_letter") so the value
+                     the host fills stays in sync with the displayed letter.
+    action_values  — {selector: new_value} for specific form fields.
+    Only DRAFT snapshots are editable (approved/submitted are frozen). Returns
+    the labels actually changed (empty if nothing differed)."""
+    snap = _get(conn, snapshot_id)
+    if snap["status"] != "draft":
+        raise ValueError(
+            f"snapshot {snapshot_id} not editable in status {snap['status']!r}")
+    payload = json.loads(snap.get("form_payload") or "{}")
+    actions = payload.get("actions") or []
+    changed: list[str] = []
+    fields: dict = {}
+
+    for a in actions:
+        sel = a.get("selector")
+        if action_values and sel in action_values \
+                and action_values[sel] != a.get("value"):
+            a["value"] = action_values[sel]
+            changed.append(a.get("label") or sel)
+
+    if cover_letter is not None and cover_letter != (snap.get("cover_letter") or ""):
+        fields["cover_letter"] = cover_letter
+        for a in actions:
+            if a.get("source") == "cover_letter":
+                a["value"] = cover_letter
+        changed.append("cover letter")
+
+    if not changed:
+        return []
+    payload["actions"] = actions
+    fields["form_payload"] = payload
+    fields["notes"] = _append_note(snap.get("notes"),
+                                   f"{note}: {', '.join(changed)}")
+    update_application_snapshot(conn, snapshot_id, **fields)
+    return changed
+
+
+def _abandon_sibling_drafts(conn: sqlite3.Connection, submitted_snap: dict) -> list[int]:
+    """Abandon other draft snapshots for the SAME company on submit.
+
+    The manual path has no session-level dedup, so a second channel for a
+    company we just applied to would otherwise linger in the review queue
     inviting a duplicate submit (watchlist #2 — already bit us once with
     Matrix42). Company match uses the same suffix-stripping normaliser as the
     apply queue's dedup gate. Returns the ids it abandoned."""
@@ -151,7 +183,7 @@ def _abandon_sibling_drafts(conn: sqlite3.Connection, submitted_snap: dict) -> l
     siblings = conn.execute(
         """SELECT s.id, j.company
            FROM application_snapshots s JOIN jobs j ON j.id = s.job_id
-           WHERE s.status IN ('draft', 'approved') AND s.id != ?""",
+           WHERE s.status = 'draft' AND s.id != ?""",
         (submitted_snap["id"],),
     ).fetchall()
     abandoned = []
@@ -164,49 +196,15 @@ def _abandon_sibling_drafts(conn: sqlite3.Connection, submitted_snap: dict) -> l
     return abandoned
 
 
-# ── check-in (apply_session, 5.3) ──────────────────────────────────────────────
-
-def report_result(
-    conn: sqlite3.Connection,
-    snapshot_id: int,
-    outcome: str,
-    note: str = "",
-    screenshot_path: str | None = None,
-    submitted_by: str = "agent",
-) -> list[int]:
-    """Book a session outcome for one snapshot.
-
-    outcome:
-      'submitted' — also flips the job to applied (applied_at = now), the one
-                    place job status and snapshot move together; additionally
-                    abandons sibling drafts for the same company (returns their
-                    ids) so a manual second channel can't be double-submitted
-      'failed'    — snapshot leaves IN_FLIGHT, the job re-queues; a reason
-                    note is mandatory (never fail silently)
-      'prepared'  — prepare mode: form filled, tab left for the human;
-                    snapshot stays approved, screenshot/notes recorded
-
-    Returns the list of sibling snapshot ids abandoned (empty unless submitted).
-    """
+def mark_submitted(conn: sqlite3.Connection, snapshot_id: int,
+                   note: str = "") -> list[int]:
+    """Record that the human applied on the real site: snapshot → submitted,
+    job → applied (the one place job status and snapshot move together), and
+    abandon sibling drafts for the same company so a second channel can't be
+    double-submitted. Returns the abandoned sibling ids."""
     snap = _get(conn, snapshot_id)
-    extra = {"screenshot_path": screenshot_path} if screenshot_path else {}
-
-    if outcome == "submitted":
-        now = _now_local_iso()
-        _transition(conn, snap, "submitted",
-                    note=note or None, submitted_at=now,
-                    submitted_by=submitted_by, **extra)
-        update_status(conn, snap["job_id"], "applied", applied_at=now)
-        return _abandon_sibling_drafts(conn, snap)
-    elif outcome == "failed":
-        if not note:
-            raise ValueError("a failed result needs a reason note")
-        _transition(conn, snap, "failed", note=f"failed: {note}", **extra)
-    elif outcome == "prepared":
-        fields = dict(extra)
-        fields["notes"] = _append_note(snap.get("notes"),
-                                       note or "prepared: left for human")
-        update_application_snapshot(conn, snapshot_id, **fields)
-    else:
-        raise ValueError(f"unknown outcome {outcome!r}")
-    return []
+    now = _now_local_iso()
+    _transition(conn, snap, "submitted", note=note or None,
+                submitted_at=now, submitted_by="human")
+    update_status(conn, snap["job_id"], "applied", applied_at=now)
+    return _abandon_sibling_drafts(conn, snap)

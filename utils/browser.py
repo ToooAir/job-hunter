@@ -1,12 +1,11 @@
-"""browser.py — shared browser layer for the semi-auto apply agent (Step 3).
+"""browser.py — shared browser layer for the apply pipeline (Step 3).
 
-Two backends behind the same Playwright Page/Context interface:
-  * headless_session(): persistent-profile headless Chromium for Stage 1
-    (unattended schema extraction). Runs fine inside the pipeline container;
-    the profile lives on the mounted data volume so cookie consent sticks.
-  * cdp_session(): attach to the user's real Chrome via CDP for Stage 2
-    (user-present submission). Host-only — from inside the container the
-    advertised ws://127.0.0.1 endpoint resolves to the container itself.
+headless_session(): persistent-profile headless Chromium for Stage 1
+(unattended schema extraction + draft generation). Runs inside the pipeline
+container; the profile lives on the mounted data volume so cookie consent
+sticks. This is the only browser the system drives — there is no live
+submission browser: applications are generated here and the human copies the
+answer sheet onto the real form themselves.
 
 Policy: cookie walls are answered with "necessary only", never "accept all".
 Captchas are detected and reported, never bypassed.
@@ -27,7 +26,6 @@ from utils.dom_pruner import FormField, extract_fields, prune_html
 
 ROOT = Path(__file__).resolve().parents[1]
 PROFILE_DIR = Path(os.getenv("BROWSER_PROFILE_DIR", str(ROOT / "data" / "browser_profile")))
-CDP_ENDPOINT = os.getenv("CDP_ENDPOINT", "http://127.0.0.1:9222")
 
 NAV_TIMEOUT_MS = 30_000
 SETTLE_TIMEOUT_MS = 8_000
@@ -155,23 +153,6 @@ def headless_session(profile_dir: Path | None = None, headless: bool = True):
                 yield context
             finally:
                 context.close()
-
-
-@contextmanager
-def cdp_session(endpoint: str | None = None):
-    """Attach to the user's real Chrome (dedicated profile, host-only).
-
-    Closing the session disconnects; it never kills the user's browser or
-    their existing tabs/contexts.
-    """
-    endpoint = endpoint or CDP_ENDPOINT
-    with sync_playwright() as pw:
-        browser = pw.chromium.connect_over_cdp(endpoint)
-        try:
-            context = browser.contexts[0] if browser.contexts else browser.new_context()
-            yield context
-        finally:
-            browser.close()  # disconnect only — browser was not launched by us
 
 
 def dismiss_cookie_banner(page) -> str | None:

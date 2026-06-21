@@ -1,13 +1,14 @@
-"""Apply review page (Step 5.2) — the Tier 2 approval queue.
+"""Apply review page — the draft review queue.
 
 Streamlit multipage: lives in pages/ next to phase3_dashboard.py and shows
 up in the sidebar nav automatically. All snapshot reads/writes go through
 utils.snapshot_io so the lifecycle rules hold no matter where a decision
 is made.
 
-Approving writes approved_at; apply_session.py (Step 5.3) picks approved
-snapshots up on the host. Tier 3 drafts render as a copy-paste answer
-sheet (st.code = built-in copy button) instead of approval buttons.
+Each draft is reviewed and optionally fine-tuned, then the human copies the
+answer sheet (st.code = built-in copy button) onto the real application form,
+submits it themselves, and marks it submitted here (which books the job as
+applied). There is no automated submission step.
 """
 
 import os
@@ -18,9 +19,9 @@ from dotenv import load_dotenv
 from utils.db import init_db
 from utils.snapshot_io import (
     abandon_snapshot,
-    approve_snapshot,
+    edit_snapshot,
     fetch_work,
-    last_failure,
+    mark_submitted,
 )
 
 st.set_page_config(layout="wide", page_title="Apply Review")
@@ -28,50 +29,65 @@ st.set_page_config(layout="wide", page_title="Apply Review")
 _STRINGS = {
     "zh": {
         "title": "投遞審閱佇列",
-        "intro": "Stage 1 草稿在此審閱。批准後由 host 端 apply_session 取走執行;"
-                 "Tier 3 用小抄自行貼上。",
-        "drafts": "待審草稿", "approved": "已批准待送出", "submitted": "已送出",
-        "failed_n": "執行失敗", "empty": "目前沒有待審草稿。先跑 apply_stage1.py。",
+        "intro": "Stage 1 草稿在此審閱、可微調。把內容複製到真實申請頁、自己送出後,"
+                 "按「標記已投遞」入帳。Tier 3 同樣用小抄手投。",
+        "drafts": "待審草稿", "submitted": "已投遞", "abandoned": "已放棄",
+        "empty": "目前沒有待審草稿。先跑 apply_stage1.py。",
         "tier_filter": "Tier 篩選", "all": "全部",
         "match": "匹配", "created": "建立於", "channel": "管道",
-        "last_fail": "上次執行失敗", "verifier_pass": "verifier 通過",
+        "verifier_pass": "verifier 通過(全確定性,無生成內容需查)",
+        "verifier_cleared": "✓ verifier 已獨立查核生成內容的事實(無捏造／洩漏／薪資・簽證一致)。"
+                            "你只需判斷:語氣像不像你、適不適合這家公司 — 不必重查事實。",
+        "cl_endorsed": "✓ 事實已查核。你只需判斷語氣與適配。",
         "verifier_issues": "verifier 發現的問題", "verifier_skip": "verifier 未跑(無生成內容)",
         "verifier_blocking": "需處理的阻擋問題", "verifier_minor": "次要提醒",
         "friction_easy": "易投", "friction_medium": "需審", "friction_painful": "填好待按",
         "friction_account": "需手動/帳號",
-        "tab_actions": "填值表", "tab_cl": "Cover Letter", "tab_qa": "自訂問答",
+        "needs_judgment": "需要你判斷",
+        "edit_hint": "可直接微調下列內容,存檔後再從小抄複製到真實申請頁",
+        "salary_field": "薪資(不在此改,改 profile)",
+        "auto_filled": "個 profile 欄位(確定性,複製即可)",
+        "tab_cl": "Cover Letter", "tab_qa": "自訂問答",
         "tab_sheet": "小抄(點右上複製)",
         "cl_flagged": "這封 cover letter 被標記的疑慮(送出前請確認)",
         "unfilled": "未填欄位", "never_fill": "拒填欄位(never_fill)",
         "no_actions": "無自動填值(Tier 3 頁面)", "no_cl": "本表單沒有 cover letter 欄位",
         "no_qa": "沒有自訂問題", "notes": "備註",
-        "approve": "批准", "abandon": "放棄", "abandon_reason": "放棄原因(選填)",
-        "approved_hint": "在 host 端執行:python apply_session.py(預設 prepare 模式)",
-        "cancel_approval": "撤回(標 abandoned,職缺會回佇列重生成)",
+        "save_edits": "存檔(供複製)", "mark_submitted": "標記已投遞",
+        "abandon": "放棄", "abandon_reason": "放棄原因(選填)",
         "required_mark": "必填",
     },
     "en": {
         "title": "Apply Review Queue",
-        "intro": "Review Stage 1 drafts here. Approved snapshots are picked up by "
-                 "apply_session on the host; Tier 3 uses the answer sheet.",
-        "drafts": "Drafts", "approved": "Approved, awaiting session", "submitted": "Submitted",
-        "failed_n": "Failed runs", "empty": "No drafts to review. Run apply_stage1.py first.",
+        "intro": "Review and fine-tune Stage 1 drafts here. Copy the content onto the "
+                 "real application form, submit it yourself, then click 'Mark submitted'. "
+                 "Tier 3 uses the same answer sheet.",
+        "drafts": "Drafts", "submitted": "Submitted", "abandoned": "Abandoned",
+        "empty": "No drafts to review. Run apply_stage1.py first.",
         "tier_filter": "Tier filter", "all": "All",
         "match": "Match", "created": "Created", "channel": "Channel",
-        "last_fail": "Last execution failure", "verifier_pass": "verifier passed",
+        "verifier_pass": "verifier passed (fully deterministic, nothing generated to audit)",
+        "verifier_cleared": "✓ Verifier independently checked the generated content "
+                            "(no fabrication / leak / salary or visa mismatch). Your call "
+                            "is only: does it sound like you, and fit this company? — no "
+                            "need to re-verify facts.",
+        "cl_endorsed": "✓ Facts checked. Your call is only voice and fit.",
         "verifier_issues": "Verifier issues", "verifier_skip": "verifier skipped (nothing generated)",
         "verifier_blocking": "Blocking issues", "verifier_minor": "Minor notes",
         "friction_easy": "easy", "friction_medium": "review", "friction_painful": "fill+press",
         "friction_account": "manual/account",
-        "tab_actions": "Fill plan", "tab_cl": "Cover Letter", "tab_qa": "Custom Q&A",
+        "needs_judgment": "Needs your judgment",
+        "edit_hint": "Fine-tune below, save, then copy from the sheet onto the real form",
+        "salary_field": "Salary (edit in profile, not here)",
+        "auto_filled": "profile fields (deterministic, just copy)",
+        "tab_cl": "Cover Letter", "tab_qa": "Custom Q&A",
         "tab_sheet": "Answer sheet (copy top-right)",
         "cl_flagged": "Flags on this cover letter (confirm before submitting)",
         "unfilled": "Unfilled fields", "never_fill": "Refused fields (never_fill)",
         "no_actions": "No automatic fills (Tier 3 page)", "no_cl": "No cover letter slot on this form",
         "no_qa": "No custom questions", "notes": "Notes",
-        "approve": "Approve", "abandon": "Abandon", "abandon_reason": "Reason (optional)",
-        "approved_hint": "Run on the host: python apply_session.py (prepare mode by default)",
-        "cancel_approval": "Withdraw (marks abandoned; the job re-queues)",
+        "save_edits": "Save (for copying)", "mark_submitted": "Mark submitted",
+        "abandon": "Abandon", "abandon_reason": "Reason (optional)",
         "required_mark": "required",
     },
 }
@@ -112,6 +128,14 @@ def _cl_flags(report: dict | None) -> list[dict]:
             and (i.get("kind") == "fabrication" or i.get("where") == "cover_letter")]
 
 
+def _cl_endorsed(report: dict | None) -> bool:
+    """True when the independent verifier actually reviewed the generated text
+    and cleared it (no high-severity cover-letter flag). The human's remaining
+    job is voice/fit, not re-checking facts the verifier already grounded."""
+    return bool(isinstance(report, dict) and report.get("llm_checked")
+                and report.get("pass") and not _cl_flags(report))
+
+
 def _verifier_block(report: dict | None) -> None:
     """Triage display (watchlist #13): blocking issues stay loud and red,
     minor notes collapse into a muted expander so a draft with only low-
@@ -121,7 +145,11 @@ def _verifier_block(report: dict | None) -> None:
         return
     issues = report.get("issues") or []
     if report.get("pass") and not issues:
-        st.success(T("verifier_pass"))
+        # llm_checked => the verifier actually audited generated free text;
+        # reframe the human's job to voice/fit. Otherwise the draft was purely
+        # deterministic and there was nothing to audit in the first place.
+        st.success(T("verifier_cleared") if report.get("llm_checked")
+                   else T("verifier_pass"))
         return
     highs = [i for i in issues if i.get("severity") == "high"]
     lows = [i for i in issues if i.get("severity") != "high"]
@@ -153,26 +181,122 @@ def _friction(snap: dict) -> tuple[int, str]:
     return 3, T("friction_account")        # board / account wall: fully manual
 
 
-def _actions_tab(payload: dict) -> None:
-    actions = payload.get("actions") or []
-    if actions:
-        st.dataframe(
-            [{"label": a.get("label"), "action": a.get("action"),
-              "value": a.get("value"), "source": a.get("source"),
-              "review": "⚠️" if a.get("needs_review") else ""}
-             for a in actions],
-            width="stretch", hide_index=True)
-    else:
+# Sources whose value the human must actually read before approving. Everything
+# else is a deterministic copy from the profile (name, email, CV) — re-checking
+# those one by one is the fatigue the one-glance card removes.
+_ATTENTION_SOURCES = {"llm", "profile:salary_expectation"}
+
+
+def _is_attention(a: dict) -> bool:
+    """A fill that needs a human's judgment: LLM-generated text, the salary
+    field (never auto-submit), or a value the extractor flagged as a possible
+    label/value mismatch (needs_review)."""
+    return a.get("source") in _ATTENTION_SOURCES or bool(a.get("needs_review"))
+
+
+def _fill_rows(actions: list[dict]) -> list[dict]:
+    return [{"label": a.get("label"), "value": a.get("value"),
+             "source": a.get("source"),
+             "review": "⚠️" if a.get("needs_review") else ""}
+            for a in actions]
+
+
+def _is_editable_field(a: dict) -> bool:
+    """A flagged form field a reviewer may correct in place: LLM-generated or
+    needs_review. Salary stays read-only (it is a profile value, edited in the
+    profile, not per-application); the cover letter has its own editor."""
+    return ((a.get("source") == "llm" or a.get("needs_review"))
+            and a.get("source") != "cover_letter")
+
+
+def _fills_section(snap: dict, payload: dict, editable: bool = False) -> dict:
+    """One-glance fill plan: the 1-2 fields needing judgment float to the top
+    (red), the deterministic profile copies collapse behind a toggle. The card
+    is itself an st.expander, so the sub-collapse uses st.toggle — Streamlit
+    forbids nesting expanders.
+
+    When editable, flagged fields render as text inputs; returns
+    {selector: value} of those inputs so the caller can persist edits on
+    approve. Read-only mode returns an empty dict."""
+    actions = [a for a in (payload.get("actions") or [])
+               if a.get("source") != "cover_letter"]  # letter has its own section
+    answered = {q.get("answer", "") for q in snap.get("custom_qa") or []}
+    # an LLM value that is also a custom_qa answer is shown in the Q&A section;
+    # don't list it here too, or the same text reads as two separate concerns.
+    attention = [a for a in actions if _is_attention(a)
+                 and not (a.get("source") == "llm" and a.get("value") in answered)]
+    auto = [a for a in actions if not _is_attention(a)]
+    req_unfilled = [u for u in (payload.get("unfilled") or []) if u.get("required")]
+    edits: dict = {}
+
+    if not actions and not req_unfilled:
         st.caption(T("no_actions"))
-    unfilled = payload.get("unfilled") or []
-    if unfilled:
-        st.markdown(f"**{T('unfilled')}**")
-        for u in unfilled:
-            req = f" ({T('required_mark')})" if u.get("required") else ""
-            st.caption(f"• {u.get('label') or u.get('selector')}{req} — {u.get('reason')}")
+
+    if attention or req_unfilled:
+        st.markdown(f"**🔴 {T('needs_judgment')} "
+                    f"({len(attention) + len(req_unfilled)})**")
+        editable_fields = [a for a in attention if _is_editable_field(a)]
+        readonly = [a for a in attention if not _is_editable_field(a)]
+        if editable and editable_fields:
+            st.caption(T("edit_hint"))
+            for a in editable_fields:
+                sel = a.get("selector")
+                edits[sel] = st.text_input(
+                    a.get("label") or sel, value=a.get("value") or "",
+                    key=f"fld_{snap['id']}_{sel}")
+        elif editable_fields:
+            st.dataframe(_fill_rows(editable_fields), width="stretch",
+                         hide_index=True)
+        for a in readonly:  # salary: surfaced, never auto-submitted, not edited
+            st.caption(f"{T('salary_field')}: {a.get('value')}")
+        for u in req_unfilled:
+            st.caption(f"• {u.get('label') or u.get('selector')} "
+                       f"({T('required_mark')}) — {u.get('reason')}")
+
+    if auto and st.toggle(f"✓ {len(auto)} {T('auto_filled')}",
+                          key=f"auto_{snap['id']}"):
+        st.dataframe(_fill_rows(auto), width="stretch", hide_index=True)
+
+    return edits
+
+    # low-priority leftovers stay muted, below the fold
+    opt = [u.get("label") or u.get("selector")
+           for u in (payload.get("unfilled") or []) if not u.get("required")]
+    if opt:
+        st.caption(f"{T('unfilled')}: {', '.join(opt)}")
     skipped = payload.get("never_fill_skipped") or []
     if skipped:
         st.caption(f"{T('never_fill')}: {', '.join(skipped)}")
+
+
+def _cover_letter_section(snap: dict, editable: bool = False) -> str | None:
+    """Render the cover letter with its verifier endorsement / flags. When
+    editable, returns the (possibly edited) text from a text area so the caller
+    can persist it on approve; read-only mode returns None."""
+    if not snap.get("cover_letter"):
+        return None
+    st.markdown(f"**{T('tab_cl')}**")
+    flags = _cl_flags(snap.get("verifier_report"))
+    if flags:
+        st.error(f"⚠️ {T('cl_flagged')}")
+        for issue in flags:
+            st.error(_issue_line(issue))
+    elif _cl_endorsed(snap.get("verifier_report")):
+        st.success(T("cl_endorsed"))
+    if editable:
+        return st.text_area(T("tab_cl"), value=snap["cover_letter"], height=260,
+                            key=f"cl_{snap['id']}", label_visibility="collapsed")
+    st.code(snap["cover_letter"], language=None)
+    return None
+
+
+def _qa_section(snap: dict) -> None:
+    if not snap.get("custom_qa"):
+        return
+    st.markdown(f"**{T('tab_qa')}**")
+    for qa in snap["custom_qa"]:
+        st.markdown(f"*{qa.get('question', '')}*")
+        st.code(qa.get("answer", ""), language=None)
 
 
 def _sheet_tab(snap: dict, payload: dict) -> None:
@@ -205,47 +329,43 @@ def _draft_card(conn, snap: dict) -> None:
                    f"{T('created')}: {snap.get('created_at')} · "
                    f"[{snap.get('apply_url')}]({snap.get('apply_url')})")
 
-        fail = last_failure(conn, snap["job_id"])
-        if fail:
-            st.error(f"{T('last_fail')} ({fail['created_at']}):\n\n{fail.get('notes')}")
-
         _verifier_block(snap.get("verifier_report"))
 
-        tab_a, tab_cl, tab_qa, tab_sheet = st.tabs(
-            [T("tab_actions"), T("tab_cl"), T("tab_qa"), T("tab_sheet")])
-        with tab_a:
-            _actions_tab(payload)
-        with tab_cl:
-            if snap.get("cover_letter"):
-                flags = _cl_flags(snap.get("verifier_report"))
-                if flags:
-                    st.error(f"⚠️ {T('cl_flagged')}")
-                    for issue in flags:
-                        st.error(_issue_line(issue))
-                st.code(snap["cover_letter"], language=None)
-            else:
-                st.caption(T("no_cl"))
-        with tab_qa:
-            for qa in snap.get("custom_qa") or []:
-                st.markdown(f"**{qa.get('question', '')}**")
-                st.code(qa.get("answer", ""), language=None)
-            if not snap.get("custom_qa"):
-                st.caption(T("no_qa"))
-        with tab_sheet:
+        # One scannable card, ordered by how much judgment each part needs:
+        # flagged fills first, then generated free text (voice/fit), then the
+        # deterministic fills and answer sheet collapsed out of the way. The
+        # human copies this onto the real form; flagged fields + cover letter
+        # are editable so the copy reflects any fix. Tier 3 is read-only sheet.
+        editable = tier != 3
+        field_edits = _fills_section(snap, payload, editable=editable)
+        cl_new = _cover_letter_section(snap, editable=editable)
+        _qa_section(snap)
+        manual = not (payload.get("actions"))  # Tier 3 copy-paste path
+        if st.toggle(T("tab_sheet"), key=f"sheet_{snap['id']}", value=manual):
             _sheet_tab(snap, payload)
 
         if snap.get("notes"):
             st.caption(f"{T('notes')}: {snap['notes']}")
 
-        cols = st.columns([1, 1, 3])
-        if tier != 3 and cols[0].button(
-                T("approve"), key=f"approve_{snap['id']}", type="primary"):
-            approve_snapshot(conn, snap["id"])
+        # Save persists edits so the answer sheet shows the corrected text to
+        # copy; Mark submitted books the application after the human applied.
+        cols = st.columns([1, 1, 1, 2])
+        if editable and cols[0].button(
+                T("save_edits"), key=f"save_{snap['id']}"):
+            edit_snapshot(conn, snap["id"], cover_letter=cl_new,
+                          action_values=field_edits)
             st.rerun()
-        reason = cols[2].text_input(
+        if cols[1].button(T("mark_submitted"), key=f"submit_{snap['id']}",
+                          type="primary"):
+            if editable:
+                edit_snapshot(conn, snap["id"], cover_letter=cl_new,
+                              action_values=field_edits)
+            mark_submitted(conn, snap["id"], note="marked submitted in review")
+            st.rerun()
+        reason = cols[3].text_input(
             T("abandon_reason"), key=f"reason_{snap['id']}",
             label_visibility="collapsed", placeholder=T("abandon_reason"))
-        if cols[1].button(T("abandon"), key=f"abandon_{snap['id']}"):
+        if cols[2].button(T("abandon"), key=f"abandon_{snap['id']}"):
             abandon_snapshot(conn, snap["id"], reason)
             st.rerun()
 
@@ -254,11 +374,10 @@ conn = get_conn()
 st.title(T("title"))
 st.caption(T("intro"))
 
-m1, m2, m3, m4 = st.columns(4)
+m1, m2, m3 = st.columns(3)
 m1.metric(T("drafts"), _count(conn, "draft"))
-m2.metric(T("approved"), _count(conn, "approved"))
-m3.metric(T("submitted"), _count(conn, "submitted"))
-m4.metric(T("failed_n"), _count(conn, "failed"))
+m2.metric(T("submitted"), _count(conn, "submitted"))
+m3.metric(T("abandoned"), _count(conn, "abandoned"))
 
 drafts = fetch_work(conn, status="draft")
 tier_choice = st.radio(T("tier_filter"), [T("all"), "Tier 2", "Tier 3"],
@@ -277,18 +396,3 @@ else:
                                -(d["job"].get("match_score") or 0)))
     for snap in drafts:
         _draft_card(conn, snap)
-
-approved = fetch_work(conn, status="approved")
-if approved:
-    st.divider()
-    st.subheader(f"{T('approved')} ({len(approved)})")
-    st.caption(T("approved_hint"))
-    for snap in approved:
-        job = snap["job"]
-        cols = st.columns([5, 2])
-        cols[0].markdown(
-            f"**{job.get('company')}** — {job.get('title')} · "
-            f"approved {snap.get('approved_at')}")
-        if cols[1].button(T("cancel_approval"), key=f"cancel_{snap['id']}"):
-            abandon_snapshot(conn, snap["id"], "approval withdrawn")
-            st.rerun()

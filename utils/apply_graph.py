@@ -258,18 +258,10 @@ def save_draft(state: ApplyState, config) -> dict:
             f.key: f.value for f in cfg["profile"].fields.values()
         }
 
-    # Tier 1 = all-deterministic, no LLM free text, verifier pass, dedup ok
-    # (assign_tier only grants it under exactly those conditions). Auto-approve
-    # it so a --submit session fires without a per-job dashboard click; the
-    # three submission gates (--submit flag, human-started session, no live
-    # captcha/required-unfillable) still stand. auto_approve_tier1 is the
-    # kill-switch — default on per the Step 6 decision.
+    # Every draft starts in review; there is no auto-submission path, so the
+    # human always reads it and applies on the real site themselves. The tier
+    # is still recorded — it tells the reviewer how much judgment a draft needs.
     notes = list(state.get("notes") or [])
-    status, approved_at = "draft", None
-    if state.get("tier") == 1 and cfg.get("auto_approve_tier1", True):
-        from utils.db import _now_local_iso
-        status, approved_at = "approved", _now_local_iso()
-        notes.append("auto-approved: Tier 1 deterministic, no review needed")
 
     if cfg.get("dry_run"):
         return {"notes": notes + ["save_draft: dry-run, no write"]}
@@ -280,8 +272,7 @@ def save_draft(state: ApplyState, config) -> dict:
         snapshot_id = create_application_snapshot(
             conn,
             job_id=job["id"],
-            status=status,
-            approved_at=approved_at,
+            status="draft",
             tier=state.get("tier"),
             channel=("company-form" if (state.get("verdict") or "ok") == "ok"
                      else state.get("verdict")),

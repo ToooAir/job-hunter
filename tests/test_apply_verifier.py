@@ -158,9 +158,22 @@ class TestAssignTier(unittest.TestCase):
         self.assertEqual(tier, 3)
 
     def test_pure_deterministic_draft_is_tier1(self):
-        draft = {"actions": [act(value="Max")], "unfilled": []}
+        draft = {"actions": [act(value="Max"),
+                             act(source="profile:cv", kind="file", value="cv.pdf")],
+                 "unfilled": []}
         tier, reasons = assign_tier("ok", JOB, draft, {"pass": True})
         self.assertEqual((tier, reasons), (1, []))
+
+    def test_email_gate_without_cv_is_not_tier1(self):
+        # heise useCompanyForm / softgarden 'Firmen E-Mail' front door: fills a
+        # field or two, no CV upload -> not a real application, must not auto-pass.
+        draft = {"actions": [act(label="Firmen E-Mail", source="profile:email"),
+                             act(label="E-Mail bestaetigen", source="profile:email")],
+                 "unfilled": []}
+        tier, reasons = assign_tier("ok", JOB, draft, {"pass": True})
+        self.assertEqual(tier, 2)
+        self.assertIn("no CV upload — form may be incomplete (wizard/email gate)",
+                      reasons)
 
     def test_llm_values_force_tier2(self):
         draft = {"actions": [act(source="llm", needs_review=True)]}
@@ -168,9 +181,21 @@ class TestAssignTier(unittest.TestCase):
         self.assertEqual(tier, 2)
         self.assertIn("llm-generated values", reasons)
 
-    def test_cover_letter_forces_tier2(self):
-        tier, _ = assign_tier("ok", JOB, {"cover_letter": "text"}, {"pass": True})
+    def test_bound_cover_letter_forces_tier2(self):
+        # a cover letter the form actually has a slot for -> on the wire
+        draft = {"actions": [act(source="cover_letter", value="Dear team")]}
+        tier, reasons = assign_tier("ok", JOB, draft, {"pass": True})
         self.assertEqual(tier, 2)
+        self.assertIn("cover letter on form", reasons)
+
+    def test_unbound_cover_letter_does_not_block_tier1(self):
+        # generated but no CL field on the form -> never submitted, so the
+        # phantom letter must NOT demote an otherwise deterministic draft.
+        draft = {"actions": [act(value="Max"),
+                             act(source="profile:cv", kind="file", value="cv.pdf")],
+                 "cover_letter": "Dear team", "unfilled": []}
+        tier, reasons = assign_tier("ok", JOB, draft, {"pass": True})
+        self.assertEqual((tier, reasons), (1, []))
 
     def test_salary_field_forces_tier2_even_deterministic(self):
         draft = {"actions": [act(source="profile:salary_expectation",

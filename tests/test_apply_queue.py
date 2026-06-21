@@ -189,7 +189,7 @@ class DedupGateTest(QueueTestBase):
     def test_block_company_with_in_flight_snapshot(self):
         make_job(self.conn, "drafted", company="Beispiel UG (haftungsbeschränkt)")
         make_job(self.conn, "second", company="Beispiel")
-        create_application_snapshot(self.conn, "drafted", status="approved")
+        create_application_snapshot(self.conn, "drafted", status="draft")
         result = build_queue(self.conn, now=NOW)
         self.assertEqual(self.queue_ids(result), [])  # drafted skipped, second blocked
         self.assertEqual(result["blocked"][0]["id"], "second")
@@ -240,7 +240,7 @@ class SnapshotCrudTest(QueueTestBase):
         update_application_snapshot(self.conn, sid, status="submitted",
                                     submitted_by="human")
         self.assertEqual([s["id"] for s in get_in_flight_snapshots(self.conn)], [sid])
-        update_application_snapshot(self.conn, sid, status="failed")
+        update_application_snapshot(self.conn, sid, status="abandoned")
         self.assertEqual(get_in_flight_snapshots(self.conn), [])
 
     def test_invalid_status_rejected(self):

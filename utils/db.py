@@ -75,13 +75,13 @@ APPLICATION_SNAPSHOT_COLUMNS = [
     ("id",              "INTEGER PRIMARY KEY AUTOINCREMENT"),
     ("job_id",          "TEXT NOT NULL"),                      # indexed
     ("created_at",      "TEXT NOT NULL"),
-    ("status",          "TEXT NOT NULL DEFAULT 'draft'"),      # draft|approved|submitted|failed|abandoned
+    ("status",          "TEXT NOT NULL DEFAULT 'draft'"),      # draft|submitted|abandoned
     ("tier",            "INTEGER"),                            # 1|2|3 risk tier (assigned in Step 4)
     ("channel",         "TEXT"),                               # e.g. generic-form | ashby | indeed-prefill
     ("apply_url",       "TEXT"),
-    ("approved_at",     "TEXT"),                               # Tier 2 approval signal
-    ("submitted_at",    "TEXT"),
-    ("submitted_by",    "TEXT"),                               # agent | human
+    ("approved_at",     "TEXT"),                               # legacy column; unused since Stage 2 removal
+    ("submitted_at",    "TEXT"),                               # set when the human marks the job applied
+    ("submitted_by",    "TEXT"),                               # always 'human' now (legacy 'agent' rows remain)
     ("form_payload",    "TEXT"),                               # JSON: field -> filled value
     ("cover_letter",    "TEXT"),
     ("custom_qa",       "TEXT"),                               # JSON: free-text question -> answer
@@ -90,10 +90,10 @@ APPLICATION_SNAPSHOT_COLUMNS = [
     ("notes",           "TEXT"),
 ]
 
-SNAPSHOT_STATUSES = ("draft", "approved", "submitted", "failed", "abandoned")
+SNAPSHOT_STATUSES = ("draft", "submitted", "abandoned")
 # Statuses that mean "an application for this job is in motion or done" —
 # used by the queue to avoid creating a second snapshot for the same job.
-IN_FLIGHT_SNAPSHOT_STATUSES = ("draft", "approved", "submitted")
+IN_FLIGHT_SNAPSHOT_STATUSES = ("draft", "submitted")
 
 
 PIPELINE_RUN_COLUMNS = [

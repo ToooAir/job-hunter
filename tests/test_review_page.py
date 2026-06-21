@@ -19,7 +19,6 @@ except ImportError:
     HAS_STREAMLIT = False
 
 from utils.db import create_application_snapshot, init_db  # noqa: E402
-from utils.snapshot_io import approve_snapshot, report_result  # noqa: E402
 
 PAGE = str(Path(__file__).resolve().parents[1] / "pages" / "1_Apply_Review.py")
 
@@ -82,25 +81,34 @@ class ReviewPageTest(unittest.TestCase):
         at = self._run()
         self.assertEqual(at.metric[0].value, "2")  # drafts metric
         self.assertTrue(any("unsupported claim" in str(e.value) for e in at.error))
+        # generated content (cover letter, Q&A) is shown by default for copying;
+        # deterministic profile fills collapse behind the auto-fill / sheet toggles.
         body = "".join(str(c.value) for c in at.code)
-        self.assertIn("Max", body)  # answer-sheet copy block
+        self.assertIn("Dear team", body)
 
-    def test_approve_button_writes_approved_at(self):
+    def test_mark_submitted_books_job_applied(self):
         sid = self._draft("job-a", tier=2)
         at = self._run()
-        at.button(key=f"approve_{sid}").click().run()
+        at.button(key=f"submit_{sid}").click().run()
         self.assertFalse(at.exception, at.exception)
         row = self.conn.execute(
-            "SELECT status, approved_at FROM application_snapshots WHERE id=?",
-            (sid,)).fetchone()
-        self.assertEqual(row["status"], "approved")
-        self.assertTrue(row["approved_at"])
+            "SELECT status, submitted_at, submitted_by FROM application_snapshots"
+            " WHERE id=?", (sid,)).fetchone()
+        self.assertEqual(row["status"], "submitted")
+        self.assertTrue(row["submitted_at"])
+        self.assertEqual(row["submitted_by"], "human")
+        job = self.conn.execute(
+            "SELECT status FROM jobs WHERE id=?", ("job-a",)).fetchone()
+        self.assertEqual(job["status"], "applied")
 
-    def test_tier3_draft_has_no_approve_button(self):
+    def test_tier3_draft_has_no_save_button_but_can_mark_submitted(self):
+        # Tier 3 is the read-only copy-paste path: no in-place editing, but the
+        # human still books it submitted after applying manually.
         sid = self._draft("job-b", tier=3)
         at = self._run()
         keys = {b.key for b in at.button}
-        self.assertNotIn(f"approve_{sid}", keys)
+        self.assertNotIn(f"save_{sid}", keys)
+        self.assertIn(f"submit_{sid}", keys)
         self.assertIn(f"abandon_{sid}", keys)
 
     def test_abandon_button_releases_job(self):
@@ -138,15 +146,6 @@ class ReviewPageTest(unittest.TestCase):
         self._draft("job-b", tier=3, verifier_report={})
         at = self._run()  # renders without exception; badges in expander labels
         self.assertFalse(at.exception, at.exception)
-
-    def test_last_failure_shown_on_regenerated_draft(self):
-        first = self._draft("job-a", tier=2)
-        approve_snapshot(self.conn, first)
-        report_result(self.conn, first, "failed", note="drift: 3/10 unfillable")
-        self._draft("job-a", tier=2)  # the regenerated draft
-        at = self._run()
-        self.assertTrue(any("drift: 3/10 unfillable" in str(e.value)
-                            for e in at.error))
 
 
 if __name__ == "__main__":
