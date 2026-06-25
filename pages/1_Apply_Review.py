@@ -39,7 +39,7 @@ _STRINGS = {
         "verifier_cleared": "✓ verifier 已獨立查核生成內容的事實(無捏造／洩漏／薪資・簽證一致)。"
                             "你只需判斷:語氣像不像你、適不適合這家公司 — 不必重查事實。",
         "cl_endorsed": "✓ 事實已查核。你只需判斷語氣與適配。",
-        "verifier_issues": "verifier 發現的問題", "verifier_skip": "verifier 未跑(無生成內容)",
+        "verifier_skip": "verifier 未跑(無生成內容)",
         "verifier_blocking": "需處理的阻擋問題", "verifier_minor": "次要提醒",
         "friction_easy": "易投", "friction_medium": "需審", "friction_painful": "填好待按",
         "friction_account": "需手動/帳號",
@@ -50,12 +50,13 @@ _STRINGS = {
         "tab_cl": "Cover Letter", "tab_qa": "自訂問答",
         "tab_sheet": "小抄(點右上複製)",
         "cl_flagged": "這封 cover letter 被標記的疑慮(送出前請確認)",
-        "unfilled": "未填欄位", "never_fill": "拒填欄位(never_fill)",
-        "no_actions": "無自動填值(Tier 3 頁面)", "no_cl": "本表單沒有 cover letter 欄位",
-        "no_qa": "沒有自訂問題", "notes": "備註",
+        "no_actions": "無自動填值(Tier 3 頁面)",
+        "notes": "備註",
         "save_edits": "存檔(供複製)", "mark_submitted": "標記已投遞",
         "abandon": "放棄", "abandon_reason": "放棄原因(選填)",
         "required_mark": "必填",
+        "docs_needed": "此表單需你手動附上文件",
+        "doc_cl_hint": "(求職信,下方已有文字可貼/另存 PDF)",
     },
     "en": {
         "title": "Apply Review Queue",
@@ -72,7 +73,7 @@ _STRINGS = {
                             "is only: does it sound like you, and fit this company? — no "
                             "need to re-verify facts.",
         "cl_endorsed": "✓ Facts checked. Your call is only voice and fit.",
-        "verifier_issues": "Verifier issues", "verifier_skip": "verifier skipped (nothing generated)",
+        "verifier_skip": "verifier skipped (nothing generated)",
         "verifier_blocking": "Blocking issues", "verifier_minor": "Minor notes",
         "friction_easy": "easy", "friction_medium": "review", "friction_painful": "fill+press",
         "friction_account": "manual/account",
@@ -83,12 +84,13 @@ _STRINGS = {
         "tab_cl": "Cover Letter", "tab_qa": "Custom Q&A",
         "tab_sheet": "Answer sheet (copy top-right)",
         "cl_flagged": "Flags on this cover letter (confirm before submitting)",
-        "unfilled": "Unfilled fields", "never_fill": "Refused fields (never_fill)",
-        "no_actions": "No automatic fills (Tier 3 page)", "no_cl": "No cover letter slot on this form",
-        "no_qa": "No custom questions", "notes": "Notes",
+        "no_actions": "No automatic fills (Tier 3 page)",
+        "notes": "Notes",
         "save_edits": "Save (for copying)", "mark_submitted": "Mark submitted",
         "abandon": "Abandon", "abandon_reason": "Reason (optional)",
         "required_mark": "required",
+        "docs_needed": "This form needs you to attach",
+        "doc_cl_hint": " (cover letter — text is ready below to paste / save as PDF)",
     },
 }
 
@@ -186,6 +188,36 @@ def _friction(snap: dict) -> tuple[int, str]:
 # those one by one is the fatigue the one-glance card removes.
 _ATTENTION_SOURCES = {"llm", "profile:salary_expectation"}
 
+# Upload slots nothing can fill automatically: the form wants extra documents
+# (Zeugnisse, references, a cover-letter PDF). The CV is auto-mapped to an
+# upload action; everything else a kind=file slot asks for lands in `unfilled`
+# under one of these reasons (field_mapper._map_file).
+_DOC_SLOT_REASONS = {"attachment-unmapped", "cover-letter-upload"}
+
+
+def _doc_slots(payload: dict) -> list[dict]:
+    """The document slots the human must supply by hand. Surfaced up front so
+    the user gathers the files before starting, instead of hitting a missing-
+    document wall mid-application (watchlist #7)."""
+    return [u for u in (payload.get("unfilled") or [])
+            if u.get("reason") in _DOC_SLOT_REASONS]
+
+
+def _doc_notice(payload: dict) -> None:
+    """One amber line listing the documents this form expects you to attach."""
+    slots = _doc_slots(payload)
+    if not slots:
+        return
+    parts = []
+    for u in slots:
+        label = u.get("label") or u.get("selector") or "document"
+        if u.get("reason") == "cover-letter-upload":
+            label += T("doc_cl_hint")
+        if u.get("required"):
+            label += f" ({T('required_mark')})"
+        parts.append(label)
+    st.warning(f"📎 {T('docs_needed')}: " + " · ".join(parts))
+
 
 def _is_attention(a: dict) -> bool:
     """A fill that needs a human's judgment: LLM-generated text, the salary
@@ -226,7 +258,10 @@ def _fills_section(snap: dict, payload: dict, editable: bool = False) -> dict:
     attention = [a for a in actions if _is_attention(a)
                  and not (a.get("source") == "llm" and a.get("value") in answered)]
     auto = [a for a in actions if not _is_attention(a)]
-    req_unfilled = [u for u in (payload.get("unfilled") or []) if u.get("required")]
+    # document slots (CV/Zeugnisse/CL-PDF) have their own up-front notice
+    # (_doc_notice); keep them out of here so they aren't listed twice.
+    req_unfilled = [u for u in (payload.get("unfilled") or [])
+                    if u.get("required") and u.get("reason") not in _DOC_SLOT_REASONS]
     edits: dict = {}
 
     if not actions and not req_unfilled:
@@ -258,15 +293,6 @@ def _fills_section(snap: dict, payload: dict, editable: bool = False) -> dict:
         st.dataframe(_fill_rows(auto), width="stretch", hide_index=True)
 
     return edits
-
-    # low-priority leftovers stay muted, below the fold
-    opt = [u.get("label") or u.get("selector")
-           for u in (payload.get("unfilled") or []) if not u.get("required")]
-    if opt:
-        st.caption(f"{T('unfilled')}: {', '.join(opt)}")
-    skipped = payload.get("never_fill_skipped") or []
-    if skipped:
-        st.caption(f"{T('never_fill')}: {', '.join(skipped)}")
 
 
 def _cover_letter_section(snap: dict, editable: bool = False) -> str | None:
@@ -301,6 +327,13 @@ def _qa_section(snap: dict) -> None:
 
 def _sheet_tab(snap: dict, payload: dict) -> None:
     """Every value as its own st.code block — one click per copy."""
+    slots = _doc_slots(payload)
+    if slots:  # remind the human which files to attach while they're on the form
+        st.caption(f"📎 {T('docs_needed')}")
+        st.code("\n".join(
+            (u.get("label") or u.get("selector") or "document")
+            + (f" ({T('required_mark')})" if u.get("required") else "")
+            for u in slots), language=None)
     for a in payload.get("actions") or []:
         if a.get("value"):
             st.caption(a.get("label") or a.get("selector"))
@@ -330,6 +363,7 @@ def _draft_card(conn, snap: dict) -> None:
                    f"[{snap.get('apply_url')}]({snap.get('apply_url')})")
 
         _verifier_block(snap.get("verifier_report"))
+        _doc_notice(payload)  # documents to attach by hand, before anything else
 
         # One scannable card, ordered by how much judgment each part needs:
         # flagged fills first, then generated free text (voice/fit), then the

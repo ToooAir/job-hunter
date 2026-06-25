@@ -147,6 +147,22 @@ class ReviewPageTest(unittest.TestCase):
         at = self._run()  # renders without exception; badges in expander labels
         self.assertFalse(at.exception, at.exception)
 
+    def test_document_slots_surface_as_a_notice(self):
+        # watchlist #7: extra upload fields (Zeugnisse, CL-PDF) the human must
+        # attach by hand are flagged up front, not buried as jargon reasons.
+        self._draft("job-a", tier=2, form_payload={
+            "actions": [], "never_fill_skipped": [],
+            "unfilled": [
+                {"label": "Zeugnisse", "selector": "#z",
+                 "reason": "attachment-unmapped", "required": True},
+                {"label": "Anschreiben", "selector": "#cl",
+                 "reason": "cover-letter-upload", "required": False},
+            ]})
+        at = self._run()
+        notice = "".join(str(w.value) for w in at.warning)
+        self.assertIn("Zeugnisse", notice)
+        self.assertIn("Anschreiben", notice)
+
 
 if __name__ == "__main__":
     unittest.main()
