@@ -50,10 +50,15 @@ function injectPanel() {
     "<b>job-hunter autofill</b>" +
     '<button id="jh-close" style="' + btn + '">×</button></div>' +
     '<button id="jh-fill" style="' + btn + ';width:100%" disabled>checking…</button>' +
+    '<button id="jh-submitted" style="' + btn +
+    ';width:100%;margin-top:6px;display:none">✓ I submitted it</button>' +
     '<div id="jh-status" style="margin-top:6px;color:#888"></div>' +
     '<div id="jh-out" style="margin-top:8px;color:#aaa"></div>';
   document.documentElement.appendChild(panel);
   panel.querySelector("#jh-fill").addEventListener("click", run);
+  // The authoritative bookkeeping signal: the human, who just submitted, says so.
+  panel.querySelector("#jh-submitted").addEventListener(
+    "click", () => MATCH && bookSubmitted(MATCH.snapshot_id));
   panel.querySelector("#jh-close").addEventListener("click", () => panel.remove());
 }
 
@@ -71,6 +76,7 @@ async function findPending() {
   if (MATCH) {
     fill.textContent = "Fill — " + MATCH.company;
     fill.disabled = false;
+    document.getElementById("jh-submitted").style.display = "block";
     status.textContent =
       "snapshot #" + MATCH.snapshot_id + " · " + (MATCH.ats || "?") + " · T" + MATCH.tier;
   } else {
@@ -207,30 +213,48 @@ async function maybeWatchConfirmation() {
   startConfirmWatch(applying.id);
 }
 
+// The single booking path, used by the authoritative "I submitted it" button
+// and by the best-effort confirmation watch. Idempotent: a 409 (already
+// submitted) is shown as success.
+async function bookSubmitted(id) {
+  await chrome.storage.local.remove("applying");
+  const res = await bg({ type: "submitted", id });
+  if (res && res.ok) return onBooked(id, false);
+  if (res && /409/.test(res.error || "")) return onBooked(id, true);
+  const s = document.getElementById("jh-status");
+  if (s) {
+    s.innerHTML = red("book failed: " + ((res && res.error) || "?") +
+                      " — try the dashboard button");
+  }
+}
+
+function onBooked(id, already) {
+  window.__jhBooked = true;
+  const s = document.getElementById("jh-status");
+  if (s) {
+    s.innerHTML = '<span style="color:#5fd35f">✓ ' +
+      (already ? "already submitted" : "marked submitted") + " (#" + id + ")</span>";
+  }
+  const fill = document.getElementById("jh-fill");
+  const sub = document.getElementById("jh-submitted");
+  if (fill) fill.disabled = true;
+  if (sub) sub.style.display = "none";
+}
+
+// Best-effort only: a correct confirmation saves the human even the one button
+// click. A miss is harmless — the "I submitted it" button (and the dashboard)
+// are the authority. Precision-biased so it never books the wrong thing.
 function startConfirmWatch(id) {
   if (window.__jhWatching) return;
   window.__jhWatching = true;
-  let booked = false;
-  const status = () => document.getElementById("jh-status");
   const check = async () => {
-    if (booked) return;
+    if (window.__jhBooked) return;
     const text = (document.body && document.body.innerText) || "";
     if (!CONFIRM_RE.test(text)) return;
-    booked = true;
+    window.__jhBooked = true;
     obs.disconnect();
     clearInterval(iv);
-    await chrome.storage.local.remove("applying");
-    const res = await bg({ type: "submitted", id });
-    const s = status();
-    if (!s) return;
-    if (res && res.ok) {
-      s.innerHTML = '<span style="color:#5fd35f">✓ marked submitted (#' + id + ")</span>";
-    } else if (res && /409/.test(res.error || "")) {
-      s.innerHTML = '<span style="color:#5fd35f">already submitted (#' + id + ")</span>";
-    } else {
-      s.innerHTML = red("auto-book failed: " + ((res && res.error) || "?") +
-                        " — use the dashboard button");
-    }
+    await bookSubmitted(id);
   };
   const obs = new MutationObserver(check);
   obs.observe(document.documentElement, { childList: true, subtree: true });
