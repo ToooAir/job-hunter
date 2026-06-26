@@ -85,7 +85,8 @@ def fetch_work(conn: sqlite3.Connection, status: str = "draft") -> list[dict]:
     rows = conn.execute(
         """SELECT s.*, j.title AS j_title, j.company AS j_company,
                   j.url AS j_url, j.status AS j_status,
-                  j.match_score AS j_match_score, j.fit_grade AS j_fit_grade
+                  j.match_score AS j_match_score, j.fit_grade AS j_fit_grade,
+                  j.ats_checked_at AS j_ats_checked_at
            FROM application_snapshots s JOIN jobs j ON j.id = s.job_id
            WHERE s.status = ?
            ORDER BY s.created_at, s.id""",
@@ -99,7 +100,8 @@ def fetch_work(conn: sqlite3.Connection, status: str = "draft") -> list[dict]:
                        "url": snap.pop("j_url"),
                        "status": snap.pop("j_status"),
                        "match_score": snap.pop("j_match_score"),
-                       "fit_grade": snap.pop("j_fit_grade")}
+                       "fit_grade": snap.pop("j_fit_grade"),
+                       "ats_checked_at": snap.pop("j_ats_checked_at")}
         work.append(_decode(snap))
     return work
 

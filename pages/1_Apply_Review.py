@@ -13,6 +13,7 @@ applied). There is no automated submission step.
 
 import json
 import os
+from datetime import datetime
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -58,6 +59,10 @@ _STRINGS = {
         "required_mark": "必填",
         "docs_needed": "此表單需你手動附上文件",
         "doc_cl_hint": "(求職信,下方已有文字可貼/另存 PDF)",
+        "verified_ago": "已驗證可投(約 {} 天前)",
+        "verified_today": "今天已驗證可投",
+        "liveness_suspect": "可疑:重驗時不是乾淨的申請表(帳號牆/captcha/弱表單)——投前自行確認職缺還在",
+        "never_verified": "尚未重驗失效",
     },
     "en": {
         "title": "Apply Review Queue",
@@ -92,6 +97,11 @@ _STRINGS = {
         "required_mark": "required",
         "docs_needed": "This form needs you to attach",
         "doc_cl_hint": " (cover letter — text is ready below to paste / save as PDF)",
+        "verified_ago": "verified live ~{}d ago",
+        "verified_today": "verified live today",
+        "liveness_suspect": "suspect: not a clean application form on recheck "
+                            "(account wall / captcha / weak form) — confirm the posting before applying",
+        "never_verified": "not liveness-checked yet",
     },
 }
 
@@ -350,6 +360,26 @@ def _sheet_tab(snap: dict, payload: dict) -> None:
         st.code(snap["cover_letter"], language=None)
 
 
+def _liveness_caption(snap: dict) -> None:
+    """Show how recently the draft was confirmed live, and a warning if the
+    liveness sweep flagged it suspicious — so a glance over the queue tells you
+    what's still applicable (the sweep prunes the clearly-dead automatically)."""
+    checked = (snap.get("job") or {}).get("ats_checked_at")
+    age = None
+    if checked:
+        try:
+            age = (datetime.now() - datetime.fromisoformat(checked.replace("Z", ""))).days
+        except ValueError:
+            age = None
+    if snap.get("liveness") == "suspicious":
+        suffix = f" ({T('verified_ago').format(age)})" if age is not None else ""
+        st.warning(f"⚠️ {T('liveness_suspect')}{suffix}")
+    elif age is not None:
+        st.caption("✓ " + (T("verified_today") if age <= 0 else T("verified_ago").format(age)))
+    elif checked is None:
+        st.caption(T("never_verified"))
+
+
 def _draft_card(conn, snap: dict) -> None:
     job = snap["job"]
     payload = snap.get("form_payload") or {}
@@ -363,6 +393,7 @@ def _draft_card(conn, snap: dict) -> None:
                    f"{T('created')}: {snap.get('created_at')} · "
                    f"[{snap.get('apply_url')}]({snap.get('apply_url')})")
 
+        _liveness_caption(snap)
         _verifier_block(snap.get("verifier_report"))
         _doc_notice(payload)  # documents to attach by hand, before anything else
 
