@@ -36,3 +36,22 @@ services:
     restart: unless-stopped
     depends_on:
       - pipeline
+
+  # ── Phase 1 (extension) autofill sidecar ─────────────────────────────────────
+  # Token-gated API the browser extension talks to. Published on host-loopback
+  # ONLY (127.0.0.1) because it serves the CV + personal data; needs
+  # APPLY_API_TOKEN in .env. See extension/PHASE1_PLAN.md.
+  apply_api:
+    image: job-hunter-app:latest        # reuses the pipeline-built image
+    command: uvicorn apply_api:app --host 0.0.0.0 --port 8531
+    env_file: .env
+    environment:
+      - TZ=Europe/Berlin
+    ports:
+      - "127.0.0.1:8531:8531"           # host-loopback only — never 0.0.0.0
+    volumes:
+      - ./data:/app/data
+      - ./candidate_kb:/app/candidate_kb # CV lives here
+    restart: unless-stopped
+    depends_on:
+      - pipeline

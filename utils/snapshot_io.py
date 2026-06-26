@@ -58,6 +58,12 @@ def _append_note(existing: str | None, note: str) -> str:
     return f"{existing}\n{line}" if existing else line
 
 
+def get_snapshot(conn: sqlite3.Connection, snapshot_id: int) -> dict:
+    """One snapshot, JSON fields (form_payload/custom_qa/verifier_report)
+    decoded. Raises ValueError if the id is unknown."""
+    return _decode(_get(conn, snapshot_id))
+
+
 def _transition(conn, snap: dict, new_status: str, note: str | None = None,
                 **fields) -> None:
     if snap["status"] not in _ALLOWED_TRANSITIONS[new_status]:
