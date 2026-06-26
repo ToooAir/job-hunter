@@ -21,6 +21,7 @@ CLI:  python -m utils.draft_liveness [--dry-run] [--db PATH]
 """
 
 import argparse
+import json
 import os
 import sys
 from datetime import datetime
@@ -70,12 +71,26 @@ def liveness_from_verdict(verdict: str) -> str:
     """Form-presence verdict -> 'live' | 'dead' | 'suspicious'. Everything that
     isn't a clean form (ok) or a clear absence (gone/no-form) is suspicious:
     account walls, captcha, weak forms, nav errors — flagged, never auto-removed.
+    Only applied to drafts that actually had a fillable form (see _has_actions).
     """
     if verdict in _LIVE_VERDICTS:
         return "live"
     if verdict in _DEAD_VERDICTS:
         return "dead"
     return "suspicious"
+
+
+def _has_actions(form_payload) -> bool:
+    """Did this draft have a fillable form (auto-fill actions)? Manual Tier-3
+    drafts (board / account / captcha answer-sheet) never did — for them
+    'no form present' is the normal state, not a liveness problem."""
+    if not form_payload:
+        return False
+    try:
+        payload = json.loads(form_payload) if isinstance(form_payload, str) else form_payload
+        return bool(payload.get("actions"))
+    except (ValueError, AttributeError):
+        return False
 
 
 # ── persistence ──────────────────────────────────────────────────────────────
@@ -135,36 +150,36 @@ def sweep_drafts(conn, http_get=None, headless_verdicts=None,
     """Re-verify every pending draft. Returns a tally dict."""
     http_get = http_get or _default_http_get
     drafts = [dict(r) for r in conn.execute(
-        "SELECT id AS sid, job_id, apply_url FROM application_snapshots "
+        "SELECT id AS sid, job_id, apply_url, form_payload FROM application_snapshots "
         "WHERE status = 'draft'")]
     tally = {"checked": 0, "live": 0, "dead": 0, "suspicious": 0}
     needs_headless = []
 
+    def record(d, liveness, note):
+        tally["checked"] += 1
+        tally[liveness] += 1
+        if not dry_run:
+            apply_result(conn, d["sid"], d["job_id"], liveness, now, note)
+
     for d in drafts:
         url = d.get("apply_url")
         if not url:
-            tally["checked"] += 1
-            tally["suspicious"] += 1
-            if not dry_run:
-                apply_result(conn, d["sid"], d["job_id"], "suspicious", now, "no apply_url")
+            record(d, "suspicious", "no apply_url")
             continue
         status, final_url = http_get(url)
         if classify_http(url, status, final_url) == "dead":
-            tally["checked"] += 1
-            tally["dead"] += 1
-            if not dry_run:
-                apply_result(conn, d["sid"], d["job_id"], "dead", now, f"http {status}")
+            record(d, "dead", f"http {status}")
+        elif not _has_actions(d.get("form_payload")):
+            # Manual Tier-3 draft: there was never a fillable form to lose, so the
+            # page simply loading is liveness enough — don't run headless or flag it.
+            record(d, "live", "page loads (manual)")
         else:
             needs_headless.append(d)
 
     if needs_headless:
         hv = headless_verdicts or _headless_verdicts
         for d, verdict in hv(needs_headless):
-            live = liveness_from_verdict(verdict)
-            tally["checked"] += 1
-            tally[live] += 1
-            if not dry_run:
-                apply_result(conn, d["sid"], d["job_id"], live, now, f"form {verdict}")
+            record(d, liveness_from_verdict(verdict), f"form {verdict}")
 
     return tally
 

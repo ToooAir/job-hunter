@@ -104,14 +104,19 @@ class SweepTest(unittest.TestCase):
         self.db = str(Path(self.tmp.name) / "t.db")
         self.conn = init_db(self.db)
         self.sid = {}
-        for jid in ("dead404", "live", "gone", "captcha"):
+        # the form-bearing drafts (go to headless) and one manual no-fill draft
+        fill = {"actions": [{"selector": "#fn", "value": "Max"}]}
+        payloads = {"dead404": fill, "live": fill, "gone": fill, "captcha": fill,
+                    "manual": {"actions": []}}
+        for jid, pl in payloads.items():
             self.conn.execute(
                 "INSERT INTO jobs (id, company, title, url, source, raw_jd_text,"
                 " fetched_at, status) VALUES (?,?,?,?,?,?,?, 'scored')",
                 (jid, f"{jid} GmbH", "Eng", f"https://x.com/{jid}", "t", "jd",
                  "2026-06-10T08:00:00"))
             self.sid[jid] = create_application_snapshot(
-                self.conn, jid, status="draft", tier=2, apply_url=f"https://x.com/{jid}")
+                self.conn, jid, status="draft", tier=2,
+                apply_url=f"https://x.com/{jid}", form_payload=pl)
         self.conn.commit()
 
     def tearDown(self):
@@ -119,13 +124,15 @@ class SweepTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_two_stage_sweep(self):
-        # HTTP stage: dead404 → 404 (clear-dead); the rest pass to headless.
+        # HTTP stage: dead404 → 404 (clear-dead); the rest pass on.
         def fake_http(url):
             if url.endswith("/dead404"):
                 return 404, url
             return 200, url
 
-        # headless stage: map remaining drafts to form verdicts.
+        # headless stage: only form-bearing, non-404 drafts reach here. A manual
+        # (no-actions) draft must NOT — verdicts has no key for it, so a KeyError
+        # would fail the test if it were wrongly sent to headless.
         verdicts = {"https://x.com/live": "ok", "https://x.com/gone": "gone",
                     "https://x.com/captcha": "captcha"}
 
@@ -136,29 +143,27 @@ class SweepTest(unittest.TestCase):
         tally = sweep_drafts(self.conn, http_get=fake_http,
                              headless_verdicts=fake_headless)
 
-        self.assertEqual(tally["checked"], 4)
+        self.assertEqual(tally["checked"], 5)
         self.assertEqual(tally["dead"], 2)        # dead404 (http) + gone (form)
-        self.assertEqual(tally["live"], 1)
+        self.assertEqual(tally["live"], 2)        # live (form) + manual (loads)
         self.assertEqual(tally["suspicious"], 1)  # captcha
 
         def status(jid):
             return self.conn.execute(
-                "SELECT s.status ss, j.status js FROM application_snapshots s "
+                "SELECT s.status ss, s.liveness lv, j.status js FROM application_snapshots s "
                 "JOIN jobs j ON j.id=s.job_id WHERE s.id=?", (self.sid[jid],)).fetchone()
 
         self.assertEqual(status("dead404")["ss"], "abandoned")
         self.assertEqual(status("dead404")["js"], "expired")
         self.assertEqual(status("gone")["js"], "expired")
         self.assertEqual(status("live")["ss"], "draft")
-        self.assertEqual(status("captcha")["ss"], "draft")
-        self.assertEqual(
-            self.conn.execute("SELECT liveness FROM application_snapshots WHERE id=?",
-                              (self.sid["captcha"],)).fetchone()["liveness"], "suspicious")
+        self.assertEqual(status("manual")["lv"], "live")     # live without headless
+        self.assertEqual(status("captcha")["lv"], "suspicious")
 
     def test_dry_run_writes_nothing(self):
         tally = sweep_drafts(self.conn, http_get=lambda u: (404, u),
                              headless_verdicts=lambda ds: iter(()), dry_run=True)
-        self.assertEqual(tally["dead"], 4)
+        self.assertEqual(tally["dead"], 5)
         # nothing abandoned/expired
         n = self.conn.execute(
             "SELECT COUNT(*) c FROM application_snapshots WHERE status='abandoned'").fetchone()["c"]
