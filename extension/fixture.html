@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>autofill spike fixture</title>
+  <style>
+    body { font: 14px system-ui, sans-serif; max-width: 540px; margin: 40px auto; }
+    label { display: block; margin: 12px 0 4px; font-weight: 600; }
+    input, select, textarea { width: 100%; padding: 6px; box-sizing: border-box; }
+    .hint { color: #666; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h1>autofill spike — offline fixture</h1>
+  <p class="hint">
+    Loads the same content script. Copy the payload below, then click the
+    extension's "Fill from clipboard". Validates the fill primitives (incl. a
+    JS-controlled input that ignores naive <code>.value</code> writes) without a
+    real logged-in page. Fields cover selector ids, label-only matching, select,
+    checkbox, textarea, and a digit-prefixed id (Personio-style).
+  </p>
+
+  <!-- selector replay target -->
+  <label for="fn">First Name *</label>
+  <input id="fn" type="text" name="first_name" />
+
+  <!-- label-only (no usable id) -->
+  <label for="ln">Nachname *</label>
+  <input id="ln" type="text" />
+
+  <label for="em">E-Mail *</label>
+  <input id="em" type="email" name="email" />
+
+  <!-- digit-prefixed id: invalid as #123, needs [id="..."] -->
+  <label for="123phone">Telefon</label>
+  <input id="123phone" type="tel" />
+
+  <label for="anrede">Anrede</label>
+  <select id="anrede" name="salutation">
+    <option value="">Bitte wählen</option>
+    <option value="herr">Herr</option>
+    <option value="frau">Frau</option>
+    <option value="divers">Divers</option>
+  </select>
+
+  <label for="cl">Anschreiben</label>
+  <textarea id="cl" rows="4"></textarea>
+
+  <label><input id="consent" type="checkbox" /> I agree to the privacy policy</label>
+
+  <h3>Payload to copy</h3>
+  <textarea id="payload" rows="12" readonly></textarea>
+  <button id="copy">Copy payload</button>
+
+  <!-- A "controlled" input whose value is forced back unless the native setter
+       + input event are used — the React gotcha, reproduced with plain JS. -->
+  <script>
+    const fn = document.getElementById("fn");
+    let model = "";
+    fn.addEventListener("input", (e) => { model = e.target.value; });
+    // a naive script that re-asserts the model would clobber a direct .value
+    // write; the native-setter path dispatches 'input' so model tracks it.
+
+    const payload = {
+      actions: [
+        { selector: "#fn", kind: "text", label: "First Name", value: "Max", action: "fill" },
+        { selector: "#nope", kind: "text", label: "Nachname", value: "Mustermann", action: "fill" },
+        { selector: "#em", kind: "email", label: "E-Mail", value: "max@example.com", action: "fill" },
+        { selector: "#123phone", kind: "tel", label: "Telefon", value: "+49 151 0000000", action: "fill" },
+        { selector: "#anrede", kind: "select", label: "Anrede", value: "Herr", action: "select_option" },
+        { selector: "#cl", kind: "textarea", label: "Anschreiben", value: "Dear team, ...", action: "fill" },
+        { selector: "#consent", kind: "checkbox", label: "I agree", value: "", action: "check" }
+      ]
+    };
+    document.getElementById("payload").value = JSON.stringify(payload, null, 1);
+    document.getElementById("copy").addEventListener("click", () =>
+      navigator.clipboard.writeText(JSON.stringify(payload))
+    );
+  </script>
+</body>
+</html>

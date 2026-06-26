@@ -11,6 +11,7 @@ submits it themselves, and marks it submitted here (which books the job as
 applied). There is no automated submission step.
 """
 
+import json
 import os
 
 import streamlit as st
@@ -377,6 +378,12 @@ def _draft_card(conn, snap: dict) -> None:
         manual = not (payload.get("actions"))  # Tier 3 copy-paste path
         if st.toggle(T("tab_sheet"), key=f"sheet_{snap['id']}", value=manual):
             _sheet_tab(snap, payload)
+
+        # Spike harness (SPIKE_PLAN.md): the raw form_payload as one-click-copy
+        # JSON, fed to the autofill extension's clipboard reader. Additive only.
+        if payload.get("actions") and st.toggle(
+                "🧪 Spike: payload JSON", key=f"spike_{snap['id']}"):
+            st.code(json.dumps(payload, ensure_ascii=False), language="json")
 
         if snap.get("notes"):
             st.caption(f"{T('notes')}: {snap['notes']}")
