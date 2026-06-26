@@ -16,6 +16,7 @@ from utils.apply_queue import (  # noqa: E402
     build_queue,
     dedup_gate,
     normalize_company,
+    topup_budget,
 )
 from utils.db import (  # noqa: E402
     create_application_snapshot,
@@ -66,6 +67,36 @@ class NormalizeCompanyTest(unittest.TestCase):
         # "ag"/"se" inside a word must survive
         self.assertEqual(normalize_company("Montag Media"), "montag media")
         self.assertEqual(normalize_company("Hanse Digital"), "hanse digital")
+
+
+class TopupBudgetTest(unittest.TestCase):
+    def test_topup_math(self):
+        self.assertEqual(topup_budget(0, 40), 40)
+        self.assertEqual(topup_budget(25, 40), 15)
+        self.assertEqual(topup_budget(40, 40), 0)
+        self.assertEqual(topup_budget(50, 40), 0)  # over target → never negative
+
+
+class IncludeStaleTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.conn = init_db(str(Path(self.tmp.name) / "t.db"))
+        make_job(self.conn, "fresh", company="Acme", checked_days_ago=1)
+        make_job(self.conn, "stale", company="Other", checked_days_ago=10)
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def test_stale_goes_to_recheck_by_default(self):
+        r = build_queue(self.conn, budget=10, now=NOW)
+        self.assertEqual({j["id"] for j in r["queue"]}, {"fresh"})
+        self.assertIn("stale", {j["id"] for j in r["needs_recheck"]})
+
+    def test_include_stale_puts_it_in_queue(self):
+        r = build_queue(self.conn, budget=10, now=NOW, include_stale=True)
+        self.assertEqual({j["id"] for j in r["queue"]}, {"fresh", "stale"})
+        self.assertEqual(r["needs_recheck"], [])
 
     def test_case_and_whitespace_insensitive(self):
         self.assertEqual(normalize_company("  ACME   gmbh "), normalize_company("Acme GmbH"))

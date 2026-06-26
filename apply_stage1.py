@@ -21,6 +21,7 @@ Usage:
 
 import argparse
 import json
+import os
 import random
 import re
 import sys
@@ -32,9 +33,11 @@ from urllib.parse import urljoin
 sys.path.insert(0, str(Path(__file__).parent))
 
 from utils.apply_graph import build_graph  # noqa: E402
-from utils.apply_queue import DEFAULT_DB_PATH, build_queue  # noqa: E402
+from utils.apply_queue import DEFAULT_DB_PATH, build_queue, topup_budget  # noqa: E402
 from utils.db import init_db  # noqa: E402
 from utils.profile_loader import load_profile  # noqa: E402
+
+TARGET_INVENTORY = int(os.getenv("APPLY_TARGET_INVENTORY", "40"))
 
 OUT_JSON = Path(__file__).parent / "data" / "stage1_run.json"
 
@@ -200,7 +203,12 @@ def enrich_jobs(conn, queue: list[dict]) -> list[dict]:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Stage 1: generate draft applications.")
     parser.add_argument("--limit", type=int, default=None, help="cap jobs this run")
-    parser.add_argument("--budget", type=int, default=None)
+    parser.add_argument("--budget", type=int, default=None,
+                        help="explicit generation count (overrides inventory top-up)")
+    parser.add_argument("--target", type=int, default=None,
+                        help=f"target live-draft inventory (default {TARGET_INVENTORY})")
+    parser.add_argument("--no-sweep", action="store_true",
+                        help="skip the pending-draft liveness sweep")
     parser.add_argument("--source", default=None, help="only this source (debug)")
     parser.add_argument("--job-ids", default=None,
                         help="comma-separated job ids — regenerate just these")
@@ -215,7 +223,29 @@ def main() -> None:
     profile = load_profile()  # strict: refuses TODO residue / missing CV
 
     conn = init_db(args.db)
-    queue = build_queue(conn, budget=args.budget)["queue"]
+
+    # Liveness sweep first: prune dead drafts (frees inventory slots) and flag
+    # the suspicious, so the top-up count reflects what's actually still live.
+    if not args.no_sweep and not args.job_ids:
+        from utils.draft_liveness import sweep_drafts
+        t = sweep_drafts(conn, dry_run=args.dry_run)
+        print(f"掃視:checked {t['checked']} → live {t['live']} / "
+              f"dead {t['dead']}(撤回+expired) / suspect {t['suspicious']}(標記)", flush=True)
+
+    # Inventory model: top the live-draft pool back up to the target. --budget is
+    # an explicit override; --job-ids regenerates specific jobs (no truncation).
+    target = args.target if args.target is not None else TARGET_INVENTORY
+    if args.job_ids:
+        gen_budget = 10_000
+    elif args.budget is not None:
+        gen_budget = args.budget
+    else:
+        live = conn.execute(
+            "SELECT COUNT(*) FROM application_snapshots WHERE status='draft'").fetchone()[0]
+        gen_budget = topup_budget(live, target)
+        print(f"庫存:現有 {live} 活草稿,目標 {target} → 本輪生成上限 {gen_budget}", flush=True)
+
+    queue = build_queue(conn, budget=gen_budget, include_stale=True)["queue"]
     if args.source:
         queue = [j for j in queue if j["source"] == args.source]
     if args.job_ids:

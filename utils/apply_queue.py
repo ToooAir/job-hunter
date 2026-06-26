@@ -182,11 +182,23 @@ def fetch_candidates(conn) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def build_queue(conn, budget: int | None = None, now: datetime | None = None) -> dict:
+def topup_budget(live_count: int, target: int) -> int:
+    """How many new drafts to generate to refill the live-draft pool to `target`.
+    Inventory model: never negative, never over-fills."""
+    return max(0, target - live_count)
+
+
+def build_queue(conn, budget: int | None = None, now: datetime | None = None,
+                include_stale: bool = False) -> dict:
     """Build the ranked apply queue. Read-only: never writes any status.
 
     Returns {'queue', 'over_budget', 'blocked', 'needs_recheck', 'dead'};
     queue/over_budget items carry rank, age_days, dedup, dedup_reason.
+
+    include_stale: when True, candidates whose ats_checked_at is stale/missing
+    enter the queue instead of needs_recheck — Stage 1's Pass A re-verifies them
+    on the way in (expiring the dead before any LLM), so the inventory top-up is
+    not starved by an aged backlog.
     """
     if budget is None:
         budget = int(os.getenv("APPLY_DAILY_BUDGET", str(DEFAULT_BUDGET)))
@@ -211,10 +223,11 @@ def build_queue(conn, budget: int | None = None, now: datetime | None = None) ->
             dead.append(job)
             continue
         checked = _parse_dt(job["ats_checked_at"])
-        if checked is None or checked < liveness_cutoff:
+        is_stale = checked is None or checked < liveness_cutoff
+        if is_stale and not include_stale:
             needs_recheck.append(job)  # JIT re-verify before it may enter the queue
             continue
-        eligible.append(job)
+        eligible.append(job)  # stale ones included only when include_stale (Pass A verifies)
 
     eligible.sort(key=lambda j: sort_key(j, now))
 
