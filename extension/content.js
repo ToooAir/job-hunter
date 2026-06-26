@@ -1,25 +1,29 @@
-/* job-hunter autofill spike — content script.
+/* job-hunter autofill — content script.
  *
- * One question (SPIKE_PLAN.md §0): given a form_payload extracted headless by
- * Stage 1, can we land the right values into the right fields on the LIVE page,
- * and which strategy wins — B (selector replay) vs A (label match)?
+ * Phase 1 (PHASE1_PLAN.md): on a structured-ATS apply page, find the reviewed
+ * draft for this page (via the background worker → apply_api /pending, matched
+ * by host), and fill the form with it. The fill engine (selector replay with a
+ * label-match fallback, React-safe native setter) is the spike's, unchanged —
+ * only the data source moved from the clipboard to the sidecar.
  *
- * Flow: floating "Fill" button → read form_payload JSON from the clipboard →
- * Pass 1 measures (selector vs label, per field) → Pass 2 fills via
- * selector||label → a per-field result table + console.table.
- *
- * Out of scope (deferred): network/port transport, real file upload, submit,
- * captcha, iframe traversal (top frame only). See SPIKE_PLAN.md §1.
+ * Out of scope here (later tasks): CV upload (task 3), auto-mark-submitted
+ * (task 4), gated auto-submit (task 5), iframe traversal (top frame only).
  */
 
 "use strict";
 
-// iframe traversal is deferred; the spike's test set is top-level forms.
+let MATCH = null; // the pending snapshot for this page, if any
+
 if (window.top === window.self) {
   injectPanel();
+  findPending();
 }
 
-// ── panel ────────────────────────────────────────────────────────────────
+function bg(msg) {
+  return new Promise((resolve) => chrome.runtime.sendMessage(msg, resolve));
+}
+
+// ── panel ────────────────────────────────────────────────────────────────────
 function injectPanel() {
   if (document.getElementById("jh-spike-panel")) return;
   const panel = document.createElement("div");
@@ -34,74 +38,92 @@ function injectPanel() {
     "border-radius:5px;padding:5px 9px;font:inherit";
   panel.innerHTML =
     '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
-    "<b>job-hunter autofill spike</b>" +
+    "<b>job-hunter autofill</b>" +
     '<button id="jh-close" style="' + btn + '">×</button></div>' +
-    '<button id="jh-fill" style="' + btn + ';width:100%">Fill from clipboard</button>' +
-    '<div id="jh-out" style="margin-top:8px;color:#aaa">copy a payload, then click Fill</div>';
+    '<button id="jh-fill" style="' + btn + ';width:100%" disabled>checking…</button>' +
+    '<div id="jh-status" style="margin-top:6px;color:#888"></div>' +
+    '<div id="jh-out" style="margin-top:8px;color:#aaa"></div>';
   document.documentElement.appendChild(panel);
   panel.querySelector("#jh-fill").addEventListener("click", run);
   panel.querySelector("#jh-close").addEventListener("click", () => panel.remove());
 }
 
-async function run() {
-  const out = document.getElementById("jh-out");
-  out.textContent = "reading clipboard…";
-  let payload;
-  try {
-    payload = JSON.parse(await navigator.clipboard.readText());
-  } catch (e) {
-    out.innerHTML = red("clipboard read / JSON parse failed: " + e.message);
+// ── find the draft for this page ───────────────────────────────────────────────
+async function findPending() {
+  const status = document.getElementById("jh-status");
+  const fill = document.getElementById("jh-fill");
+  const res = await bg({ type: "pending" });
+  if (!res || !res.ok) {
+    fill.textContent = "not connected";
+    status.innerHTML = red((res && res.error) || "no response") + " — check options.";
     return;
   }
-  const actions = (payload && payload.actions) || [];
-  if (!actions.length) {
-    out.innerHTML = red("no actions[] in the clipboard payload");
-    return;
+  const host = location.host.replace(/^www\./, "");
+  MATCH = res.data.find((s) => s.host && hostMatch(host, s.host));
+  if (MATCH) {
+    fill.textContent = "Fill — " + MATCH.company;
+    fill.disabled = false;
+    status.textContent =
+      "snapshot #" + MATCH.snapshot_id + " · " + (MATCH.ats || "?") + " · T" + MATCH.tier;
+  } else {
+    fill.textContent = "No draft for this page";
+    fill.disabled = true;
+    status.textContent = res.data.length + " pending on other pages";
   }
+}
 
+function hostMatch(a, b) {
+  return a === b || a.endsWith("." + b) || b.endsWith("." + a);
+}
+
+// ── fill ───────────────────────────────────────────────────────────────────────
+async function run() {
+  if (!MATCH) return;
+  const out = document.getElementById("jh-out");
+  out.textContent = "fetching draft…";
+  const res = await bg({ type: "snapshot", id: MATCH.snapshot_id });
+  if (!res || !res.ok) {
+    out.innerHTML = red("draft fetch failed: " + ((res && res.error) || "?"));
+    return;
+  }
+  const actions = ((res.data.form_payload || {}).actions) || [];
+  if (!actions.length) {
+    out.innerHTML = red("no actions in this draft");
+    return;
+  }
+  fillActions(out, actions);
+}
+
+function fillActions(out, actions) {
   // Pass 1 — measure (no fill): selector target vs label target, per field.
   const rows = actions.map((a) => {
     const selEl = a.selector ? safeQuery(a.selector) : null;
     const labEl = a.label ? resolveByLabel(a.label) : null;
-    return {
-      a,
-      selEl,
-      labEl,
-      selFound: !!selEl,
-      labFound: !!labEl,
-      agree: !!selEl && selEl === labEl,
-    };
+    return { a, selEl, labEl, selFound: !!selEl, labFound: !!labEl, agree: !!selEl && selEl === labEl };
   });
-
   // Pass 2 — fill via selector, falling back to label.
   for (const r of rows) {
     const target = r.selEl || r.labEl;
     r.filledBy = r.selEl ? "selector" : r.labEl ? "label" : null;
     r.detected = !!target;
     if ((r.a.kind || "").toLowerCase() === "file") {
-      r.filled = false; // detect-only; real upload is out of scope
-      r.note = "file (detect-only)";
+      r.filled = false; // CV upload is task 3
+      r.note = "file (task 3)";
     } else {
       r.filled = target ? fillField(target, r.a) : false;
     }
   }
-
   out.innerHTML = renderTable(rows);
   // eslint-disable-next-line no-console
   console.table(
     rows.map((r) => ({
-      label: r.a.label,
-      kind: r.a.kind,
-      selector: r.selFound,
-      label_match: r.labFound,
-      agree: r.agree,
-      filledBy: r.filledBy,
-      filled: r.filled,
+      label: r.a.label, kind: r.a.kind, selector: r.selFound,
+      label_match: r.labFound, agree: r.agree, filledBy: r.filledBy, filled: r.filled,
     }))
   );
 }
 
-// ── B: selector replay ─────────────────────────────────────────────────────
+// ── B: selector replay ─────────────────────────────────────────────────────────
 function safeQuery(sel) {
   try {
     const el = document.querySelector(sel);
@@ -246,13 +268,8 @@ function renderTable(rows) {
   const filled = rows.filter((r) => r.filled).length;
   const cell = "padding:2px 4px;border-bottom:1px solid #2a2a2a;vertical-align:top";
   const head =
-    '<div style="margin:6px 0;color:#ddd">selector ' +
-    pct(sel, n) +
-    " · label " +
-    pct(lab, n) +
-    " · filled " +
-    pct(filled, n) +
-    "</div>";
+    '<div style="margin:6px 0;color:#ddd">selector ' + pct(sel, n) +
+    " · label " + pct(lab, n) + " · filled " + pct(filled, n) + "</div>";
   const body = rows
     .map((r) => {
       const lbl = (r.a.label || r.a.selector || "?").slice(0, 28);
@@ -262,7 +279,7 @@ function renderTable(rows) {
         '<td style="' + cell + ';text-align:center">' + mark(r.selFound) + "</td>" +
         '<td style="' + cell + ';text-align:center">' + mark(r.labFound) + "</td>" +
         '<td style="' + cell + ';text-align:center">' + (r.agree ? "=" : "") + "</td>" +
-        '<td style="' + cell + '">' + esc(r.filledBy || (r.note || "—")) + "</td>" +
+        '<td style="' + cell + '">' + esc(r.filledBy || r.note || "—") + "</td>" +
         '<td style="' + cell + ';text-align:center">' + mark(r.filled) + "</td></tr>"
       );
     })
@@ -274,9 +291,7 @@ function renderTable(rows) {
     ["field", "kind", "sel", "lbl", "=", "by", "ok"]
       .map((h) => '<th style="' + cell + ';text-align:left">' + h + "</th>")
       .join("") +
-    "</tr></thead><tbody>" +
-    body +
-    "</tbody></table>"
+    "</tr></thead><tbody>" + body + "</tbody></table>"
   );
 }
 

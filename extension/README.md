@@ -1,48 +1,48 @@
-# autofill spike (throwaway)
+# job-hunter autofill (MV3 extension)
 
-A Manifest V3 content script that fills a live application form from a
-`form_payload` placed on the clipboard, and reports — per field — whether the
-**selector** (B) or the **label** (A) strategy found the target. This answers the
-one question in [SPIKE_PLAN.md](./SPIKE_PLAN.md) before any real build.
+Fills a structured-ATS application form from the **reviewed draft** served by the
+local `apply_api` sidecar. The fill engine (selector replay + label-match
+fallback, React-safe native setter) is the one the spike proved at 100% on
+Greenhouse/Personio/Ashby; Phase 1 (see [PHASE1_PLAN.md](./PHASE1_PLAN.md))
+swapped the clipboard for the sidecar so it can also pull the CV and book the
+application submitted. The spike's clipboard harness lives in git history
+(commit `077c1c8`).
 
-It touches no network and submits nothing. See SPIKE_PLAN.md §1 for scope.
+## Setup
 
-## Load it
+1. **Start the sidecar** and give it a token (host shell, once):
+   ```
+   echo "APPLY_API_TOKEN=$(openssl rand -hex 24)" >> .env
+   docker compose up -d apply_api          # publishes 127.0.0.1:8531 only
+   ```
+2. **Load the extension**: Chrome → `chrome://extensions` → **Developer mode** →
+   **Load unpacked** → pick this `extension/` folder. (After any code change here,
+   hit the extension's **Reload** ↻.)
+3. **Configure it**: open the extension's **Options**, set the token (the
+   `APPLY_API_TOKEN` value from `.env`); base defaults to `http://127.0.0.1:8531`.
+   Click **Test connection** → expect "OK — N pending drafts".
 
-1. Chrome → `chrome://extensions` → enable **Developer mode**.
-2. **Load unpacked** → pick this `extension/` folder.
-3. (For the offline fixture via `file://`) open the extension's details and turn
-   on **Allow access to file URLs**. Or serve over http (below).
+## Run loop
 
-## Offline sanity check (no login needed)
+1. Open a job's apply page **logged in** (one of the structured ATS the content
+   script runs on: greenhouse / ashby / personio / lever / workable).
+2. The panel (top-right) auto-detects the draft for this page and shows
+   **Fill — {company}**. Click it.
+3. Read the per-field result table (selector% / label% / filled%). Review the
+   form, then submit it yourself. *(CV upload, auto-mark-submitted and gated
+   auto-submit arrive in tasks 3–5.)*
 
-```
-python3 -m http.server -d extension 8000
-# open http://localhost:8000/fixture.html
-```
+## Architecture
 
-Click **Copy payload** on the page, then click **Fill from clipboard** in the
-panel (top-right). Expect: all fields ✓, `#nope` filled via *label* (selector
-misses on purpose), the digit-id phone filled via the `[id="..."]` fallback, and
-the controlled First Name staying filled (native-setter path).
+- `manifest.json` — MV3; runs on the structured-ATS hosts, top frame only
+  (iframe traversal deferred). `host_permissions` covers `127.0.0.1:8531`.
+- `background.js` — service worker; holds base+token in `chrome.storage`, runs
+  all fetches to the sidecar (so the content script never hits page CORS).
+- `content.js` — panel, host→draft match, the fill engine, result table.
+- `options.html` / `options.js` — token + base, with a connection test.
 
-## Real run loop (SPIKE_PLAN.md §6)
+## Security
 
-For each test job (Greenhouse Solaris / Ashby Payrails / Personio Peter Park /
-softgarden Wackler):
-
-1. In the dashboard review card, expand **🧪 Spike: payload JSON** and copy it.
-2. Open the job's apply page **logged in** (for softgarden, start a fresh
-   session — the stored URL is one-time).
-3. Click **Fill from clipboard** in the panel.
-4. Read the result table (selector% / label% / filled%) and screenshot it.
-
-Collect the four tables → apply the decision matrix in SPIKE_PLAN.md §5.
-
-## Files
-
-- `manifest.json` — MV3; runs on the four test hosts + localhost/file fixture;
-  top frame only (iframe traversal deferred).
-- `content.js` — panel, clipboard read, both strategies, fill primitives
-  (React-safe native setter), result table.
-- `fixture.html` — offline form to validate the primitives.
+The sidecar serves the CV + personal data: it binds **127.0.0.1 only** and
+requires the bearer token. Never publish it on `0.0.0.0`. The token lives in
+`.env` (gitignored) and `chrome.storage` (not synced).

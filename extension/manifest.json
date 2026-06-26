@@ -1,19 +1,20 @@
 {
   "manifest_version": 3,
-  "name": "job-hunter autofill spike",
-  "version": "0.1.0",
-  "description": "Spike: fill a live application form from a clipboard form_payload, measuring selector-replay vs label-match. Throwaway — see SPIKE_PLAN.md.",
-  "permissions": ["clipboardRead", "activeTab"],
+  "name": "job-hunter autofill",
+  "version": "0.2.0",
+  "description": "Fills a structured-ATS application form from the reviewed draft served by the local apply_api sidecar. See PHASE1_PLAN.md.",
+  "permissions": ["storage", "activeTab"],
+  "host_permissions": ["http://127.0.0.1:8531/*"],
+  "background": { "service_worker": "background.js" },
+  "options_ui": { "page": "options.html", "open_in_tab": true },
   "content_scripts": [
     {
       "matches": [
         "https://*.greenhouse.io/*",
         "https://jobs.ashbyhq.com/*",
         "https://*.jobs.personio.de/*",
-        "https://*.softgarden.io/*",
-        "http://localhost/*",
-        "http://127.0.0.1/*",
-        "file:///*"
+        "https://*.lever.co/*",
+        "https://*.workable.com/*"
       ],
       "all_frames": false,
       "run_at": "document_idle",
