@@ -30,3 +30,7 @@ __pycache__/
 
 # ── Drafts / Notes ────────────────────────────────────────────────────────────
 story.md
+
+# Chrome "Pack extension" output (extension.pem is a private signing key)
+extension.crx
+extension.pem
