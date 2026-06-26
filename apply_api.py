@@ -24,12 +24,24 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Response
+from fastapi.middleware.cors import CORSMiddleware
 
 from utils.db import init_db
 from utils.profile_loader import load_profile
 from utils.snapshot_io import get_snapshot, mark_submitted
 
 app = FastAPI(title="job-hunter apply api", version="1.0")
+
+# The extension's background worker should reach us via host_permissions (no
+# CORS), but a not-fully-applied host grant makes the Authorization header
+# trigger a preflight that would otherwise fail. Permissive CORS is safe here:
+# the service is bound to 127.0.0.1 and every route is token-gated anyway.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # ── auth & db (both resolved per-request so tests/env can set them late) ───────
