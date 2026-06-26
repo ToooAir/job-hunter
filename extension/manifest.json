@@ -6,6 +6,7 @@
   "permissions": ["storage", "activeTab"],
   "host_permissions": ["http://127.0.0.1:8531/*"],
   "background": { "service_worker": "background.js" },
+  "action": { "default_title": "job-hunter autofill — toggle panel" },
   "options_ui": { "page": "options.html", "open_in_tab": true },
   "content_scripts": [
     {

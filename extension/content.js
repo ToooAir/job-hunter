@@ -13,15 +13,28 @@
 "use strict";
 
 let MATCH = null; // the pending snapshot for this page, if any
+let HOST = null;  // light-DOM host element carrying the panel's shadow root
+let PANEL = null; // the shadow root — the UI lives here, isolated from page CSS
 
 if (window.top === window.self) {
   injectPanel();
   init();
 }
 
+// Toolbar icon click (background → here): re-summon or hide the panel, so it can
+// always be brought back if it was dismissed or clobbered by the page.
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg && msg.type === "toggle-panel") togglePanel();
+});
+
 async function init() {
   await findPending();
   await maybeWatchConfirmation(); // resume a watch across the post-submit nav
+}
+
+// Query inside the panel's shadow root (page getElementById cannot see it).
+function $(sel) {
+  return PANEL ? PANEL.querySelector(sel) : null;
 }
 
 function bg(msg) {
@@ -33,19 +46,21 @@ function pageHost() {
 }
 
 // ── panel ────────────────────────────────────────────────────────────────────
+// The panel lives in a closed shadow root, not the page DOM: the page's and
+// other extensions' CSS cannot reach in to resize, restyle, or collapse it.
 function injectPanel() {
-  if (document.getElementById("jh-spike-panel")) return;
-  const panel = document.createElement("div");
-  panel.id = "jh-spike-panel";
-  panel.style.cssText =
-    "position:fixed;top:12px;right:12px;z-index:2147483647;width:380px;" +
-    "max-height:82vh;overflow:auto;background:#111;color:#eee;" +
-    "font:12px/1.45 ui-monospace,Menlo,monospace;border:1px solid #444;" +
-    "border-radius:8px;padding:10px;box-shadow:0 6px 22px rgba(0,0,0,.55)";
+  if (HOST && HOST.isConnected) return;
+  HOST = document.createElement("div");
+  HOST.id = "jh-autofill-host";
+  PANEL = HOST.attachShadow({ mode: "closed" });
   const btn =
     "cursor:pointer;border:1px solid #555;background:#1e1e1e;color:#eee;" +
     "border-radius:5px;padding:5px 9px;font:inherit";
-  panel.innerHTML =
+  PANEL.innerHTML =
+    '<div style="position:fixed;top:12px;right:12px;z-index:2147483647;width:380px;' +
+    "max-height:82vh;overflow:auto;background:#111;color:#eee;" +
+    "font:12px/1.45 ui-monospace,Menlo,monospace;border:1px solid #444;" +
+    'border-radius:8px;padding:10px;box-shadow:0 6px 22px rgba(0,0,0,.55)">' +
     '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
     "<b>job-hunter autofill</b>" +
     '<button id="jh-close" style="' + btn + '">×</button></div>' +
@@ -53,19 +68,36 @@ function injectPanel() {
     '<button id="jh-submitted" style="' + btn +
     ';width:100%;margin-top:6px;display:none">✓ I submitted it</button>' +
     '<div id="jh-status" style="margin-top:6px;color:#888"></div>' +
-    '<div id="jh-out" style="margin-top:8px;color:#aaa"></div>';
-  document.documentElement.appendChild(panel);
-  panel.querySelector("#jh-fill").addEventListener("click", run);
+    '<div id="jh-out" style="margin-top:8px;color:#aaa"></div>' +
+    "</div>";
+  document.documentElement.appendChild(HOST);
+  $("#jh-fill").addEventListener("click", run);
   // The authoritative bookkeeping signal: the human, who just submitted, says so.
-  panel.querySelector("#jh-submitted").addEventListener(
-    "click", () => MATCH && bookSubmitted(MATCH.snapshot_id));
-  panel.querySelector("#jh-close").addEventListener("click", () => panel.remove());
+  $("#jh-submitted").addEventListener("click", () => MATCH && bookSubmitted(MATCH.snapshot_id));
+  $("#jh-close").addEventListener("click", closePanel);
+}
+
+function closePanel() {
+  if (HOST) HOST.remove();
+  HOST = null;
+  PANEL = null;
+}
+
+// Toolbar click: hide if shown, otherwise re-inject and re-detect.
+function togglePanel() {
+  if (HOST && HOST.isConnected) {
+    closePanel();
+    return;
+  }
+  injectPanel();
+  init();
 }
 
 // ── find the draft for this page ───────────────────────────────────────────────
 async function findPending() {
-  const status = document.getElementById("jh-status");
-  const fill = document.getElementById("jh-fill");
+  const status = $("#jh-status");
+  const fill = $("#jh-fill");
+  if (!fill) return; // panel hidden
   const res = await bg({ type: "pending" });
   if (!res || !res.ok) {
     fill.textContent = "not connected";
@@ -76,7 +108,7 @@ async function findPending() {
   if (MATCH) {
     fill.textContent = "Fill — " + MATCH.company;
     fill.disabled = false;
-    document.getElementById("jh-submitted").style.display = "block";
+    $("#jh-submitted").style.display = "block";
     status.textContent =
       "snapshot #" + MATCH.snapshot_id + " · " + (MATCH.ats || "?") + " · T" + MATCH.tier;
   } else {
@@ -93,7 +125,8 @@ function hostMatch(a, b) {
 // ── fill ───────────────────────────────────────────────────────────────────────
 async function run() {
   if (!MATCH) return;
-  const out = document.getElementById("jh-out");
+  const out = $("#jh-out");
+  if (!out) return;
   out.textContent = "fetching draft…";
   const res = await bg({ type: "snapshot", id: MATCH.snapshot_id });
   if (!res || !res.ok) {
@@ -221,7 +254,7 @@ async function bookSubmitted(id) {
   const res = await bg({ type: "submitted", id });
   if (res && res.ok) return onBooked(id, false);
   if (res && /409/.test(res.error || "")) return onBooked(id, true);
-  const s = document.getElementById("jh-status");
+  const s = $("#jh-status");
   if (s) {
     s.innerHTML = red("book failed: " + ((res && res.error) || "?") +
                       " — try the dashboard button");
@@ -230,13 +263,13 @@ async function bookSubmitted(id) {
 
 function onBooked(id, already) {
   window.__jhBooked = true;
-  const s = document.getElementById("jh-status");
+  const s = $("#jh-status");
   if (s) {
     s.innerHTML = '<span style="color:#5fd35f">✓ ' +
       (already ? "already submitted" : "marked submitted") + " (#" + id + ")</span>";
   }
-  const fill = document.getElementById("jh-fill");
-  const sub = document.getElementById("jh-submitted");
+  const fill = $("#jh-fill");
+  const sub = $("#jh-submitted");
   if (fill) fill.disabled = true;
   if (sub) sub.style.display = "none";
 }

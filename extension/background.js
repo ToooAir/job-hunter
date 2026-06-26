@@ -59,3 +59,10 @@ function filenameFrom(r) {
   const m = (r.headers.get("Content-Disposition") || "").match(/filename="?([^"]+)"?/);
   return m ? m[1] : "cv.pdf";
 }
+
+// Toolbar icon → toggle the in-page panel (re-summon it if dismissed/clobbered).
+chrome.action.onClicked.addListener((tab) => {
+  if (tab && tab.id != null) {
+    chrome.tabs.sendMessage(tab.id, { type: "toggle-panel" }).catch(() => {});
+  }
+});
