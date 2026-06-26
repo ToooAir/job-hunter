@@ -16,11 +16,20 @@ let MATCH = null; // the pending snapshot for this page, if any
 
 if (window.top === window.self) {
   injectPanel();
-  findPending();
+  init();
+}
+
+async function init() {
+  await findPending();
+  await maybeWatchConfirmation(); // resume a watch across the post-submit nav
 }
 
 function bg(msg) {
   return new Promise((resolve) => chrome.runtime.sendMessage(msg, resolve));
+}
+
+function pageHost() {
+  return location.host.replace(/^www\./, "");
 }
 
 // ── panel ────────────────────────────────────────────────────────────────────
@@ -58,8 +67,7 @@ async function findPending() {
     status.innerHTML = red((res && res.error) || "no response") + " — check options.";
     return;
   }
-  const host = location.host.replace(/^www\./, "");
-  MATCH = res.data.find((s) => s.host && hostMatch(host, s.host));
+  MATCH = res.data.find((s) => s.host && hostMatch(pageHost(), s.host));
   if (MATCH) {
     fill.textContent = "Fill — " + MATCH.company;
     fill.disabled = false;
@@ -92,6 +100,12 @@ async function run() {
     return;
   }
   await fillActions(out, actions);
+  // Remember we're applying here so a confirmation books it submitted, even
+  // after the form navigates to a thank-you page (which reloads this script).
+  await chrome.storage.local.set({
+    applying: { id: MATCH.snapshot_id, host: pageHost(), ts: Date.now() },
+  });
+  startConfirmWatch(MATCH.snapshot_id);
 }
 
 async function fillActions(out, actions) {
@@ -161,6 +175,68 @@ function setFile(input, cv) {
   } catch (_e) {
     return false;
   }
+}
+
+// ── auto-mark-submitted on confirmation ───────────────────────────────────────
+// Post-submission phrasing only (ported from the deleted apply_session watch).
+// Deliberately excludes "thank you for your interest" — that's listing/apply-
+// page boilerplate, not a confirmation — and requires received/submitted/sent
+// so it doesn't fire before the form is actually sent. Dashboard "mark
+// submitted" stays as the backstop.
+const CONFIRM_RE = new RegExp([
+  "vielen dank für (ihre|deine) bewerbung",
+  "danke für (ihre|deine) bewerbung",
+  "bewerbung[^.!?]{0,40}(eingegangen|erhalten|erfolgreich (gesendet|übermittelt))",
+  "thank you for (applying|your application)",
+  "your application[^.!?]{0,30}(has been |was )?(received|submitted|sent)",
+  "we[^.!?]{0,20}received your application",
+  "application (received|submitted|sent)",
+  "successfully (applied|submitted)",
+  "erfolgreich (beworben|übermittelt)",
+].join("|"), "i");
+
+// On load, resume a watch if we were applying on this host (set when Fill ran).
+// A stale flag (>2h) or a different host is ignored.
+async function maybeWatchConfirmation() {
+  const { applying } = await chrome.storage.local.get({ applying: null });
+  if (!applying) return;
+  if (Date.now() - applying.ts > 2 * 3600 * 1000) {
+    await chrome.storage.local.remove("applying");
+    return;
+  }
+  if (!hostMatch(pageHost(), applying.host)) return;
+  startConfirmWatch(applying.id);
+}
+
+function startConfirmWatch(id) {
+  if (window.__jhWatching) return;
+  window.__jhWatching = true;
+  let booked = false;
+  const status = () => document.getElementById("jh-status");
+  const check = async () => {
+    if (booked) return;
+    const text = (document.body && document.body.innerText) || "";
+    if (!CONFIRM_RE.test(text)) return;
+    booked = true;
+    obs.disconnect();
+    clearInterval(iv);
+    await chrome.storage.local.remove("applying");
+    const res = await bg({ type: "submitted", id });
+    const s = status();
+    if (!s) return;
+    if (res && res.ok) {
+      s.innerHTML = '<span style="color:#5fd35f">✓ marked submitted (#' + id + ")</span>";
+    } else if (res && /409/.test(res.error || "")) {
+      s.innerHTML = '<span style="color:#5fd35f">already submitted (#' + id + ")</span>";
+    } else {
+      s.innerHTML = red("auto-book failed: " + ((res && res.error) || "?") +
+                        " — use the dashboard button");
+    }
+  };
+  const obs = new MutationObserver(check);
+  obs.observe(document.documentElement, { childList: true, subtree: true });
+  const iv = setInterval(check, 1500);
+  check(); // navigation case: the confirmation page is already here
 }
 
 // ── B: selector replay ─────────────────────────────────────────────────────────
