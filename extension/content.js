@@ -91,29 +91,48 @@ async function run() {
     out.innerHTML = red("no actions in this draft");
     return;
   }
-  fillActions(out, actions);
+  await fillActions(out, actions);
 }
 
-function fillActions(out, actions) {
+async function fillActions(out, actions) {
   // Pass 1 — measure (no fill): selector target vs label target, per field.
   const rows = actions.map((a) => {
     const selEl = a.selector ? safeQuery(a.selector) : null;
     const labEl = a.label ? resolveByLabel(a.label) : null;
     return { a, selEl, labEl, selFound: !!selEl, labFound: !!labEl, agree: !!selEl && selEl === labEl };
   });
-  // Pass 2 — fill via selector, falling back to label.
+  // Pass 2 — fill via selector, falling back to label. Files are deferred to
+  // an async CV-upload step below (DataTransfer needs the bytes from the API).
   for (const r of rows) {
     const target = r.selEl || r.labEl;
-    r.filledBy = r.selEl ? "selector" : r.labEl ? "label" : null;
     r.detected = !!target;
     if ((r.a.kind || "").toLowerCase() === "file") {
-      r.filled = false; // CV upload is task 3
-      r.note = "file (task 3)";
+      r.isFile = true;
+      r.fileTarget = target;
+      r.filled = false;
+      r.filledBy = null;
+      r.note = "cv pending";
     } else {
+      r.filledBy = r.selEl ? "selector" : r.labEl ? "label" : null;
       r.filled = target ? fillField(target, r.a) : false;
     }
   }
   out.innerHTML = renderTable(rows);
+
+  // CV upload: fetch the bytes once, drop the File into each file input.
+  const fileRows = rows.filter((r) => r.isFile && r.fileTarget);
+  if (fileRows.length) {
+    out.innerHTML = renderTable(rows) +
+      '<div style="margin-top:6px;color:#aaa">uploading CV…</div>';
+    const cv = await bg({ type: "cv", id: MATCH.snapshot_id });
+    for (const r of fileRows) {
+      if (!cv || !cv.ok) r.note = "cv error: " + ((cv && cv.error) || "?");
+      else if (setFile(r.fileTarget, cv)) { r.filled = true; r.note = "cv uploaded"; }
+      else r.note = "not a file input — attach manually";
+      r.filledBy = r.note;
+    }
+    out.innerHTML = renderTable(rows);
+  }
   // eslint-disable-next-line no-console
   console.table(
     rows.map((r) => ({
@@ -121,6 +140,27 @@ function fillActions(out, actions) {
       label_match: r.labFound, agree: r.agree, filledBy: r.filledBy, filled: r.filled,
     }))
   );
+}
+
+// Drop the CV bytes into a real <input type=file> via DataTransfer. Custom
+// drag-drop widgets that aren't a real file input reject this → caller flags
+// "attach manually" (a known v2 long-tail).
+function setFile(input, cv) {
+  if (!(input.tagName === "INPUT" && (input.type || "").toLowerCase() === "file")) {
+    return false;
+  }
+  try {
+    const file = new File([new Uint8Array(cv.bytes)], cv.name || "cv.pdf",
+                          { type: "application/pdf" });
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    input.files = dt.files;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    return input.files.length === 1;
+  } catch (_e) {
+    return false;
+  }
 }
 
 // ── B: selector replay ─────────────────────────────────────────────────────────
