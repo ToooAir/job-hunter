@@ -41,6 +41,10 @@ app.add_middleware(
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
+    # the CV filename rides in Content-Disposition; CORS hides non-safelisted
+    # response headers from JS unless we expose them (else the extension sees a
+    # null header and falls back to "cv.pdf").
+    expose_headers=["Content-Disposition"],
 )
 
 
