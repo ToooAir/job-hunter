@@ -184,10 +184,9 @@ function setFile(input, cv) {
 // so it doesn't fire before the form is actually sent. Dashboard "mark
 // submitted" stays as the backstop.
 const CONFIRM_RE = new RegExp([
-  "vielen dank für (ihre|deine) bewerbung",
-  "danke für (ihre|deine) bewerbung",
+  "(vielen dank|danke)[^.!?]{0,20}für (ihre|deine) bewerbung",
   "bewerbung[^.!?]{0,40}(eingegangen|erhalten|erfolgreich (gesendet|übermittelt))",
-  "thank you for (applying|your application)",
+  "thank you[^.!?]{0,20}for (applying|your application)",
   "your application[^.!?]{0,30}(has been |was )?(received|submitted|sent)",
   "we[^.!?]{0,20}received your application",
   "application (received|submitted|sent)",
