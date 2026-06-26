@@ -88,6 +88,7 @@ APPLICATION_SNAPSHOT_COLUMNS = [
     ("verifier_report", "TEXT"),                               # JSON
     ("screenshot_path", "TEXT"),
     ("notes",           "TEXT"),
+    ("liveness",        "TEXT"),  # liveness sweep verdict: live|suspicious (dead → abandoned)
 ]
 
 SNAPSHOT_STATUSES = ("draft", "submitted", "abandoned")
@@ -135,6 +136,10 @@ def init_db(db_path: str) -> sqlite3.Connection:
         if col_name not in existing:
             base_type = col_type.split()[0]
             conn.execute(f"ALTER TABLE jobs ADD COLUMN {col_name} {base_type}")
+    existing_snap = {row[1] for row in conn.execute("PRAGMA table_info(application_snapshots)")}
+    for col_name, col_type in APPLICATION_SNAPSHOT_COLUMNS:
+        if col_name not in existing_snap:
+            conn.execute(f"ALTER TABLE application_snapshots ADD COLUMN {col_name} {col_type.split()[0]}")
     conn.commit()
 
     # One-time backfill for peak_stage (NULL = newly added column on existing DB)
