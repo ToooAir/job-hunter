@@ -23,6 +23,7 @@ from utils.db import (
     init_db, get_unscored_jobs, update_score, fetch_job_by_id,
     reset_to_unscored, reset_errors_to_unscored, mark_error, mark_expired,
     set_interview_brief, set_translated_jd, auto_expire_stale_jobs,
+    get_application_snapshots,
 )
 
 # ── Setup ──────────────────────────────────────────────────────────────────────
@@ -149,6 +150,31 @@ def _detect_german(text: str, job_id: str = "") -> bool:
     is_german = ratio > _GERMAN_THRESHOLD
     log.debug("german_detect job=%s tokens=%d german=%.1f%% → %s", job_id, len(tokens), ratio * 100, is_german)
     return is_german
+
+
+EXIT_TRANSIENT = 75  # EX_TEMPFAIL — tells the scheduler to retry later, not mark failed
+
+
+class TransientAbort(RuntimeError):
+    """Scoring aborted on a network-class failure.
+
+    Jobs that were not scored stay 'un-scored' (NOT 'error') so the next
+    pipeline run retries them automatically once connectivity is back.
+    """
+
+
+def _is_transient_llm_error(exc: Exception) -> bool:
+    """Network-class failures that must not permanently mark a job as error.
+
+    Covers connection drops / timeouts (laptop sleep, train Wi-Fi) and
+    provider 5xx outages. Content-level failures (validation, refusal,
+    4xx) still go through mark_error as before.
+    """
+    if isinstance(exc, openai.APIConnectionError):  # includes APITimeoutError
+        return True
+    if isinstance(exc, openai.APIStatusError) and exc.status_code >= 500:
+        return True
+    return False
 
 
 def _translate_to_english(text: str, client) -> str | None:
@@ -550,9 +576,14 @@ def score_jobs(
     # Tune via env var MISTRAL_MAX_CONCURRENT if needed.
     max_concurrent = int(os.getenv("MISTRAL_MAX_CONCURRENT", "3"))
     db_lock = threading.Lock()
+    abort_event = threading.Event()   # set on first transient (network-class) failure
+    skipped: list[str] = []           # job ids left un-scored for the next run
 
     def _llm_score_job(job: dict) -> ScoringResult | None:
         """LLM call + immediate DB write. Concurrency capped by max_workers."""
+        if abort_event.is_set():
+            skipped.append(job["id"])  # list.append is thread-safe (GIL)
+            return None
         context = contexts.get(job["id"], "(候選人背景資料未載入)")
         effective_jd = (job.get("translated_jd_text") or job["raw_jd_text"])[:6000]
         system_prompt, user_prompt = build_prompt(
@@ -575,6 +606,14 @@ def score_jobs(
                 time.sleep(60)
             except Exception as exc:
                 last_exc = exc
+                if _is_transient_llm_error(exc):
+                    abort_event.set()
+                    skipped.append(job["id"])
+                    log.warning(
+                        "Transient failure for job %s (%s @ %s) — kept un-scored for retry: %s",
+                        job["id"], job["title"], job["company"], exc,
+                    )
+                    return None
                 log.error(
                     "Scoring failed for job %s (%s @ %s): %s",
                     job["id"], job["title"], job["company"], exc,
@@ -636,9 +675,16 @@ def score_jobs(
             if result is not None:
                 scored.append(result)
 
-    failed = len(jobs) - len(scored)
-    log.info("完成：%d 筆成功，%d 筆失敗（error）", len(scored), failed)
+    failed = len(jobs) - len(scored) - len(skipped)
+    log.info(
+        "完成：%d 筆成功，%d 筆失敗（error），%d 筆保持 un-scored（網路問題，待重試）",
+        len(scored), failed, len(skipped),
+    )
     conn.close()
+    if abort_event.is_set():
+        raise TransientAbort(
+            f"network-class failure — {len(skipped)} job(s) left un-scored for the next run"
+        )
     return scored
 
 
@@ -651,7 +697,11 @@ def score_single_job(
     conn = init_db(db_path)
     reset_to_unscored(conn, [job_id])
     conn.close()
-    results = score_jobs(db_path=db_path, qdrant_path=qdrant_path, job_ids=[job_id])
+    try:
+        results = score_jobs(db_path=db_path, qdrant_path=qdrant_path, job_ids=[job_id])
+    except TransientAbort as exc:
+        log.warning("score_single_job: %s", exc)
+        return None
     return results[0] if results else None
 
 
@@ -707,6 +757,10 @@ Write a cover letter (English, 200–400 words, end on a complete sentence) for 
 Para 1 (2–3 sentences): role applied + core motivation.
 Para 2 (3–4 sentences): 1–2 relevant technical achievements with concrete results.
 Para 3 (1–2 sentences): company interest + polite close.
+Ground every claim in the candidate background above — no invented facts, numbers, or
+achievements it does not support. State a concrete result ONLY when the background
+contains it; otherwise describe the achievement without a fabricated metric. No
+embellishment, no superlatives the background does not support.
 Avoid clichés like "I am a passionate developer". Output the letter text only — no subject line, no date."""
 
     user_prompt = f"""## Candidate Background
@@ -766,6 +820,15 @@ _BRIEF_SECTIONS = {
         "highlights_h": "(Select 2–3 experiences from the candidate background that best address this role)",
         "questions":    "### Likely Interview Questions",
         "questions_h":  "(5 specific questions the interviewer might ask based on this JD)",
+        # Submission evidence (appended deterministically — never LLM-generated)
+        "subm_title":   "## 📋 What You Actually Submitted",
+        "subm_meta":    "Submitted",
+        "subm_by":      "by",
+        "subm_channel": "Channel",
+        "subm_cl":      "### Cover Letter (submitted version)",
+        "subm_cl_draft": "### Cover Letter (draft — may differ from what was sent)",
+        "subm_qa":      "### Custom Questions & Answers",
+        "subm_none":    "(No submission snapshot on file for this job.)",
     },
     "zh": {
         "intro":        "請根據以下職缺與候選人背景，生成結構化的面試準備單（繁體中文，Markdown 格式）。",
@@ -787,6 +850,15 @@ _BRIEF_SECTIONS = {
         "highlights_h": "（從候選人背景中選出最相關的 2–3 項經歷，說明如何對應職缺需求）",
         "questions":    "### 可能被問到的問題",
         "questions_h":  "（根據此 JD 列出 5 個具體面試問題）",
+        # 投遞存證（確定性附加，永不經 LLM 生成）
+        "subm_title":   "## 📋 你當時實際提交的內容",
+        "subm_meta":    "投遞時間",
+        "subm_by":      "送出方",
+        "subm_channel": "管道",
+        "subm_cl":      "### Cover Letter（送出版本）",
+        "subm_cl_draft": "### Cover Letter（草稿 — 可能與實際送出不同）",
+        "subm_qa":      "### 自訂題 Q&A",
+        "subm_none":    "（此職缺沒有投遞存證快照。）",
     },
 }
 
@@ -824,6 +896,59 @@ BRIEF_PROMPT_TEMPLATE = """\
 {questions}
 {questions_h}\
 """
+
+
+def _submission_evidence(conn, job: dict, lang: str) -> str:
+    """Deterministic 'what you submitted' section for the interview brief.
+
+    Pulled verbatim from the latest submitted snapshot (or draft fallback) —
+    never passed through the LLM, so it answers 'did I oversell?' faithfully.
+    Returns "" when there is nothing on file (older jobs predate snapshots).
+    """
+    s = _BRIEF_SECTIONS.get(lang, _BRIEF_SECTIONS["en"])
+    snaps = get_application_snapshots(conn, job["id"])
+    submitted = next((x for x in snaps if x.get("status") == "submitted"), None)
+
+    cover_letter = ""
+    cl_header = ""
+    custom_qa: dict = {}
+    meta_line = ""
+
+    if submitted is not None:
+        cover_letter = (submitted.get("cover_letter") or "").strip()
+        cl_header = s["subm_cl"]
+        try:
+            custom_qa = json.loads(submitted.get("custom_qa") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            custom_qa = {}
+        parts = []
+        if submitted.get("submitted_at"):
+            parts.append(f"{s['subm_meta']}: {submitted['submitted_at']}")
+        if submitted.get("submitted_by"):
+            parts.append(f"{s['subm_by']}: {submitted['submitted_by']}")
+        if submitted.get("channel"):
+            parts.append(f"{s['subm_channel']}: {submitted['channel']}")
+        meta_line = " · ".join(parts)
+
+    # Fallback: no submitted snapshot → show the draft cover letter with a caveat.
+    if not cover_letter:
+        draft = (job.get("cover_letter_draft") or "").strip()
+        if not draft and not custom_qa:
+            return ""
+        if draft:
+            cover_letter = draft
+            cl_header = s["subm_cl_draft"]
+
+    lines = ["", "---", "", s["subm_title"], ""]
+    if meta_line:
+        lines += [meta_line, ""]
+    if cover_letter:
+        lines += [cl_header, "", cover_letter, ""]
+    if custom_qa:
+        lines += [s["subm_qa"], ""]
+        for q, a in custom_qa.items():
+            lines += [f"**Q:** {q}", "", f"**A:** {a}", ""]
+    return "\n".join(lines).rstrip()
 
 
 def generate_brief_for_job(
@@ -894,6 +1019,9 @@ def generate_brief_for_job(
             temperature=0.4,
         )
         brief = resp.choices[0].message.content.strip()
+        evidence = _submission_evidence(conn, job, lang)
+        if evidence:
+            brief = f"{brief}\n\n{evidence}"
         set_interview_brief(conn, job_id, brief)
         log.info("interview brief generated for job %s (%s @ %s)", job_id, job["title"], job["company"])
         conn.close()
@@ -921,7 +1049,11 @@ if __name__ == "__main__":
         help="Reset all error-status jobs to un-scored so they will be retried",
     )
     args = parser.parse_args()
-    scored = score_jobs(rescore=args.rescore, reset_errors=args.reset_errors)
+    try:
+        scored = score_jobs(rescore=args.rescore, reset_errors=args.reset_errors)
+    except TransientAbort as exc:
+        log.warning("中止本輪評分（%s）— exit %d，scheduler 將於網路恢復後重試", exc, EXIT_TRANSIENT)
+        sys.exit(EXIT_TRANSIENT)
 
     n = len(scored)
     log.info("完成評分 %d 筆", n)

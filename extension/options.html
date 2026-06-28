@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>job-hunter autofill — options</title>
+  <style>
+    body { font: 14px system-ui, sans-serif; margin: 24px; max-width: 420px; }
+    label { display: block; margin: 14px 0 4px; font-weight: 600; }
+    input { width: 100%; padding: 6px; box-sizing: border-box; }
+    button { margin: 14px 8px 0 0; padding: 6px 12px; cursor: pointer; }
+    #out { margin-top: 12px; color: #555; min-height: 1.2em; }
+    .hint { color: #777; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h2>job-hunter autofill</h2>
+  <p class="hint">Talks to the local sidecar (apply_api.py). The token is your
+    <code>APPLY_API_TOKEN</code> from <code>.env</code>.</p>
+
+  <label>API base</label>
+  <input id="base" placeholder="http://127.0.0.1:8531" />
+
+  <label>Token</label>
+  <input id="token" type="password" placeholder="APPLY_API_TOKEN" />
+
+  <button id="save">Save</button>
+  <button id="test">Test connection</button>
+  <div id="out"></div>
+
+  <script src="options.js"></script>
+</body>
+</html>

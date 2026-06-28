@@ -47,6 +47,9 @@ SCHEMA_COLUMNS = [
     ("salary_estimate",    "TEXT"),
     ("visa_analysis",      "TEXT"),
     ("translated_jd_text", "TEXT"),
+    ("ats",                "TEXT"),   # ATS hosting the apply form (ats_scan.py)
+    ("apply_url",          "TEXT"),   # direct link to the apply form, when known
+    ("ats_checked_at",     "TEXT"),   # last liveness/ATS check; queue requires <= 7 days
     ("status",             "TEXT NOT NULL DEFAULT 'un-scored'"),
 ]
 
@@ -65,6 +68,45 @@ INTERVIEW_RECORD_COLUMNS = [
 ]
 
 
+# One row = the full lifecycle of one application attempt for one job.
+# Doubles as the queue carrier (DB-as-queue): Stage 1 writes a draft,
+# the user approves it, Stage 2 submits it.
+APPLICATION_SNAPSHOT_COLUMNS = [
+    ("id",              "INTEGER PRIMARY KEY AUTOINCREMENT"),
+    ("job_id",          "TEXT NOT NULL"),                      # indexed
+    ("created_at",      "TEXT NOT NULL"),
+    ("status",          "TEXT NOT NULL DEFAULT 'draft'"),      # draft|submitted|abandoned
+    ("tier",            "INTEGER"),                            # 1|2|3 risk tier (assigned in Step 4)
+    ("channel",         "TEXT"),                               # e.g. generic-form | ashby | indeed-prefill
+    ("apply_url",       "TEXT"),
+    ("approved_at",     "TEXT"),                               # legacy column; unused since Stage 2 removal
+    ("submitted_at",    "TEXT"),                               # set when the human marks the job applied
+    ("submitted_by",    "TEXT"),                               # always 'human' now (legacy 'agent' rows remain)
+    ("form_payload",    "TEXT"),                               # JSON: field -> filled value
+    ("cover_letter",    "TEXT"),
+    ("custom_qa",       "TEXT"),                               # JSON: free-text question -> answer
+    ("verifier_report", "TEXT"),                               # JSON
+    ("screenshot_path", "TEXT"),
+    ("notes",           "TEXT"),
+    ("liveness",        "TEXT"),  # liveness sweep verdict: live|suspicious (dead → abandoned)
+]
+
+SNAPSHOT_STATUSES = ("draft", "submitted", "abandoned")
+# Statuses that mean "an application for this job is in motion or done" —
+# used by the queue to avoid creating a second snapshot for the same job.
+IN_FLIGHT_SNAPSHOT_STATUSES = ("draft", "submitted")
+
+
+PIPELINE_RUN_COLUMNS = [
+    ("id",           "INTEGER PRIMARY KEY AUTOINCREMENT"),
+    ("started_at",   "TEXT NOT NULL"),
+    ("completed_at", "TEXT"),
+    ("status",       "TEXT NOT NULL DEFAULT 'running'"),  # running | success | failed
+    ("stages_done",  "TEXT NOT NULL DEFAULT ''"),         # comma-separated stage names
+    ("last_error",   "TEXT"),
+]
+
+
 def init_db(db_path: str) -> sqlite3.Connection:
     os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
     conn = sqlite3.connect(db_path, check_same_thread=False)
@@ -77,6 +119,15 @@ def init_db(db_path: str) -> sqlite3.Connection:
 
     ir_defs = ",\n    ".join(f"{name} {typ}" for name, typ in INTERVIEW_RECORD_COLUMNS)
     conn.execute(f"CREATE TABLE IF NOT EXISTS interview_records (\n    {ir_defs}\n);")
+
+    pr_defs = ",\n    ".join(f"{name} {typ}" for name, typ in PIPELINE_RUN_COLUMNS)
+    conn.execute(f"CREATE TABLE IF NOT EXISTS pipeline_runs (\n    {pr_defs}\n);")
+
+    snap_defs = ",\n    ".join(f"{name} {typ}" for name, typ in APPLICATION_SNAPSHOT_COLUMNS)
+    conn.execute(f"CREATE TABLE IF NOT EXISTS application_snapshots (\n    {snap_defs}\n);")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_snapshots_job_id ON application_snapshots(job_id)"
+    )
     conn.commit()
 
     # Backfill any columns added after initial creation
@@ -85,6 +136,10 @@ def init_db(db_path: str) -> sqlite3.Connection:
         if col_name not in existing:
             base_type = col_type.split()[0]
             conn.execute(f"ALTER TABLE jobs ADD COLUMN {col_name} {base_type}")
+    existing_snap = {row[1] for row in conn.execute("PRAGMA table_info(application_snapshots)")}
+    for col_name, col_type in APPLICATION_SNAPSHOT_COLUMNS:
+        if col_name not in existing_snap:
+            conn.execute(f"ALTER TABLE application_snapshots ADD COLUMN {col_name} {col_type.split()[0]}")
     conn.commit()
 
     # One-time backfill for peak_stage (NULL = newly added column on existing DB)
@@ -418,3 +473,146 @@ def set_follow_up(conn: sqlite3.Connection, job_id: str, follow_up_at: str | Non
         (follow_up_at, job_id),
     )
     conn.commit()
+
+
+# ── Pipeline run tracking (catch-up scheduler) ─────────────────────────────────
+# A "run" is one daily pipeline attempt. Stage completions are recorded so an
+# interrupted run (sleep, offline, crash) resumes from the first unfinished
+# stage instead of restarting from scratch.
+
+def _now_local_iso() -> str:
+    return datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def get_open_pipeline_run(conn: sqlite3.Connection) -> dict | None:
+    """Latest run still in progress (status='running'), or None."""
+    row = conn.execute(
+        "SELECT * FROM pipeline_runs WHERE status = 'running' ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def get_last_pipeline_completed_at(conn: sqlite3.Connection) -> str | None:
+    """completed_at of the most recent finished run (success OR failed).
+
+    Failed runs also gate the next attempt — a hard (non-transient) failure
+    should be retried on the normal daily cadence, not every tick.
+    """
+    row = conn.execute(
+        "SELECT completed_at FROM pipeline_runs "
+        "WHERE completed_at IS NOT NULL ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    return row["completed_at"] if row else None
+
+
+def start_pipeline_run(conn: sqlite3.Connection) -> int:
+    cur = conn.execute(
+        "INSERT INTO pipeline_runs (started_at) VALUES (?)", (_now_local_iso(),)
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def mark_pipeline_stage_done(conn: sqlite3.Connection, run_id: int, stage: str) -> None:
+    row = conn.execute(
+        "SELECT stages_done FROM pipeline_runs WHERE id = ?", (run_id,)
+    ).fetchone()
+    done = [s for s in (row["stages_done"] or "").split(",") if s]
+    if stage not in done:
+        done.append(stage)
+    conn.execute(
+        "UPDATE pipeline_runs SET stages_done = ? WHERE id = ?",
+        (",".join(done), run_id),
+    )
+    conn.commit()
+
+
+def finish_pipeline_run(
+    conn: sqlite3.Connection, run_id: int, status: str, error: str | None = None
+) -> None:
+    conn.execute(
+        "UPDATE pipeline_runs SET status = ?, completed_at = ?, last_error = ? WHERE id = ?",
+        (status, _now_local_iso(), error, run_id),
+    )
+    conn.commit()
+
+
+# ── ATS resolution (ats_scan.py → apply queue) ─────────────────────────────────
+
+def set_job_ats(
+    conn: sqlite3.Connection,
+    job_id: str,
+    ats: str,
+    apply_url: str | None = None,
+    checked_at: str | None = None,
+) -> bool:
+    """Record the ATS resolution for a job. Returns True if the row existed."""
+    cur = conn.execute(
+        "UPDATE jobs SET ats = ?, apply_url = ?, ats_checked_at = ? WHERE id = ?",
+        (ats, apply_url, checked_at or _now_local_iso(), job_id),
+    )
+    conn.commit()
+    return cur.rowcount == 1
+
+
+# ── Application snapshots (semi-auto apply, Step 2+) ───────────────────────────
+
+_SNAPSHOT_JSON_FIELDS = ("form_payload", "custom_qa", "verifier_report")
+_SNAPSHOT_WRITABLE = {name for name, _ in APPLICATION_SNAPSHOT_COLUMNS} - {"id", "job_id", "created_at"}
+
+
+def _encode_snapshot_fields(fields: dict) -> dict:
+    unknown = set(fields) - _SNAPSHOT_WRITABLE
+    if unknown:
+        raise ValueError(f"unknown snapshot field(s): {sorted(unknown)}")
+    status = fields.get("status")
+    if status is not None and status not in SNAPSHOT_STATUSES:
+        raise ValueError(f"invalid snapshot status {status!r}, expected one of {SNAPSHOT_STATUSES}")
+    out = dict(fields)
+    for key in _SNAPSHOT_JSON_FIELDS:
+        if key in out and not isinstance(out[key], (str, type(None))):
+            out[key] = json.dumps(out[key], ensure_ascii=False)
+    return out
+
+
+def create_application_snapshot(conn: sqlite3.Connection, job_id: str, **fields) -> int:
+    """Insert a snapshot for a job (dict/list values are JSON-encoded). Returns row id."""
+    record = {"job_id": job_id, "created_at": _now_local_iso(), **_encode_snapshot_fields(fields)}
+    cols = ", ".join(record.keys())
+    placeholders = ", ".join("?" for _ in record)
+    cur = conn.execute(
+        f"INSERT INTO application_snapshots ({cols}) VALUES ({placeholders})",
+        list(record.values()),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def update_application_snapshot(conn: sqlite3.Connection, snapshot_id: int, **fields) -> None:
+    if not fields:
+        return
+    record = _encode_snapshot_fields(fields)
+    assignments = ", ".join(f"{k} = ?" for k in record)
+    conn.execute(
+        f"UPDATE application_snapshots SET {assignments} WHERE id = ?",
+        [*record.values(), snapshot_id],
+    )
+    conn.commit()
+
+
+def get_application_snapshots(conn: sqlite3.Connection, job_id: str) -> list[dict]:
+    """All snapshots for a job, newest first."""
+    rows = conn.execute(
+        "SELECT * FROM application_snapshots WHERE job_id = ? ORDER BY id DESC", (job_id,)
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_in_flight_snapshots(conn: sqlite3.Connection) -> list[dict]:
+    """Snapshots whose application is in motion or done (draft/approved/submitted)."""
+    placeholders = ",".join("?" for _ in IN_FLIGHT_SNAPSHOT_STATUSES)
+    rows = conn.execute(
+        f"SELECT * FROM application_snapshots WHERE status IN ({placeholders}) ORDER BY id",
+        IN_FLIGHT_SNAPSHOT_STATUSES,
+    ).fetchall()
+    return [dict(r) for r in rows]
