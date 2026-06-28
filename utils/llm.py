@@ -13,7 +13,6 @@ Supported providers:
 import os
 import time
 import threading
-import openai
 
 LLM_PROVIDER          = os.getenv("LLM_PROVIDER", "openai").lower()
 OPENAI_API_KEY        = os.getenv("OPENAI_API_KEY", "")
@@ -71,7 +70,11 @@ def rate_limit() -> None:
 
 # ── Client factory ─────────────────────────────────────────────────────────────
 
-def make_client() -> openai.OpenAI:
+def make_client() -> "openai.OpenAI":
+    # imported here so stdlib-only consumers (rate_limit, model names) work
+    # in environments without the LLM stack (host venv, unit tests)
+    import openai
+
     if LLM_PROVIDER == "azure":
         return openai.AzureOpenAI(
             api_key=OPENAI_API_KEY,

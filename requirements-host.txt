@@ -1,0 +1,10 @@
+# Host-side venv for the apply agent's CDP backend (Stage 2).
+# The container image covers Stage 1; this is only for code that must talk
+# to the real Chrome on the host (utils/browser.cdp_session, apply sessions).
+#
+#   python3 -m venv .venv && .venv/bin/pip install -r requirements-host.txt
+#
+# No `playwright install` needed: attach mode never downloads a browser.
+playwright>=1.44.0
+pyyaml
+beautifulsoup4
