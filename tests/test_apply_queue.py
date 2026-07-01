@@ -11,10 +11,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import os  # noqa: E402
+from unittest import mock  # noqa: E402
+
 from utils.apply_queue import (  # noqa: E402
     DedupContext,
     build_queue,
     dedup_gate,
+    is_addressable,
     normalize_company,
     topup_budget,
 )
@@ -35,17 +39,17 @@ def _iso(dt: datetime) -> str:
 
 def make_job(conn, job_id, *, company="Acme", grade="A", score=80, status="scored",
              location="Hamburg, Germany", ats="unknown", checked_days_ago=1,
-             fetched_days_ago=1, jd_hash=None, source="heise"):
+             fetched_days_ago=1, jd_hash=None, source="heise", apply_url=None):
     conn.execute(
         "INSERT INTO jobs (id, company, title, url, source, raw_jd_text, fetched_at, "
-        "  location, fit_grade, match_score, status, ats, ats_checked_at, jd_hash) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "  location, fit_grade, match_score, status, ats, ats_checked_at, jd_hash, apply_url) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             job_id, company, f"Title {job_id}", f"https://example.com/{job_id}", source,
             "x" * 600, _iso(NOW - timedelta(days=fetched_days_ago)),
             location, grade, score, status, ats,
             _iso(NOW - timedelta(days=checked_days_ago)) if checked_days_ago is not None else None,
-            jd_hash,
+            jd_hash, apply_url,
         ),
     )
     conn.commit()
@@ -298,6 +302,93 @@ class BuildQueueIsReadOnlyTest(QueueTestBase):
         self.assertEqual(
             self.conn.execute("SELECT COUNT(*) FROM application_snapshots").fetchone()[0], 0
         )
+
+
+class IsAddressableTest(unittest.TestCase):
+    def test_structured_ats_by_column(self):
+        for ats in ("greenhouse", "lever", "ashby", "workable", "personio"):
+            self.assertTrue(is_addressable({"ats": ats, "apply_url": ""}), ats)
+
+    def test_case_insensitive(self):
+        self.assertTrue(is_addressable({"ats": "Greenhouse", "apply_url": ""}))
+
+    def test_disguise_pierced_via_url(self):
+        # ats column reads unknown, but the apply_url reveals the real ATS.
+        cases = [
+            "https://www.workato.com/careers/x?gh_jid=8579922002",   # greenhouse embed
+            "https://boards.greenhouse.io/acme/jobs/1",
+            "https://jobs.lever.co/acme/123",
+            "https://acme.ashbyhq.com/x",
+            "https://www.personio.com/careers/abc",
+        ]
+        for url in cases:
+            self.assertTrue(is_addressable({"ats": "unknown", "apply_url": url}), url)
+
+    def test_human_floor_not_addressable(self):
+        for url in ("https://de.indeed.com/viewjob?jk=x",
+                    "https://join.com/companies/x/apply",
+                    "https://virtualq.softgarden.io/x"):
+            self.assertFalse(is_addressable({"ats": "unknown", "apply_url": url}), url)
+
+    def test_missing_fields_safe(self):
+        self.assertFalse(is_addressable({}))
+        self.assertFalse(is_addressable({"ats": None, "apply_url": None}))
+
+
+class AddressableRankingTest(QueueTestBase):
+    def test_addressable_floats_up_within_grade(self):
+        # Same freshness + same grade + same score: addressable wins.
+        make_job(self.conn, "plain", company="C1", grade="A", score=88, ats="unknown")
+        make_job(self.conn, "fill", company="C2", grade="A", score=88, ats="greenhouse")
+        with mock.patch.dict(os.environ, {"APPLY_PREFER_ADDRESSABLE": "1"}):
+            result = build_queue(self.conn, now=NOW)
+        self.assertEqual(self.queue_ids(result), ["fill", "plain"])
+
+    def test_bias_never_lets_b_jump_a(self):
+        make_job(self.conn, "a-plain", company="C1", grade="A", score=80, ats="unknown")
+        make_job(self.conn, "b-fill", company="C2", grade="B", score=95, ats="lever")
+        with mock.patch.dict(os.environ, {"APPLY_PREFER_ADDRESSABLE": "1"}):
+            result = build_queue(self.conn, now=NOW)
+        self.assertEqual(self.queue_ids(result), ["a-plain", "b-fill"])
+
+    def test_bias_off_keeps_score_order(self):
+        make_job(self.conn, "plain-hi", company="C1", grade="A", score=90, ats="unknown")
+        make_job(self.conn, "fill-lo", company="C2", grade="A", score=80, ats="greenhouse")
+        with mock.patch.dict(os.environ, {"APPLY_PREFER_ADDRESSABLE": "0"}):
+            result = build_queue(self.conn, now=NOW)
+        self.assertEqual(self.queue_ids(result), ["plain-hi", "fill-lo"])
+
+    def test_addressable_flag_on_queued_jobs(self):
+        make_job(self.conn, "fill", company="C1", ats="ashby")
+        result = build_queue(self.conn, now=NOW)
+        self.assertTrue(result["queue"][0]["addressable"])
+
+
+class ExperimentGateTest(QueueTestBase):
+    def test_min_score_gate(self):
+        make_job(self.conn, "hi", company="C1", grade="A", score=85)
+        make_job(self.conn, "lo", company="C2", grade="A", score=84)
+        with mock.patch.dict(os.environ, {"APPLY_MIN_SCORE": "85"}):
+            result = build_queue(self.conn, now=NOW)
+        self.assertEqual(self.queue_ids(result), ["hi"])
+
+    def test_addressable_only_gate(self):
+        make_job(self.conn, "fill", company="C1", ats="greenhouse")
+        make_job(self.conn, "disguised", company="C2", ats="unknown",
+                 apply_url="https://x.com/a?gh_jid=1")
+        make_job(self.conn, "drop", company="C3", ats="indeed")
+        with mock.patch.dict(os.environ, {"APPLY_ADDRESSABLE_ONLY": "1"}):
+            result = build_queue(self.conn, now=NOW)
+        self.assertEqual(set(self.queue_ids(result)), {"fill", "disguised"})
+
+    def test_gates_combine_for_cohort(self):
+        make_job(self.conn, "cohort", company="C1", grade="A", score=88, ats="lever")
+        make_job(self.conn, "low-score", company="C2", grade="A", score=70, ats="lever")
+        make_job(self.conn, "not-fill", company="C3", grade="A", score=88, ats="indeed")
+        with mock.patch.dict(os.environ,
+                             {"APPLY_ADDRESSABLE_ONLY": "1", "APPLY_MIN_SCORE": "85"}):
+            result = build_queue(self.conn, now=NOW)
+        self.assertEqual(self.queue_ids(result), ["cohort"])
 
 
 if __name__ == "__main__":
