@@ -93,8 +93,9 @@ fields:
   salary_expectation:
     value: "TODO"                      # e.g. "€65,000 gross per year (negotiable)"
     value_eur_year: 0                  # TODO: bare number for numeric-only fields, e.g. 65000
-    aliases: [salary expectation, expected salary, desired salary, compensation,
-              gehaltsvorstellung, gehaltswunsch, jahresgehalt, gehalt]
+    aliases: [salary expectation, salary expectations, expected salary, desired salary,
+              compensation, gehaltsvorstellung, gehaltsvorstellungen, gehaltswunsch,
+              jahresgehalt, gehalt]
 
   linkedin:
     value: "TODO"                      # full URL or "" to leave blank
