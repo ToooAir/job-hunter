@@ -124,5 +124,108 @@ class ApplyApiTest(unittest.TestCase):
         self.assertEqual(r2.status_code, 409)
 
 
+PROFILE_FIXTURE = {
+    "fields": {
+        "first_name": {"value": "Max", "aliases": ["first name", "vorname"]},
+        "email": {"value": "max@example.com", "aliases": ["email", "e-mail"]},
+        "salary_expectation": {"value": "70000 EUR",
+                               "aliases": ["salary expectation", "gehaltsvorstellung"]},
+        "german_level": {"value": "B1", "aliases": ["german level"]},
+        "earliest_start": {"value": "Immediately", "date_value": "+30 days",
+                           "aliases": ["earliest start date"]},
+    },
+    "consents": {"auto_accept_aliases": ["i agree to the terms"]},
+    "never_fill": ["date of birth / geburtsdatum", "gender"],
+}
+
+
+@unittest.skipUnless(HAS_FASTAPI, "fastapi not installed on this host")
+class FillPlanTest(unittest.TestCase):
+    """POST /fill-plan — snapshot-free fact fill (no DB/snapshot needed)."""
+
+    def setUp(self):
+        os.environ["APPLY_API_TOKEN"] = TOKEN
+        import apply_api
+        from utils.profile_loader import CandidateProfile
+        self.apply_api = apply_api
+        apply_api._profile = lambda: CandidateProfile(PROFILE_FIXTURE)  # type: ignore[assignment]
+        self.client = TestClient(apply_api.app)
+
+    def tearDown(self):
+        os.environ.pop("APPLY_API_TOKEN", None)
+
+    def _post(self, fields):
+        return self.client.post("/fill-plan", json={"fields": fields},
+                                headers={"Authorization": f"Bearer {TOKEN}"})
+
+    def _plan(self, fields):
+        r = self._post(fields)
+        self.assertEqual(r.status_code, 200)
+        return r.json()
+
+    def test_requires_token(self):
+        self.assertEqual(self.client.post("/fill-plan", json={"fields": []}).status_code, 401)
+
+    def test_fact_matched_by_label(self):
+        plan = self._plan([{"label": "First Name *", "name": "fn", "type": "text"}])
+        self.assertEqual(len(plan["fills"]), 1)
+        fill = plan["fills"][0]
+        self.assertEqual(fill["value"], "Max")
+        self.assertEqual(fill["action"], "fill")
+        self.assertEqual(fill["source"], "profile:first_name")
+        self.assertFalse(fill["needs_review"])
+
+    def test_match_falls_back_to_input_name(self):
+        # label is blank (join-style), but the input name carries the alias
+        plan = self._plan([{"label": "", "name": "email", "type": "email"}])
+        self.assertEqual(plan["fills"][0]["value"], "max@example.com")
+
+    def test_unmatched_left_blank(self):
+        plan = self._plan([{"label": "Describe your biggest failure", "name": "q1",
+                            "type": "textarea"}])
+        self.assertEqual(plan["fills"], [])
+        self.assertEqual(len(plan["unmatched"]), 1)
+        self.assertEqual(plan["unmatched"][0]["label"], "Describe your biggest failure")
+
+    def test_never_fill_skipped_not_invented(self):
+        plan = self._plan([{"label": "Date of birth", "name": "dob", "type": "text"},
+                           {"label": "Gender", "name": "g", "type": "text"}])
+        self.assertEqual(plan["fills"], [])
+        self.assertEqual(len(plan["skipped_never_fill"]), 2)
+
+    def test_consent_checkbox_auto_checked(self):
+        plan = self._plan([{"label": "I agree to the terms and conditions",
+                            "name": "c", "type": "checkbox"}])
+        fill = plan["fills"][0]
+        self.assertEqual(fill["action"], "check")
+        self.assertTrue(fill["value"])
+        self.assertEqual(fill["source"], "profile:consent")
+
+    def test_select_resolves_to_real_option(self):
+        plan = self._plan([{"label": "German level", "name": "de", "type": "select",
+                            "options": ["A2", "B1 - intermediate", "C1"]}])
+        fill = plan["fills"][0]
+        self.assertEqual(fill["action"], "select_option")
+        self.assertEqual(fill["value"], "B1 - intermediate")   # matched, not raw "B1"
+        self.assertFalse(fill["needs_review"])
+
+    def test_select_no_matching_option_flags_review(self):
+        plan = self._plan([{"label": "German level", "name": "de", "type": "select",
+                            "options": ["Bitte wählen", "Fließend"]}])
+        fill = plan["fills"][0]
+        self.assertTrue(fill["needs_review"])   # nothing fit → human decides
+        self.assertEqual(fill["value"], "B1")   # value preserved, not silently wrong
+
+    def test_date_field_resolves_to_concrete_date(self):
+        plan = self._plan([{"label": "Earliest start date", "name": "start", "type": "text"}])
+        # +30 days from today → an ISO date, not the literal "Immediately"
+        value = plan["fills"][0]["value"]
+        self.assertRegex(value, r"^\d{4}-\d{2}-\d{2}$")
+
+    def test_empty_fields_empty_plan(self):
+        plan = self._plan([])
+        self.assertEqual(plan, {"fills": [], "skipped_never_fill": [], "unmatched": []})
+
+
 if __name__ == "__main__":
     unittest.main()

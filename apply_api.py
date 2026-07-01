@@ -10,6 +10,12 @@ single `submitted` POST, which only advances the existing draft→submitted
 lifecycle transition (and books the job applied + abandons same-company siblings,
 via mark_submitted).
 
+`POST /fill-plan` is snapshot-free: the extension sends fields it live-extracted
+from any page (incl. forms Stage 1 never saw) and gets back which map to a
+profile fact. Facts are job-independent, so no job_id/snapshot is needed; open
+questions have no fact and stay blank (never invented). See memory
+snapshot-free-autofill.
+
 Security: bind to 127.0.0.1 only (compose publishes 127.0.0.1:8531), require a
 bearer token from APPLY_API_TOKEN. It serves the CV + personal data, so it must
 never be exposed beyond host-loopback.
@@ -25,6 +31,7 @@ from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from utils.db import init_db
 from utils.profile_loader import load_profile
@@ -70,6 +77,42 @@ def _cv_path() -> Path:
     return load_profile().cv_path
 
 
+@lru_cache(maxsize=1)
+def _profile():
+    """The candidate profile (facts + aliases). Cached; tests monkeypatch this."""
+    return load_profile()
+
+
+# ── /fill-plan (snapshot-free) ───────────────────────────────────────────────
+class FillField(BaseModel):
+    """One live-extracted form field the extension found on the page."""
+    label: str = ""
+    name: str = ""
+    type: str = "text"
+    options: list[str] | None = None
+
+
+class FillPlanRequest(BaseModel):
+    fields: list[FillField]
+
+
+def _resolve_option(value: str, options: list[str] | None) -> tuple[str, bool]:
+    """Map a profile value onto a <select>'s real option text. Returns
+    (option_text, needs_review). No match → keep the value but flag it, so a
+    dropdown mismatch (the German 'Bitte wählen' case) never fills silently."""
+    if not options:
+        return value, False
+    vlow = value.strip().lower()
+    for opt in options:                       # exact first
+        if opt.strip().lower() == vlow:
+            return opt, False
+    for opt in options:                       # then containment either way
+        olow = opt.strip().lower()
+        if olow and (vlow in olow or olow in vlow):
+            return opt, False
+    return value, True                        # nothing fit → human decides
+
+
 # ── endpoints ──────────────────────────────────────────────────────────────────
 @app.get("/pending", dependencies=[Depends(require_token)])
 def pending():
@@ -98,6 +141,47 @@ def pending():
         return out
     finally:
         conn.close()
+
+
+@app.post("/fill-plan", dependencies=[Depends(require_token)])
+def fill_plan(req: FillPlanRequest):
+    """Snapshot-free fact fill: the extension sends the fields it live-extracted
+    from *any* page, we map each to a profile fact (job-independent, so no
+    job_id/snapshot needed) and return a plan. Open/job-specific fields have no
+    fact and come back `unmatched` (left blank for the human — never invented).
+
+    Matching runs server-side (single source of truth): match_field for facts,
+    is_never_fill to leave sensitive fields blank+flagged, is_auto_consent for
+    tickable consents. resolve_date turns date-picker fields into a concrete date.
+    """
+    profile = _profile()
+    fills, skipped, unmatched = [], [], []
+    for f in req.fields:
+        label = f.label or f.name
+        ident = {"label": f.label, "name": f.name}
+        if profile.is_never_fill(label):
+            skipped.append(ident)                     # blank + flag, by policy
+            continue
+        if f.type in ("checkbox", "radio") and profile.is_auto_consent(label):
+            fills.append({**ident, "action": "check", "value": True,
+                          "source": "profile:consent", "needs_review": False})
+            continue
+        match = profile.match_field(label)
+        if match is None and f.name:
+            match = profile.match_field(f.name)       # fall back to the input name
+        if match is None:
+            unmatched.append(ident)                   # no fact → leave blank
+            continue
+        value = match.resolve_date() or match.value   # date fields → concrete date
+        needs_review = False
+        if f.type == "select":
+            value, needs_review = _resolve_option(value, f.options)
+            action = "select_option"
+        else:
+            action = "fill"
+        fills.append({**ident, "action": action, "value": value,
+                      "source": f"profile:{match.key}", "needs_review": needs_review})
+    return {"fills": fills, "skipped_never_fill": skipped, "unmatched": unmatched}
 
 
 @app.get("/snapshot/{snapshot_id}", dependencies=[Depends(require_token)])
