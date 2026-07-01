@@ -6,8 +6,13 @@
  * label-match fallback, React-safe native setter) is the spike's, unchanged —
  * only the data source moved from the clipboard to the sidecar.
  *
- * Out of scope here (later tasks): CV upload (task 3), auto-mark-submitted
- * (task 4), gated auto-submit (task 5), iframe traversal (top frame only).
+ * Also "Fill facts from profile" (runProfileFill): a snapshot-free mode that
+ * works on ANY page — live-extract the fields, ask the sidecar (/fill-plan)
+ * which map to a profile fact, fill those; open questions stay blank. This is
+ * what helps on forms Stage 1 never saw. See memory snapshot-free-autofill.
+ *
+ * Out of scope here: CV upload for the profile mode, gated auto-submit,
+ * iframe traversal (top frame only), custom-JS widgets / dropzones.
  */
 
 "use strict";
@@ -65,6 +70,8 @@ function injectPanel() {
     "<b>job-hunter autofill</b>" +
     '<button id="jh-close" style="' + btn + '">×</button></div>' +
     '<button id="jh-fill" style="' + btn + ';width:100%" disabled>checking…</button>' +
+    '<button id="jh-fill-profile" style="' + btn +
+    ';width:100%;margin-top:6px">Fill facts from profile</button>' +
     '<button id="jh-submitted" style="' + btn +
     ';width:100%;margin-top:6px;display:none">✓ I submitted it</button>' +
     '<div id="jh-status" style="margin-top:6px;color:#888"></div>' +
@@ -72,6 +79,8 @@ function injectPanel() {
     "</div>";
   document.documentElement.appendChild(HOST);
   $("#jh-fill").addEventListener("click", run);
+  // Works on ANY page, no snapshot needed — fills only profile facts.
+  $("#jh-fill-profile").addEventListener("click", runProfileFill);
   // The authoritative bookkeeping signal: the human, who just submitted, says so.
   $("#jh-submitted").addEventListener("click", () => MATCH && bookSubmitted(MATCH.snapshot_id));
   $("#jh-close").addEventListener("click", closePanel);
@@ -193,6 +202,86 @@ async function fillActions(out, actions) {
       label_match: r.labFound, agree: r.agree, filledBy: r.filledBy, filled: r.filled,
     }))
   );
+}
+
+// ── snapshot-free: fill facts from the profile on ANY page ────────────────────
+// No snapshot/job_id needed — facts (name/email/visa/salary…) are the same for
+// every application. Live-extract the fields, ask the sidecar which map to a
+// fact, fill those; open/job-specific questions come back unmatched and stay
+// blank (never invented). The human answers those, then checks & submits.
+async function runProfileFill() {
+  const out = $("#jh-out");
+  if (!out) return;
+  const els = fillableFields();
+  if (!els.length) {
+    out.innerHTML = red("no fillable fields on this page");
+    return;
+  }
+  // Send label/name/type/options; keep a name→element map to apply the plan back.
+  // name is made unique (jh-idx-N fallback) so the map is unambiguous.
+  const byName = new Map();
+  const fields = els.map((el, i) => {
+    const name = el.name || el.id || "jh-idx-" + i;
+    if (!byName.has(name)) byName.set(name, el);
+    return {
+      label: collapse(fieldLabel(el)).slice(0, 140),
+      name,
+      type: el.tagName === "SELECT" ? "select" : (el.type || "text").toLowerCase(),
+      options:
+        el.tagName === "SELECT"
+          ? [...el.options].map((o) => o.textContent.trim()).filter(Boolean).slice(0, 25)
+          : undefined,
+    };
+  });
+
+  out.textContent = "matching " + fields.length + " fields to profile…";
+  const res = await bg({ type: "fill-plan", fields });
+  if (!res || !res.ok) {
+    out.innerHTML = red("fill-plan failed: " + ((res && res.error) || "?"));
+    return;
+  }
+
+  const plan = res.data;
+  let filled = 0;
+  const reviewNotes = [];
+  for (const f of plan.fills) {
+    const el = byName.get(f.name);
+    if (!el) continue;
+    let ok;
+    if (f.action === "check") {
+      setNativeChecked(el, true);
+      ok = el.checked === true;
+    } else if (f.action === "select_option") {
+      ok = fillSelect(el, f.value);
+    } else {
+      setNativeValue(el, f.value == null ? "" : String(f.value));
+      ok = true;
+    }
+    if (ok) filled++;
+    if (f.needs_review) reviewNotes.push((f.label || f.name) + " → confirm the dropdown");
+  }
+  out.innerHTML = renderProfileResult(fields.length, filled, plan, reviewNotes);
+}
+
+function renderProfileResult(total, filled, plan, reviewNotes) {
+  const summary =
+    '<div style="margin:6px 0;color:#ddd">filled <b>' + filled + "</b>/" + total +
+    " · unmatched " + plan.unmatched.length +
+    " · never-fill " + plan.skipped_never_fill.length +
+    (reviewNotes.length ? ' · <span style="color:#e0a000">review ' + reviewNotes.length + "</span>" : "") +
+    "</div>";
+  const hint =
+    '<div style="color:#888">unmatched = open / job-specific questions — left ' +
+    "blank on purpose. Answer them yourself, then check &amp; submit.</div>";
+  const review = reviewNotes.length
+    ? '<div style="margin-top:4px;color:#e0a000">' +
+      reviewNotes.map((n) => "⚠ " + esc(n)).join("<br>") + "</div>"
+    : "";
+  return summary + hint + review;
+}
+
+function collapse(s) {
+  return (s || "").replace(/\s+/g, " ").trim();
 }
 
 // Drop the CV bytes into a real <input type=file> via DataTransfer. Custom

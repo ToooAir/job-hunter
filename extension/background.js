@@ -48,6 +48,14 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     } else if (msg.type === "submitted") {
       const r = await api("/snapshot/" + msg.id + "/submitted", { method: "POST" });
       sendResponse(r.ok === false ? r : { ok: true, data: await r.json() });
+    } else if (msg.type === "fill-plan") {
+      // snapshot-free: send live-extracted fields, get back which map to a fact
+      const r = await api("/fill-plan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fields: msg.fields }),
+      });
+      sendResponse(r.ok === false ? r : { ok: true, data: await r.json() });
     } else {
       sendResponse({ ok: false, error: "unknown message type: " + msg.type });
     }
