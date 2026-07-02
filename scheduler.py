@@ -13,9 +13,10 @@ signals a transient network failure: the run stays open and is retried with
 exponential backoff. Any other non-zero exit marks the run failed and the
 next attempt waits the normal interval.
 
-Stage 1 draft generation (apply_stage1.py) runs last as a BEST-EFFORT stage:
-it is downstream value-add, so its failure is logged loudly but does not fail
-the run — scraping + scoring (the core) still count as a successful catch-up.
+ats_scan (ATS classification + liveness refresh) and Stage 1 draft generation
+(apply_stage1.py) run last as BEST-EFFORT stages: they are downstream
+value-add, so their failure is logged loudly but does not fail the run —
+scraping + scoring (the core) still count as a successful catch-up.
 """
 
 import logging
@@ -59,10 +60,14 @@ EX_TEMPFAIL        = 75   # contract with phase2_scorer.EXIT_TRANSIENT
 BACKOFF_BASE_S     = 300  # first retry after a transient failure: 5 min
 BACKOFF_MAX_S      = 3600
 
-STAGES = ("phase1_ingestor.py", "phase2_scorer.py", "apply_stage1.py")
+STAGES = ("phase1_ingestor.py", "phase2_scorer.py", "ats_scan.py", "apply_stage1.py")
 # Best-effort stages: a non-zero exit is logged but does not fail the run
 # (the core scrape+score already succeeded by the time these run).
-BEST_EFFORT_STAGES = frozenset({"apply_stage1.py"})
+BEST_EFFORT_STAGES = frozenset({"ats_scan.py", "apply_stage1.py"})
+# Extra CLI args per stage. ats_scan must run before apply_stage1: it backfills
+# jobs.ats, and under APPLY_ADDRESSABLE_ONLY a NULL-ats job is dropped before
+# the needs_recheck branch, so Pass A alone would never classify it.
+STAGE_ARGS = {"ats_scan.py": ("--write-db",)}
 
 LOG_FILE = Path(__file__).parent / "logs" / "pipeline.log"
 
@@ -84,6 +89,8 @@ _DOCKER_LOG_PATTERNS = (
     "完成：",        # phase2: 完成：N 筆成功，M 筆失敗 (note: colon avoids false matches)
     "級：",          # phase2: A 級/B 級/C 級 breakdown
     "en_required",   # phase2: language breakdown line
+    "掃描 ",         # ats_scan: pool size line (掃描 N 筆德國境內 …)
+    "已寫入 DB",     # ats_scan: write-back confirmation (已寫入 DB：N 筆 …)
     "Stage 1",       # apply_stage1: queue size line + 對帳 accounting header
 )
 
@@ -95,7 +102,7 @@ def _stream_phase(script: str, log_file) -> int:
     Returns the exit code.
     """
     proc = subprocess.Popen(
-        [sys.executable, "-u", script],  # -u: unbuffered → real-time lines
+        [sys.executable, "-u", script, *STAGE_ARGS.get(script, ())],  # -u: unbuffered → real-time lines
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,         # merge stderr into stdout
         text=True,
