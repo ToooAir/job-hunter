@@ -200,9 +200,9 @@ def _friction(snap: dict) -> tuple[int, str]:
 _ATTENTION_SOURCES = {"llm", "profile:salary_expectation"}
 
 # Upload slots nothing can fill automatically: the form wants extra documents
-# (Zeugnisse, references, a cover-letter PDF). The CV is auto-mapped to an
-# upload action; everything else a kind=file slot asks for lands in `unfilled`
-# under one of these reasons (field_mapper._map_file).
+# (Zeugnisse, references, a cover-letter PDF). Legacy drafts (pre-2026-07-02,
+# retired field_mapper) carry these reasons in `unfilled`; new drafts have an
+# empty payload, so this renders nothing for them.
 _DOC_SLOT_REASONS = {"attachment-unmapped", "cover-letter-upload"}
 
 

@@ -17,9 +17,9 @@ retired 2026-07-02: its selector-replay payload is superseded by the
 extension's live extraction (POST /fill-plan), and its pre-generated
 per-form answers were used by 0 of 74 historical snapshots' submissions.
 Facts are filled live at apply time; open questions are answered by the
-human (the cover letter below is their raw material). utils/field_mapper,
-apply_llm.map_pending_fields and agentic_mapper stay on disk (frozen) —
-verifier and spike tools still import parts of them.
+human (the cover letter below is their raw material). The mapper modules
+(field_mapper, agentic_mapper, the mapping half of apply_llm) and the
+agentic spike tools were deleted with it — git history keeps them.
 
 Jobs whose verdict is junk (external-board, no-form, nav-error, email-only,
 shadow-only, account-wall) skip straight to tier assignment: tier plus an
