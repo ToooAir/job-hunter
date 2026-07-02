@@ -67,19 +67,19 @@ class TestGraphWiring(unittest.TestCase):
         app = build_graph()
         self.assertIsNotNone(app)
 
-    def test_fields_present_visits_full_chain_in_order(self):
+    def test_ok_verdict_visits_full_chain_in_order(self):
         seen = []
         app = build_graph(overrides=_recorders(seen))
         app.invoke({"job": {"id": "j1"}, "verdict": "ok", "fields": FIELDS_SAMPLE})
         self.assertEqual(seen, list(NODE_ORDER))
 
-    def test_no_fields_skips_mapping_chain(self):
+    def test_junk_verdict_skips_content_chain(self):
         seen = []
         app = build_graph(overrides=_recorders(seen))
         app.invoke({"job": {"id": "j2"}, "verdict": "external-board", "fields": []})
         self.assertEqual(seen, ["assign_tier", "save_draft"])
 
-    def test_captcha_with_fields_still_gets_full_payload_chain(self):
+    def test_captcha_still_gets_content_chain(self):
         seen = []
         app = build_graph(overrides=_recorders(seen))
         app.invoke({"job": {"id": "j3"}, "verdict": "captcha", "fields": FIELDS_SAMPLE})
@@ -104,10 +104,10 @@ class TestEndToEndDryRun(unittest.TestCase):
     ]
 
     def test_full_pipeline_produces_reviewed_tier2_draft(self):
+        # mapping chain retired: no field actions, only the CL is carried and
+        # audited; the completeness gate (no CV action) keeps the review floor
         client = FakeClient([
-            json.dumps({"fields": [{"index": 0, "decision": "open_question"}]}),
-            json.dumps({"answers": [{"index": 0, "answer": "Because backends."}]}),
-            json.dumps({"pass": True, "issues": []}),
+            json.dumps({"pass": True, "issues": []}),  # verifier audits the CL
         ])
         app = build_graph()
         out = app.invoke(
@@ -115,11 +115,9 @@ class TestEndToEndDryRun(unittest.TestCase):
              "apply_url": "https://example.com/apply"},
             config=config_for(client),
         )
-        values = {a["selector"]: a["value"] for a in out["actions"]}
-        self.assertEqual(values, {"#vn": "Max", "#why": "Because backends."})
-        self.assertEqual(out["tier"], 2)  # CL + LLM answer → review floor
+        self.assertNotIn("actions", out)  # no fill payload is generated anymore
+        self.assertEqual(out["tier"], 2)
         self.assertEqual(out["cover_letter"], "I build backends.")
-        self.assertEqual(out["custom_qa"][0]["answer"], "Because backends.")
         self.assertTrue(out["verifier_report"]["pass"])
         self.assertNotIn("snapshot_id", out)  # dry run wrote nothing
         self.assertEqual(out["apply_url"], "https://example.com/apply")
@@ -144,60 +142,6 @@ class TestEndToEndDryRun(unittest.TestCase):
             config=config_for(client),
         )
         self.assertEqual(out["tier"], 3)
-        self.assertEqual(client.calls, [])
-
-
-@unittest.skipUnless(HAS_LANGGRAPH, "langgraph not installed (container-only dep)")
-class TestMapAgentic(unittest.TestCase):
-    """Hybrid fallback: agentic fills only the gaps, never overrides the
-    deterministic/LLM passes, and every adopted action is needs_review."""
-
-    FIELDS = [
-        {"selector": "#vn", "kind": "text", "label": "Vorname"},
-        {"selector": "#q", "kind": "textarea", "label": "cards[x][f0]",
-         "context_hint": "What languages do you speak?"},
-    ]
-
-    def _state(self):
-        # deterministic already filled #vn; #q was left unfilled (opaque label)
-        return {"job": {"id": "j", "title": "T", "company": "C"},
-                "fields": self.FIELDS,
-                "actions": [{"selector": "#vn", "action": "fill", "value": "Max",
-                             "source": "profile:first_name", "needs_review": False}],
-                "unfilled": [{"selector": "#q", "label": "cards[x][f0]",
-                              "reason": "llm-needs-human", "required": False}],
-                "custom_qa": []}
-
-    def test_adopts_gap_only_and_keeps_deterministic(self):
-        from utils.apply_graph import map_agentic
-        # agentic answers both ids; #vn is already actioned so it must be dropped
-        client = FakeClient([json.dumps({"fields": [
-            {"id": 0, "action": "fill", "value": "WRONG — must not override"},
-            {"id": 1, "action": "fill", "value": "German, English"},
-        ]})])
-        out = map_agentic(self._state(), config_for(client))
-        by_sel = {a["selector"]: a for a in out["actions"]}
-        self.assertEqual(by_sel["#vn"]["value"], "Max")            # deterministic kept
-        self.assertEqual(by_sel["#q"]["value"], "German, English")  # gap filled
-        self.assertEqual(by_sel["#q"]["source"], "agentic")
-        self.assertTrue(by_sel["#q"]["needs_review"])               # → Tier 2 only
-        self.assertFalse(any(u["selector"] == "#q" for u in out["unfilled"]))
-
-    def test_kill_switch_skips_without_calling_llm(self):
-        from utils.apply_graph import map_agentic
-        client = FakeClient([])  # raises if called
-        cfg = {"configurable": {"profile": PROFILE, "client": client, "model": "m",
-                                "enable_agentic_fallback": False}}
-        self.assertEqual(map_agentic(self._state(), cfg), {})
-        self.assertEqual(client.calls, [])
-
-    def test_no_gap_makes_no_llm_call(self):
-        from utils.apply_graph import map_agentic
-        client = FakeClient([])  # raises if called
-        state = self._state()
-        state["actions"].append({"selector": "#q", "action": "fill", "value": "x",
-                                 "source": "llm", "needs_review": True})
-        self.assertEqual(map_agentic(state, config_for(client)), {})
         self.assertEqual(client.calls, [])
 
 
