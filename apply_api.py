@@ -86,6 +86,8 @@ def _profile():
 # ── /fill-plan (snapshot-free) ───────────────────────────────────────────────
 class FillField(BaseModel):
     """One live-extracted form field the extension found on the page."""
+    id: str = ""     # client-side element key, echoed back — `name` alone is
+    #                  ambiguous (radio groups share one name across options)
     label: str = ""
     name: str = ""
     type: str = "text"
@@ -158,7 +160,7 @@ def fill_plan(req: FillPlanRequest):
     fills, skipped, unmatched = [], [], []
     for f in req.fields:
         label = f.label or f.name
-        ident = {"label": f.label, "name": f.name}
+        ident = {"id": f.id, "label": f.label, "name": f.name}
         if profile.is_never_fill(label):
             skipped.append(ident)                     # blank + flag, by policy
             continue
@@ -205,9 +207,7 @@ def snapshot(snapshot_id: int):
     }
 
 
-@app.get("/snapshot/{snapshot_id}/cv", dependencies=[Depends(require_token)])
-def snapshot_cv(snapshot_id: int):
-    """The CV bytes to drop into the form's file input."""
+def _cv_response() -> Response:
     path = _cv_path()
     if not path.is_file():
         raise HTTPException(status_code=404, detail=f"cv not found: {path}")
@@ -216,6 +216,19 @@ def snapshot_cv(snapshot_id: int):
         media_type="application/pdf",
         headers={"Content-Disposition": f'inline; filename="{path.name}"'},
     )
+
+
+@app.get("/cv", dependencies=[Depends(require_token)])
+def profile_cv():
+    """The CV bytes, snapshot-free — one CV per candidate, so the profile-fill
+    mode (any page, no draft) can attach it to resume/CV file inputs too."""
+    return _cv_response()
+
+
+@app.get("/snapshot/{snapshot_id}/cv", dependencies=[Depends(require_token)])
+def snapshot_cv(snapshot_id: int):
+    """The CV bytes to drop into the form's file input."""
+    return _cv_response()
 
 
 @app.post("/snapshot/{snapshot_id}/submitted", dependencies=[Depends(require_token)])

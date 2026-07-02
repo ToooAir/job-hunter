@@ -107,6 +107,14 @@ class ApplyApiTest(unittest.TestCase):
         self.assertEqual(r.headers["content-type"], "application/pdf")
         self.assertTrue(r.content.startswith(b"%PDF"))
 
+    def test_profile_cv_is_snapshot_free(self):
+        # same CV, no snapshot id — the profile-fill mode's upload source
+        r = self.client.get("/cv", headers=self._auth())
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.headers["content-type"], "application/pdf")
+        self.assertTrue(r.content.startswith(b"%PDF"))
+        self.assertEqual(self.client.get("/cv").status_code, 401)
+
     def test_submitted_books_job_and_is_idempotent(self):
         r = self.client.post(f"/snapshot/{self.sid}/submitted", headers=self._auth())
         self.assertEqual(r.status_code, 200)
@@ -165,6 +173,12 @@ class FillPlanTest(unittest.TestCase):
 
     def test_requires_token(self):
         self.assertEqual(self.client.post("/fill-plan", json={"fields": []}).status_code, 401)
+
+    def test_element_id_echoed_back(self):
+        # radio groups share one `name` — the client keys elements by `id`
+        plan = self._plan([{"id": "jh-7", "label": "First Name", "name": "fn",
+                            "type": "text"}])
+        self.assertEqual(plan["fills"][0]["id"], "jh-7")
 
     def test_fact_matched_by_label(self):
         plan = self._plan([{"label": "First Name *", "name": "fn", "type": "text"}])
