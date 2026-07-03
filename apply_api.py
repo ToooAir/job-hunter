@@ -24,6 +24,7 @@ Run (in the container, via compose service `apply_api`):
     uvicorn apply_api:app --host 0.0.0.0 --port 8531
 """
 
+import logging
 import os
 from functools import lru_cache
 from pathlib import Path
@@ -37,6 +38,11 @@ from utils.apply_llm import _chat_json, _sanitize, build_profile_facts
 from utils.db import get_focus, init_db
 from utils.profile_loader import load_profile
 from utils.snapshot_io import append_custom_qa, get_snapshot, mark_submitted
+
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s [%(levelname)s] %(message)s",
+                    datefmt="%Y-%m-%dT%H:%M:%S")
+log = logging.getLogger("apply_api")
 
 app = FastAPI(title="job-hunter apply api", version="1.0")
 
@@ -104,21 +110,24 @@ class FillField(BaseModel):
 
 class FillPlanRequest(BaseModel):
     fields: list[FillField]
+    page_host: str = ""   # measurement only: which site this fill ran on
 
 
-def _resolve_option(value: str, options: list[str] | None) -> tuple[str, bool]:
-    """Map a profile value onto a <select>'s real option text. Returns
-    (option_text, needs_review). No match → keep the value but flag it, so a
-    dropdown mismatch (the German 'Bitte wählen' case) never fills silently."""
+def _resolve_option(value: str, options: list[str] | None,
+                    synonyms: tuple[str, ...] = ()) -> tuple[str, bool]:
+    """Map a profile value onto a <select>'s real option text. `synonyms`
+    are the fact's option_aliases (value "Germany", dropdown "Deutschland").
+    Returns (option_text, needs_review). No match → keep the value but flag
+    it, so a dropdown mismatch (the 'Bitte wählen' case) never fills silently."""
     if not options:
         return value, False
-    vlow = value.strip().lower()
-    for opt in options:                       # exact first
-        if opt.strip().lower() == vlow:
+    wants = [value.strip().lower()] + [s.strip().lower() for s in synonyms]
+    for opt in options:                       # exact first (value, then synonyms)
+        if opt.strip().lower() in wants:
             return opt, False
     for opt in options:                       # then containment either way
         olow = opt.strip().lower()
-        if olow and (vlow in olow or olow in vlow):
+        if olow and any(w in olow or olow in w for w in wants if w):
             return opt, False
     return value, True                        # nothing fit → human decides
 
@@ -185,12 +194,24 @@ def fill_plan(req: FillPlanRequest):
         value = match.resolve_date() or match.value   # date fields → concrete date
         needs_review = False
         if f.type == "select":
-            value, needs_review = _resolve_option(value, f.options)
+            value, needs_review = _resolve_option(value, f.options,
+                                                  match.option_aliases)
             action = "select_option"
         else:
             action = "fill"
         fills.append({**ident, "action": action, "value": value,
                       "source": f"profile:{match.key}", "needs_review": needs_review})
+
+    # Measurement (improvement bucket 0): which sites fail, and how — this
+    # log decides whether the LLM-extraction fallback / widget adapters are
+    # ever worth building. Labels only; never values.
+    log.info(
+        "fill-plan host=%s fields=%d fills=%d review=%d unmatched=%d never=%d",
+        req.page_host or "?", len(req.fields), len(fills),
+        sum(1 for x in fills if x["needs_review"]), len(unmatched), len(skipped))
+    if unmatched:
+        log.info("fill-plan unmatched: %s",
+                 [(u["label"] or u["name"])[:60] for u in unmatched])
     return {"fills": fills, "skipped_never_fill": skipped, "unmatched": unmatched}
 
 

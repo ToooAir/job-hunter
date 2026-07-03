@@ -60,7 +60,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       const r = await api("/fill-plan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fields: msg.fields }),
+        body: JSON.stringify({ fields: msg.fields, page_host: msg.page_host || "" }),
       });
       sendResponse(r.ok === false ? r : { ok: true, data: await r.json() });
     } else {

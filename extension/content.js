@@ -240,7 +240,7 @@ async function runProfileFill() {
   });
 
   out.textContent = "matching " + fields.length + " fields to profile…";
-  const res = await bg({ type: "fill-plan", fields });
+  const res = await bg({ type: "fill-plan", fields, page_host: pageHost() });
   if (!res || !res.ok) {
     out.innerHTML = red("fill-plan failed: " + ((res && res.error) || "?"));
     return;

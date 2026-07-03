@@ -138,6 +138,8 @@ PROFILE_FIXTURE = {
         "email": {"value": "max@example.com", "aliases": ["email", "e-mail"]},
         "salary_expectation": {"value": "70000 EUR",
                                "aliases": ["salary expectation", "gehaltsvorstellung"]},
+        "country": {"value": "Germany", "aliases": ["country", "land"],
+                    "option_aliases": ["Deutschland", "DE"]},
         "german_level": {"value": "B1", "aliases": ["german level"]},
         "earliest_start": {"value": "Immediately", "date_value": "+30 days",
                            "aliases": ["earliest start date"]},
@@ -221,6 +223,14 @@ class FillPlanTest(unittest.TestCase):
         fill = plan["fills"][0]
         self.assertEqual(fill["action"], "select_option")
         self.assertEqual(fill["value"], "B1 - intermediate")   # matched, not raw "B1"
+        self.assertFalse(fill["needs_review"])
+
+    def test_select_resolves_via_option_alias(self):
+        # value "Germany", dropdown speaks German — option_aliases bridge it
+        plan = self._plan([{"label": "Country", "name": "c", "type": "select",
+                            "options": ["Bitte wählen", "Deutschland", "Österreich"]}])
+        fill = plan["fills"][0]
+        self.assertEqual(fill["value"], "Deutschland")
         self.assertFalse(fill["needs_review"])
 
     def test_select_no_matching_option_flags_review(self):
