@@ -18,6 +18,7 @@ from utils.db import (
     init_db, upsert_job, update_status, set_follow_up, set_notes,
     add_interview_record, get_interview_records, delete_interview_record,
     get_company_applications, auto_expire_stale_jobs, auto_ghost_stale_applications,
+    get_focus, set_focus,
 )
 
 # ── Page config ────────────────────────────────────────────────────────────────
@@ -192,6 +193,9 @@ STRINGS: dict[str, dict[str, str]] = {
         "copy_cl_btn":        "📋 Copy Cover Letter",
         "apply_btn":          "✅ Applied",
         "skip_btn":           "⏭️ Skip",
+        "focus_btn":          "🎯 Applying",
+        "focus_set":          "🎯 focus set: {} — the answer panel grounds on this job",
+        "focus_now":          "🎯 applying: {} — {} ({}) — the extension's answer panel grounds on this job",
         "unskip_btn":         "↩️ Restore to Review",
         "ghosted_revive_hint": "This job was auto-ghosted. If you received an interview invite, click below.",
         "rescore_btn":        "🔄 Re-score",
@@ -422,6 +426,9 @@ STRINGS: dict[str, dict[str, str]] = {
         "copy_cl_btn":        "📋 複製 Cover Letter",
         "apply_btn":          "✅ 已投遞",
         "skip_btn":           "⏭️ 略過",
+        "focus_btn":          "🎯 我要投這筆",
+        "focus_set":          "🎯 已設定投遞焦點:{} — 插件答案面板以此職缺為根據",
+        "focus_now":          "🎯 投遞中:{} — {}({})— 插件答案面板以此職缺為根據",
         "unskip_btn":         "↩️ 還原至待審閱",
         "ghosted_revive_hint": "此職缺已被自動標記為無聲卡。若收到面試邀請，請點擊下方按鈕。",
         "rescore_btn":        "🔄 重新評分",
@@ -894,6 +901,15 @@ conn = get_conn()
 auto_expire_stale_jobs(conn)
 auto_ghost_stale_applications(conn)
 config = load_config()
+
+# current answer-panel focus — visible so a stale 🎯 can't misground quietly
+_focus = get_focus(conn)
+if _focus:
+    _fjob = conn.execute("SELECT company, title FROM jobs WHERE id = ?",
+                         (_focus["job_id"],)).fetchone()
+    if _fjob:
+        st.info(T("focus_now").format(
+            _fjob["company"], _fjob["title"], _focus["updated_at"][11:16]))
 
 # ── KPI row ────────────────────────────────────────────────────────────────────
 
@@ -1453,9 +1469,21 @@ with right:
                 st.rerun()
 
             if cur_status in ("scored", "un-scored", "error"):
-                btn_cols = st.columns(5)
+                btn_cols = st.columns(6)
                 with btn_cols[0]:
                     st.link_button(T("open_job_btn"), job["url"], use_container_width=True)
+                with btn_cols[5]:
+                    # answer-panel focus (ANSWER_PANEL_PLAN.md): "I'm applying
+                    # to THIS one" — the extension grounds answers on it. Jobs
+                    # without a draft snapshot focus fine (trail just skips).
+                    if st.button(T("focus_btn"), use_container_width=True,
+                                 key=f"focus_{job['id']}"):
+                        snap = conn.execute(
+                            "SELECT id FROM application_snapshots WHERE job_id=?"
+                            " AND status IN ('draft','submitted')"
+                            " ORDER BY id DESC LIMIT 1", (job["id"],)).fetchone()
+                        set_focus(conn, snap["id"] if snap else None, job["id"])
+                        st.toast(T("focus_set").format(job["company"]))
                 with btn_cols[1]:
                     if st.button(T("copy_cl_btn"), use_container_width=True, key=f"copy_{job['id']}"):
                         try:

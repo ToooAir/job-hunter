@@ -633,7 +633,11 @@ FOCUS_KEY = "apply_focus"
 FOCUS_MAX_AGE_H = 2  # one sitting; staleness enforced read-side, no cleaner
 
 
-def set_focus(conn: sqlite3.Connection, snapshot_id: int, job_id: str) -> None:
+def set_focus(conn: sqlite3.Connection, snapshot_id: int | None,
+              job_id: str) -> None:
+    # snapshot_id None = job without a draft (focused from the main
+    # dashboard): /answer grounding works the same, only the custom_qa
+    # trail has nowhere to land.
     conn.execute(
         "INSERT INTO app_state (key, value, updated_at) VALUES (?, ?, ?) "
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value, "
