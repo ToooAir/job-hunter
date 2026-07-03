@@ -401,6 +401,21 @@ class AnswerTest(unittest.TestCase):
         self.assertEqual(body["answer"], "€82,000 gross per year (negotiable)")
         self.assertTrue(any("€82,000" in n for n in body["notes"]))
 
+    def test_salary_generates_estimate_on_demand(self):
+        # the workflow moment for an estimate IS the salary question — no
+        # pre-generated estimate exists, so /answer must create + use one
+        from unittest import mock
+        from tests.test_apply_llm import FakeClient
+        from utils.db import set_focus
+        set_focus(self.conn, self.sids["lever-1"], "lever-1")
+        self.apply_api._llm = lambda: (FakeClient([]), "m")  # fact path: no chat
+        with mock.patch("utils.salary_estimator.estimate_salary",
+                        return_value="- **Suggested figure**: €85,000") as gen:
+            body = self._ask(question="What is your expected compensation?").json()
+        gen.assert_called_once_with("lever-1", mock.ANY)
+        self.assertEqual(body["answer"], "€85,000 gross per year (negotiable)")
+        self.assertTrue(any("generated now" in n for n in body["notes"]))
+
     def test_salary_never_undersells_below_profile_floor(self):
         from tests.test_apply_llm import FakeClient
         from utils.db import set_focus

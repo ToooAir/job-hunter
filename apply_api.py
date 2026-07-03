@@ -301,9 +301,9 @@ def _fact_answer(match, job: dict | None, notes: list[str]) -> str:
     if (job or {}).get("salary_estimate"):
         notes.append("job has a salary estimate but no parseable form figure"
                      " — see the dashboard salary section")
-    elif job:
-        notes.append("no salary estimate for this job yet — profile value"
-                     " used (generate one in the dashboard)")
+    elif job is None:
+        notes.append("no job context — set the focus (🎯) to get a"
+                     " job-tailored figure")
     return value
 
 
@@ -372,6 +372,23 @@ def answer(req: AnswerRequest):
         if len(q) <= 120:
             match = _profile().match_field(q)
             if match is not None:
+                if (match.key == "salary_expectation" and job
+                        and not (job.get("salary_estimate") or "").strip()):
+                    # The workflow moment for an estimate IS the salary
+                    # question on the form — the user never pre-generates.
+                    # Generate it now (requests-cached market data + one LLM
+                    # call, ~20 s) and persist it on the job, exactly like
+                    # the dashboard button would.
+                    from utils.salary_estimator import estimate_salary
+                    est = estimate_salary(job["id"],
+                                          os.getenv("DB_PATH", "./data/jobs.db"))
+                    if est:
+                        job["salary_estimate"] = est
+                        notes.append("salary estimate generated now and"
+                                     " cached on the job")
+                    else:
+                        notes.append("salary estimate generation failed —"
+                                     " profile floor used")
                 text = _fact_answer(match, job, notes)
                 if snapshot_id is not None:
                     append_custom_qa(conn, snapshot_id, question=q,
