@@ -91,6 +91,10 @@ function injectPanel() {
     'border:1px solid #555;border-radius:5px;padding:5px;font:inherit;resize:vertical"></textarea>' +
     '<button id="jh-answer" style="' + btn + ';width:100%;margin-top:4px">' +
     "Answer from my background</button>" +
+    // one-click for the most frequent form question: estimator-backed figure
+    // (server generates + caches the job's salary estimate on first ask)
+    '<button id="jh-salary" style="' + btn + ';width:100%;margin-top:4px">' +
+    "💰 Salary expectation</button>" +
     '<div id="jh-ans-warn" style="margin-top:4px;color:#e0a000"></div>' +
     '<div id="jh-ans" style="display:none;margin-top:6px;padding:6px;' +
     'background:#1a1a1a;border:1px solid #333;border-radius:5px;' +
@@ -103,7 +107,8 @@ function injectPanel() {
   document.documentElement.appendChild(HOST);
   // Works on ANY page, no snapshot needed — fills only profile facts.
   $("#jh-fill-profile").addEventListener("click", runProfileFill);
-  $("#jh-answer").addEventListener("click", runAnswer);
+  $("#jh-answer").addEventListener("click", () => runAnswer());
+  $("#jh-salary").addEventListener("click", () => runAnswer(SALARY_QUESTION));
   $("#jh-copy").addEventListener("click", copyAnswer);
   // The authoritative bookkeeping signal: the human, who just submitted, says so.
   $("#jh-submitted").addEventListener("click", () => MATCH && bookSubmitted(MATCH.snapshot_id));
@@ -155,24 +160,32 @@ function hostMatch(a, b) {
 // fact, fill those; open/job-specific questions come back unmatched and stay
 // blank (never invented). The human answers those, then checks & submits.
 // ── answer panel: grounded answers on demand, copy-paste interface ────────────
-async function runAnswer() {
-  const q = ($("#jh-q").value || "").trim();
-  const btnEl = $("#jh-answer");
+// The canonical salary question — hits the server's fact short-circuit, which
+// generates + caches the job's salary estimate on first ask (~20 s).
+const SALARY_QUESTION = "What is your expected compensation?";
+
+async function runAnswer(presetQ) {
+  const preset = typeof presetQ === "string" ? presetQ : "";
+  const q = preset || ($("#jh-q").value || "").trim();
+  const askBtn = $("#jh-answer");
+  const salBtn = $("#jh-salary");
+  const active = preset ? salBtn : askBtn;
   const warn = $("#jh-ans-warn");
   const box = $("#jh-ans");
   const ground = $("#jh-ans-ground");
   const copy = $("#jh-copy");
-  if (!q || !btnEl) return;
-  btnEl.disabled = true;
-  btnEl.textContent = "answering…";
+  if (!q || !active) return;
+  askBtn.disabled = salBtn.disabled = true;
+  const origText = active.textContent;
+  active.textContent = preset ? "estimating… (first ask ~20 s)" : "answering…";
   warn.textContent = "";
   box.style.display = "none";
   copy.style.display = "none";
   ground.textContent = "";
 
   const res = await bg({ type: "answer", question: q, page_host: pageHost() });
-  btnEl.disabled = false;
-  btnEl.textContent = "Answer from my background";
+  askBtn.disabled = salBtn.disabled = false;
+  active.textContent = origText;
   if (!res || !res.ok) {
     warn.innerHTML = red("answer failed: " + ((res && res.error) || "?"));
     return;
