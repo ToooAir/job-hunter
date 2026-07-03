@@ -26,6 +26,7 @@ Run (in the container, via compose service `apply_api`):
 
 import logging
 import os
+import re
 from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urlparse
@@ -257,9 +258,53 @@ def _job_row(conn, job_id: str) -> dict | None:
     row = conn.execute(
         "SELECT id, title, company, apply_url, url,"
         "       COALESCE(translated_jd_text, raw_jd_text) AS description,"
-        "       cover_letter_draft"
+        "       cover_letter_draft, salary_estimate"
         " FROM jobs WHERE id = ?", (job_id,)).fetchone()
     return dict(row) if row else None
+
+
+def _salary_form_figure(estimate: str) -> int | None:
+    """The salary_estimator report carries a '### Gehaltsvorstellung —
+    Application Form' section with the figure meant for exactly this form
+    field. Parse it (en/zh anchors); reject implausible parses."""
+    m = re.search(r"(?:Suggested figure|建議填寫數字)[^€\d]*€?\s*(\d[\d.,]*)",
+                  estimate or "")
+    if not m:
+        return None
+    try:
+        fig = int(re.sub(r"[.,]", "", m.group(1)))
+    except ValueError:
+        return None
+    return fig if fig >= 20_000 else None
+
+
+def _fact_answer(match, job: dict | None, notes: list[str]) -> str:
+    """Deterministic answer for a fact question — the value, no prose.
+
+    Salary is special-cased: the per-job salary_estimator figure is used
+    when it beats the profile floor (a fixed number undersells high-paying
+    jobs), never below the floor. Everything is surfaced in notes so the
+    human sees the basis before pasting."""
+    value = match.resolve_date() or match.value
+    if match.key != "salary_expectation":
+        return value
+    try:
+        floor = int(match.extra.get("value_eur_year") or 0)
+    except (TypeError, ValueError):
+        floor = 0
+    fig = _salary_form_figure((job or {}).get("salary_estimate") or "")
+    if fig:
+        ask = max(fig, floor)
+        notes.append(f"salary_estimator form figure €{fig:,} · profile floor "
+                     f"€{floor:,}" + (" — floor kept" if fig < floor else ""))
+        return f"€{ask:,} gross per year (negotiable)"
+    if (job or {}).get("salary_estimate"):
+        notes.append("job has a salary estimate but no parseable form figure"
+                     " — see the dashboard salary section")
+    elif job:
+        notes.append("no salary estimate for this job yet — profile value"
+                     " used (generate one in the dashboard)")
+    return value
 
 
 def _resolve_answer_job(conn, req: "AnswerRequest"):
@@ -318,6 +363,29 @@ def answer(req: AnswerRequest):
     try:
         job_id, snapshot_id, via, warnings = _resolve_answer_job(conn, req)
         job = _job_row(conn, job_id) if job_id else None
+
+        # Fact short-circuit: a short question that IS a profile fact gets
+        # the fact — never LLM prose (the salary answer that arrived padded
+        # with visa trivia). Long questions may merely mention a fact term
+        # ("describe your salary negotiation experience") and stay on the
+        # LLM path.
+        if len(q) <= 120:
+            match = _profile().match_field(q)
+            if match is not None:
+                text = _fact_answer(match, job, notes)
+                if snapshot_id is not None:
+                    append_custom_qa(conn, snapshot_id, question=q,
+                                     answer=text, source="profile-fact")
+                return {
+                    "answer": text,
+                    "grounding": {"kind": "profile-fact", "fact": match.key,
+                                  "job_id": job_id,
+                                  "company": (job or {}).get("company"),
+                                  "title": (job or {}).get("title"),
+                                  "via": via},
+                    "warnings": warnings,
+                    "notes": notes,
+                }
 
         parts = [f"Candidate facts:\n{build_profile_facts(_profile())}"]
         grounding_kind = "profile-only"

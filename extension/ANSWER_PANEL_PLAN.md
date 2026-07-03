@@ -214,6 +214,24 @@ New section under the existing buttons:
 - The answer is NEVER filled into the page. No selector, no setter. If the
   user wants it in the form, they paste it — that's the review gate.
 
+## Fact short-circuit (2026-07-03, field-test fix)
+
+The first real salary question came back as LLM prose padded with visa
+trivia. Root cause: fact questions must never reach the LLM. A question
+≤120 chars that `match_field`s a profile fact returns the fact
+deterministically (`grounding.kind: "profile-fact"`, no LLM call, trail
+source `profile-fact`); longer questions that merely mention a fact term
+("describe your salary negotiation…") stay on the LLM path.
+
+Salary is special-cased: the per-job salary_estimator report carries a
+"Gehaltsvorstellung — Application Form" section with a suggested figure —
+`/answer` parses it (en/zh anchors, 185/195 existing reports parse) and
+answers `max(figure, profile floor)` so high-paying jobs are not undersold
+and the floor is never broken. The basis (figure vs floor) is shown in the
+panel notes. No estimate → profile value + a "generate one in the
+dashboard" hint. NOTE: estimates are generated per-job in the dashboard —
+run it for a cohort job before applying if you want the tailored figure.
+
 ## Guardrails
 
 - fabrication prompt is the tested one (momox/verifier lineage), ~150-word

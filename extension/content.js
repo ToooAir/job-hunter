@@ -184,11 +184,18 @@ async function runAnswer() {
   box.textContent = d.answer;
   box.style.display = "block";
   const g = d.grounding || {};
-  ground.innerHTML = g.kind === "job+profile"
-    ? "grounded: " + esc(g.company || "?") + " · " + esc(g.title || "?") +
-      " · via " + esc(g.via || "?")
-    : '<span style="color:#e0a000">⚠ no job context — profile facts only.' +
-      " Set the focus (🎯) in the dashboard for a grounded answer.</span>";
+  ground.innerHTML =
+    g.kind === "job+profile"
+      ? "grounded: " + esc(g.company || "?") + " · " + esc(g.title || "?") +
+        " · via " + esc(g.via || "?")
+      : g.kind === "profile-fact"
+      ? "profile fact: " + esc(g.fact || "?") +
+        (g.company ? " · " + esc(g.company) : "") + " (deterministic, no LLM)"
+      : '<span style="color:#e0a000">⚠ no job context — profile facts only.' +
+        " Set the focus (🎯) in the dashboard for a grounded answer.</span>";
+  for (const n of d.notes || []) {
+    ground.innerHTML += "<br>· " + esc(n);
+  }
   copy.style.display = "block";
   copy.textContent = "Copy answer";
 }

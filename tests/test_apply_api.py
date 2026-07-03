@@ -289,7 +289,16 @@ class AnswerTest(unittest.TestCase):
         from utils.profile_loader import CandidateProfile
         self.apply_api = apply_api
         apply_api._profile = lambda: CandidateProfile({  # type: ignore[assignment]
-            "fields": {"first_name": {"value": "Max", "aliases": ["vorname"]}}})
+            "fields": {
+                "first_name": {"value": "Max", "aliases": ["vorname"]},
+                "salary_expectation": {
+                    "value": "€70,000 gross per year (negotiable)",
+                    "value_eur_year": 70000,
+                    "aliases": ["salary expectation", "expected salary",
+                                "compensation", "gehaltsvorstellung"]},
+                "notice_period": {"value": "None — available immediately",
+                                  "aliases": ["notice period"]},
+            }})
         self._json = _json
         self.client = TestClient(apply_api.app)
 
@@ -365,6 +374,55 @@ class AnswerTest(unittest.TestCase):
             FakeClient(["not json{{", "still not json{{"]), "m")
         r = self._ask(page_host="beispiel.jobs.personio.de")
         self.assertEqual(r.status_code, 502)
+
+    # ── fact short-circuit: fact questions get the fact, never LLM prose ──
+    def test_fact_question_short_circuits_without_llm(self):
+        from tests.test_apply_llm import FakeClient
+        self.apply_api._llm = lambda: (FakeClient([]), "m")  # raises if called
+        r = self.client.post(
+            "/answer", json={"question": "What is your notice period?"},
+            headers={"Authorization": f"Bearer {TOKEN}"})
+        body = r.json()
+        self.assertEqual(body["answer"], "None — available immediately")
+        self.assertEqual(body["grounding"]["kind"], "profile-fact")
+        self.assertEqual(body["grounding"]["fact"], "notice_period")
+
+    def test_salary_uses_estimator_form_figure(self):
+        from tests.test_apply_llm import FakeClient
+        from utils.db import set_focus
+        self.conn.execute(
+            "UPDATE jobs SET salary_estimate ="
+            " '### Gehaltsvorstellung — Application Form\n"
+            "- **Suggested figure**: €82,000' WHERE id='lever-1'")
+        self.conn.commit()
+        set_focus(self.conn, self.sids["lever-1"], "lever-1")
+        self.apply_api._llm = lambda: (FakeClient([]), "m")
+        body = self._ask(question="What is your expected compensation?*").json()
+        self.assertEqual(body["answer"], "€82,000 gross per year (negotiable)")
+        self.assertTrue(any("€82,000" in n for n in body["notes"]))
+
+    def test_salary_never_undersells_below_profile_floor(self):
+        from tests.test_apply_llm import FakeClient
+        from utils.db import set_focus
+        self.conn.execute(
+            "UPDATE jobs SET salary_estimate ="
+            " '- **建議填寫數字**：€60,000' WHERE id='lever-1'")
+        self.conn.commit()
+        set_focus(self.conn, self.sids["lever-1"], "lever-1")
+        self.apply_api._llm = lambda: (FakeClient([]), "m")
+        body = self._ask(question="Gehaltsvorstellung?").json()
+        self.assertEqual(body["answer"], "€70,000 gross per year (negotiable)")
+        self.assertTrue(any("floor kept" in n for n in body["notes"]))
+
+    def test_long_question_mentioning_a_fact_stays_on_llm_path(self):
+        q = ("Describe a situation where you had to negotiate salary "
+             "expectations with a difficult stakeholder and what you learned "
+             "from the compensation discussion.")
+        self.assertGreater(len(q), 120)
+        self._llm_with(self._json.dumps({"answer": "A grounded story."}))
+        body = self._ask(question=q, page_host="beispiel.jobs.personio.de").json()
+        self.assertEqual(body["answer"], "A grounded story.")
+        self.assertNotEqual(body["grounding"]["kind"], "profile-fact")
 
     def test_submitted_clears_matching_focus(self):
         from utils.db import get_focus, set_focus
