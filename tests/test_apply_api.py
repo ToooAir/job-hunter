@@ -241,5 +241,138 @@ class FillPlanTest(unittest.TestCase):
         self.assertEqual(plan, {"fills": [], "skipped_never_fill": [], "unmatched": []})
 
 
+@unittest.skipUnless(HAS_FASTAPI, "fastapi not installed on this host")
+class AnswerTest(unittest.TestCase):
+    """POST /answer — dashboard-focus-first job resolution + grounded answer.
+
+    Host matching must never guess: the motivating case is several drafts on
+    one ATS host (Mistral ×3 on jobs.lever.co in the real cohort)."""
+
+    def setUp(self):
+        import json as _json
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = str(Path(self.tmp.name) / "test.db")
+        os.environ["DB_PATH"] = self.db_path
+        os.environ["APPLY_API_TOKEN"] = TOKEN
+        self.conn = init_db(self.db_path)
+        rows = [
+            ("lever-1", "Mustermann AI", "Applied Lead",
+             "https://x/1", "https://jobs.lever.co/must/1", "Own the FDE team."),
+            ("lever-2", "Mustermann AI", "Platform Eng",
+             "https://x/2", "https://jobs.lever.co/must/2", None),
+            ("pers-1", "Beispiel GmbH", "Backend Eng",
+             "https://x/3", "https://beispiel.jobs.personio.de/j/1", None),
+        ]
+        self.sids = {}
+        for jid, comp, title, url, apply_url, cl in rows:
+            self.conn.execute(
+                "INSERT INTO jobs (id, company, title, url, source, raw_jd_text,"
+                " fetched_at, status, cover_letter_draft, apply_url)"
+                " VALUES (?,?,?,?, 'test', 'We build backends for Mustermann.',"
+                " '2026-07-01T08:00:00', 'scored', ?, ?)",
+                (jid, comp, title, url, cl, apply_url))
+            self.sids[jid] = create_application_snapshot(
+                self.conn, jid, status="draft", tier=2, apply_url=apply_url)
+        self.conn.commit()
+
+        import apply_api
+        from utils.profile_loader import CandidateProfile
+        self.apply_api = apply_api
+        apply_api._profile = lambda: CandidateProfile({  # type: ignore[assignment]
+            "fields": {"first_name": {"value": "Max", "aliases": ["vorname"]}}})
+        self._json = _json
+        self.client = TestClient(apply_api.app)
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.cleanup()
+        os.environ.pop("DB_PATH", None)
+        os.environ.pop("APPLY_API_TOKEN", None)
+
+    def _llm_with(self, answer_json: str):
+        from tests.test_apply_llm import FakeClient
+        self.apply_api._llm = lambda: (FakeClient([answer_json]), "m")  # type: ignore
+
+    def _ask(self, **body):
+        return self.client.post(
+            "/answer", json={"question": "Why us?", **body},
+            headers={"Authorization": f"Bearer {TOKEN}"})
+
+    def test_requires_token(self):
+        self.assertEqual(
+            self.client.post("/answer", json={"question": "x"}).status_code, 401)
+
+    def test_focus_wins_and_writes_trail(self):
+        from utils.db import set_focus
+        set_focus(self.conn, self.sids["lever-1"], "lever-1")
+        self._llm_with(self._json.dumps({"answer": "Because backends."}))
+        body = self._ask(page_host="jobs.lever.co").json()
+        self.assertEqual(body["grounding"]["via"], "focus")
+        self.assertEqual(body["grounding"]["title"], "Applied Lead")
+        self.assertEqual(body["grounding"]["kind"], "job+profile")
+        self.assertEqual(body["warnings"], [])
+        qa = self._json.loads(self.conn.execute(
+            "SELECT custom_qa FROM application_snapshots WHERE id=?",
+            (self.sids["lever-1"],)).fetchone()["custom_qa"])
+        self.assertEqual(qa[-1]["answer"], "Because backends.")
+        self.assertEqual(qa[-1]["source"], "on-demand")
+
+    def test_ambiguous_host_never_guesses(self):
+        # two lever drafts, no focus → profile-only + a set-the-focus hint
+        self._llm_with(self._json.dumps({"answer": "Generic but honest."}))
+        body = self._ask(page_host="jobs.lever.co").json()
+        self.assertEqual(body["grounding"]["kind"], "profile-only")
+        self.assertIsNone(body["grounding"]["via"])
+        self.assertTrue(any("focus" in w for w in body["warnings"]))
+
+    def test_unambiguous_host_matches(self):
+        self._llm_with(self._json.dumps({"answer": "Grounded."}))
+        body = self._ask(page_host="beispiel.jobs.personio.de").json()
+        self.assertEqual(body["grounding"]["via"], "host")
+        self.assertEqual(body["grounding"]["company"], "Beispiel GmbH")
+
+    def test_focus_page_mismatch_warns_but_grounds_on_focus(self):
+        from utils.db import set_focus
+        set_focus(self.conn, self.sids["lever-1"], "lever-1")
+        self._llm_with(self._json.dumps({"answer": "A."}))
+        body = self._ask(page_host="beispiel.jobs.personio.de").json()
+        self.assertEqual(body["grounding"]["via"], "focus")
+        self.assertTrue(any("check before pasting" in w for w in body["warnings"]))
+
+    def test_stale_focus_ignored(self):
+        from utils.db import set_focus
+        set_focus(self.conn, self.sids["pers-1"], "pers-1")
+        self.conn.execute("UPDATE app_state SET updated_at='2020-01-01T00:00:00'")
+        self.conn.commit()
+        self._llm_with(self._json.dumps({"answer": "A."}))
+        body = self._ask(page_host="beispiel.jobs.personio.de").json()
+        self.assertEqual(body["grounding"]["via"], "host")  # fell through
+
+    def test_llm_garbage_is_502_never_fabricated(self):
+        from tests.test_apply_llm import FakeClient
+        # garbage on both the ask and the re-ask → _chat_json gives up
+        self.apply_api._llm = lambda: (  # type: ignore[assignment]
+            FakeClient(["not json{{", "still not json{{"]), "m")
+        r = self._ask(page_host="beispiel.jobs.personio.de")
+        self.assertEqual(r.status_code, 502)
+
+    def test_submitted_clears_matching_focus(self):
+        from utils.db import get_focus, set_focus
+        from utils.snapshot_io import mark_submitted
+        sid = self.sids["pers-1"]
+        set_focus(self.conn, sid, "pers-1")
+        mark_submitted(self.conn, sid, note="t")
+        self.assertIsNone(get_focus(self.conn))
+
+    def test_submitted_keeps_moved_on_focus(self):
+        from utils.db import get_focus, set_focus
+        from utils.snapshot_io import mark_submitted
+        set_focus(self.conn, self.sids["lever-1"], "lever-1")  # focus moved on
+        mark_submitted(self.conn, self.sids["pers-1"], note="t")
+        focus = get_focus(self.conn)
+        self.assertIsNotNone(focus)
+        self.assertEqual(focus["job_id"], "lever-1")
+
+
 if __name__ == "__main__":
     unittest.main()

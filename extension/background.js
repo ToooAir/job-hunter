@@ -43,6 +43,15 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       const buf = await r.arrayBuffer();
       // bytes as a plain array — structured-clone over the message boundary
       sendResponse({ ok: true, bytes: Array.from(new Uint8Array(buf)), name: filenameFrom(r) });
+    } else if (msg.type === "answer") {
+      // answer panel: one grounded answer; the server resolves the job
+      // (dashboard focus > unambiguous host > profile-only)
+      const r = await api("/answer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question: msg.question, page_host: msg.page_host }),
+      });
+      sendResponse(r.ok === false ? r : { ok: true, data: await r.json() });
     } else if (msg.type === "submitted") {
       const r = await api("/snapshot/" + msg.id + "/submitted", { method: "POST" });
       sendResponse(r.ok === false ? r : { ok: true, data: await r.json() });

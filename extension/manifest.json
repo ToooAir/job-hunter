@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "job-hunter autofill",
-  "version": "0.4.0",
-  "description": "Fills a structured-ATS application form from the reviewed draft served by the local apply_api sidecar. See PHASE1_PLAN.md.",
-  "permissions": ["storage", "activeTab", "scripting", "webNavigation"],
+  "version": "0.5.0",
+  "description": "Fills profile facts into any application form and answers its open questions from the candidate's background (copy-paste, human-reviewed), backed by the local apply_api sidecar.",
+  "permissions": ["storage", "activeTab", "scripting", "webNavigation", "clipboardWrite"],
   "host_permissions": [
     "http://127.0.0.1:8531/*",
     "https://*.greenhouse.io/*",

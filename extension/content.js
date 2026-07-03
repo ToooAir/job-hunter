@@ -82,10 +82,29 @@ function injectPanel() {
     ';width:100%;margin-top:6px;display:none">✓ I submitted it</button>' +
     '<div id="jh-status" style="margin-top:6px;color:#888"></div>' +
     '<div id="jh-out" style="margin-top:8px;color:#aaa"></div>' +
+    // answer panel (ANSWER_PANEL_PLAN.md): paste a question, get a grounded
+    // answer + Copy button. The answer is NEVER filled into the page —
+    // reading-before-pasting is the review gate.
+    '<div style="margin-top:10px;border-top:1px solid #333;padding-top:8px">' +
+    '<textarea id="jh-q" rows="3" placeholder="Paste the form&#39;s question…" ' +
+    'style="width:100%;box-sizing:border-box;background:#1e1e1e;color:#eee;' +
+    'border:1px solid #555;border-radius:5px;padding:5px;font:inherit;resize:vertical"></textarea>' +
+    '<button id="jh-answer" style="' + btn + ';width:100%;margin-top:4px">' +
+    "Answer from my background</button>" +
+    '<div id="jh-ans-warn" style="margin-top:4px;color:#e0a000"></div>' +
+    '<div id="jh-ans" style="display:none;margin-top:6px;padding:6px;' +
+    'background:#1a1a1a;border:1px solid #333;border-radius:5px;' +
+    'white-space:pre-wrap;color:#ddd"></div>' +
+    '<div id="jh-ans-ground" style="margin-top:4px;color:#888"></div>' +
+    '<button id="jh-copy" style="' + btn +
+    ';width:100%;margin-top:4px;display:none">Copy answer</button>' +
+    "</div>" +
     "</div>";
   document.documentElement.appendChild(HOST);
   // Works on ANY page, no snapshot needed — fills only profile facts.
   $("#jh-fill-profile").addEventListener("click", runProfileFill);
+  $("#jh-answer").addEventListener("click", runAnswer);
+  $("#jh-copy").addEventListener("click", copyAnswer);
   // The authoritative bookkeeping signal: the human, who just submitted, says so.
   $("#jh-submitted").addEventListener("click", () => MATCH && bookSubmitted(MATCH.snapshot_id));
   $("#jh-close").addEventListener("click", closePanel);
@@ -135,6 +154,57 @@ function hostMatch(a, b) {
 // every application. Live-extract the fields, ask the sidecar which map to a
 // fact, fill those; open/job-specific questions come back unmatched and stay
 // blank (never invented). The human answers those, then checks & submits.
+// ── answer panel: grounded answers on demand, copy-paste interface ────────────
+async function runAnswer() {
+  const q = ($("#jh-q").value || "").trim();
+  const btnEl = $("#jh-answer");
+  const warn = $("#jh-ans-warn");
+  const box = $("#jh-ans");
+  const ground = $("#jh-ans-ground");
+  const copy = $("#jh-copy");
+  if (!q || !btnEl) return;
+  btnEl.disabled = true;
+  btnEl.textContent = "answering…";
+  warn.textContent = "";
+  box.style.display = "none";
+  copy.style.display = "none";
+  ground.textContent = "";
+
+  const res = await bg({ type: "answer", question: q, page_host: pageHost() });
+  btnEl.disabled = false;
+  btnEl.textContent = "Answer from my background";
+  if (!res || !res.ok) {
+    warn.innerHTML = red("answer failed: " + ((res && res.error) || "?"));
+    return;
+  }
+  const d = res.data;
+  for (const w of d.warnings || []) {
+    warn.innerHTML += "⚠ " + esc(w) + "<br>";
+  }
+  box.textContent = d.answer;
+  box.style.display = "block";
+  const g = d.grounding || {};
+  ground.innerHTML = g.kind === "job+profile"
+    ? "grounded: " + esc(g.company || "?") + " · " + esc(g.title || "?") +
+      " · via " + esc(g.via || "?")
+    : '<span style="color:#e0a000">⚠ no job context — profile facts only.' +
+      " Set the focus (🎯) in the dashboard for a grounded answer.</span>";
+  copy.style.display = "block";
+  copy.textContent = "Copy answer";
+}
+
+async function copyAnswer() {
+  const box = $("#jh-ans");
+  const copy = $("#jh-copy");
+  if (!box || !box.textContent) return;
+  try {
+    await navigator.clipboard.writeText(box.textContent);
+    copy.textContent = "✓ copied — paste it into the form";
+  } catch (_e) {
+    copy.textContent = "clipboard blocked — select the text manually";
+  }
+}
+
 const CV_LABEL_RE = /resume|\bcv\b|lebenslauf/i;
 
 async function runProfileFill() {

@@ -128,6 +128,12 @@ def init_db(db_path: str) -> sqlite3.Connection:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_snapshots_job_id ON application_snapshots(job_id)"
     )
+    # Generic one-row-per-key state (e.g. the dashboard's apply focus —
+    # see extension/ANSWER_PANEL_PLAN.md).
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS app_state ("
+        " key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)"
+    )
     conn.commit()
 
     # Backfill any columns added after initial creation
@@ -616,3 +622,52 @@ def get_in_flight_snapshots(conn: sqlite3.Connection) -> list[dict]:
         IN_FLIGHT_SNAPSHOT_STATUSES,
     ).fetchall()
     return [dict(r) for r in rows]
+
+# ── apply focus (dashboard → answer panel; ANSWER_PANEL_PLAN.md) ──────────────
+# One row in app_state, key='apply_focus': the draft the human is applying to
+# RIGHT NOW. Host matching cannot identify the job reliably (same-ATS drafts
+# collide, redirects/iframes change the host), so the explicit dashboard click
+# is the primary job-resolution signal for /answer.
+
+FOCUS_KEY = "apply_focus"
+FOCUS_MAX_AGE_H = 2  # one sitting; staleness enforced read-side, no cleaner
+
+
+def set_focus(conn: sqlite3.Connection, snapshot_id: int, job_id: str) -> None:
+    conn.execute(
+        "INSERT INTO app_state (key, value, updated_at) VALUES (?, ?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value, "
+        "updated_at=excluded.updated_at",
+        (FOCUS_KEY, json.dumps({"snapshot_id": snapshot_id, "job_id": job_id}),
+         _now_local_iso()),
+    )
+    conn.commit()
+
+
+def get_focus(conn: sqlite3.Connection,
+              max_age_h: float = FOCUS_MAX_AGE_H) -> dict | None:
+    """{'snapshot_id', 'job_id', 'updated_at'} or None when missing/stale."""
+    row = conn.execute(
+        "SELECT value, updated_at FROM app_state WHERE key = ?", (FOCUS_KEY,)
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        age = datetime.now() - datetime.fromisoformat(row["updated_at"])
+    except ValueError:
+        return None
+    if age > timedelta(hours=max_age_h):
+        return None
+    return {**json.loads(row["value"]), "updated_at": row["updated_at"]}
+
+
+def clear_focus(conn: sqlite3.Connection,
+                snapshot_id: int | None = None) -> None:
+    """Drop the focus; with snapshot_id, only when it IS the focused one —
+    submitting job A must not clear a focus already moved to job B."""
+    if snapshot_id is not None:
+        current = get_focus(conn, max_age_h=1e9)  # match regardless of age
+        if not current or current.get("snapshot_id") != snapshot_id:
+            return
+    conn.execute("DELETE FROM app_state WHERE key = ?", (FOCUS_KEY,))
+    conn.commit()

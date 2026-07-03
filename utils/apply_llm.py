@@ -8,6 +8,7 @@ orchestrator still use:
   _defaults            — lazy client/model resolution (tests inject fakes)
   _chat_json           — JSON-mode chat with one re-ask on unparseable output
   build_profile_facts  — candidate facts block for prompts
+  _sanitize            — defang external text before it enters a prompt
   CALL_STATS           — process-wide LLM request counter
 
 Transient API errors are NOT retried here — they bubble up so the
@@ -32,6 +33,12 @@ def _defaults(client, model):
 
 # Process-wide LLM request counter (the orchestrator reports it per run).
 CALL_STATS = {"calls": 0}
+
+
+def _sanitize(text: str) -> str:
+    """Text from external pages (labels, pasted questions) — defang before it
+    enters a prompt."""
+    return (text or "").replace("\x00", "").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def _chat_json(client, model, system, user, max_tokens=1500) -> dict | None:

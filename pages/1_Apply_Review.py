@@ -18,7 +18,7 @@ from datetime import datetime
 import streamlit as st
 from dotenv import load_dotenv
 
-from utils.db import init_db
+from utils.db import get_focus, init_db, set_focus
 from utils.snapshot_io import (
     abandon_snapshot,
     edit_snapshot,
@@ -63,6 +63,8 @@ _STRINGS = {
         "verified_today": "今天已驗證可投",
         "liveness_suspect": "可疑:重驗時不是乾淨的申請表(帳號牆/captcha/弱表單)——投前自行確認職缺還在",
         "never_verified": "尚未重驗失效",
+        "set_focus": "我要投這筆",
+        "focus_now": "🎯 投遞中:{} — {}({})— 插件答案面板以此職缺為根據",
     },
     "en": {
         "title": "Apply Review Queue",
@@ -102,6 +104,8 @@ _STRINGS = {
         "liveness_suspect": "suspect: not a clean application form on recheck "
                             "(account wall / captcha / weak form) — confirm the posting before applying",
         "never_verified": "not liveness-checked yet",
+        "set_focus": "applying to this one",
+        "focus_now": "🎯 applying: {} — {} ({}) — the answer panel grounds on this job",
     },
 }
 
@@ -389,9 +393,16 @@ def _draft_card(conn, snap: dict) -> None:
     header = (f"T{tier} [{friction_label}] · {job.get('company')} — {job.get('title')}"
               + (f" · {T('match')} {score}" if score is not None else ""))
     with st.expander(header, expanded=False):
-        st.caption(f"{T('channel')}: {snap.get('channel')} · "
-                   f"{T('created')}: {snap.get('created_at')} · "
-                   f"[{snap.get('apply_url')}]({snap.get('apply_url')})")
+        cap, focus_col = st.columns([4, 1])
+        cap.caption(f"{T('channel')}: {snap.get('channel')} · "
+                    f"{T('created')}: {snap.get('created_at')} · "
+                    f"[{snap.get('apply_url')}]({snap.get('apply_url')})")
+        # answer-panel focus (ANSWER_PANEL_PLAN.md): the explicit "I am
+        # applying to THIS one" signal — host matching can't identify the
+        # job (same-ATS drafts collide, redirects change the host)
+        if focus_col.button(f"🎯 {T('set_focus')}", key=f"focus_{snap['id']}"):
+            set_focus(conn, snap["id"], snap["job_id"])
+            st.rerun()
 
         _liveness_caption(snap)
         _verifier_block(snap.get("verifier_report"))
@@ -445,6 +456,15 @@ def _draft_card(conn, snap: dict) -> None:
 conn = get_conn()
 st.title(T("title"))
 st.caption(T("intro"))
+
+# current answer-panel focus — visible so a stale 🎯 can't misground quietly
+_focus = get_focus(conn)
+if _focus:
+    _fjob = conn.execute("SELECT company, title FROM jobs WHERE id = ?",
+                         (_focus["job_id"],)).fetchone()
+    if _fjob:
+        st.info(T("focus_now").format(
+            _fjob["company"], _fjob["title"], _focus["updated_at"][11:16]))
 
 m1, m2, m3 = st.columns(3)
 m1.metric(T("drafts"), _count(conn, "draft"))
