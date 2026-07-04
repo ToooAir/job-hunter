@@ -264,6 +264,11 @@ class AnswerRequest(BaseModel):
     page_host: str | None = None   # for the unambiguous-host fallback + warning
 
 
+class CoverLetterRequest(BaseModel):
+    job_id: str | None = None      # same override semantics as AnswerRequest
+    page_host: str | None = None
+
+
 def _host_of(url: str) -> str:
     return urlparse(url or "").netloc.replace("www.", "")
 
@@ -464,6 +469,50 @@ def answer(req: AnswerRequest):
                 "title": (job or {}).get("title"),
                 "via": via,
             },
+            "warnings": warnings,
+            "notes": notes,
+        }
+    finally:
+        conn.close()
+
+
+@app.post("/cover-letter", dependencies=[Depends(require_token)])
+def cover_letter(req: CoverLetterRequest):
+    """The cover letter for the job the human is applying to, for the panel's
+    copy button — kills the last tab switch back to the dashboard. Job
+    resolution is identical to /answer (focus > unambiguous host > refuse to
+    guess); the reviewed snapshot letter wins over the scoring-stage draft."""
+    conn = _conn()
+    try:
+        job_id, snapshot_id, via, warnings = _resolve_answer_job(conn, req)
+        if not job_id:
+            raise HTTPException(
+                status_code=404,
+                detail="no job context — set the focus (🎯) in the dashboard")
+        job = _job_row(conn, job_id)
+        notes: list[str] = []
+        text = ""
+        if snapshot_id is not None:
+            try:
+                text = (get_snapshot(conn, snapshot_id).get("cover_letter")
+                        or "").strip()
+            except ValueError:
+                pass
+        if not text:
+            text = ((job or {}).get("cover_letter_draft") or "").strip()
+            if text:
+                notes.append("no reviewed draft letter — this is the"
+                             " scoring-stage draft, read before pasting")
+        if not text:
+            raise HTTPException(
+                status_code=404,
+                detail=f"no cover letter stored for"
+                       f" {(job or {}).get('company', job_id)}")
+        return {
+            "cover_letter": text,
+            "grounding": {"kind": "cover-letter", "job_id": job_id,
+                          "company": (job or {}).get("company"),
+                          "title": (job or {}).get("title"), "via": via},
             "warnings": warnings,
             "notes": notes,
         }

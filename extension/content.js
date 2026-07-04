@@ -95,6 +95,10 @@ function injectPanel() {
     // (server generates + caches the job's salary estimate on first ask)
     '<button id="jh-salary" style="' + btn + ';width:100%;margin-top:4px">' +
     "💰 Salary expectation</button>" +
+    // the reviewed letter for the focused job — kills the last dashboard
+    // round-trip (fetch → read → Copy, same review gate as answers)
+    '<button id="jh-cl" style="' + btn + ';width:100%;margin-top:4px">' +
+    "📄 Cover letter</button>" +
     '<div id="jh-ans-warn" style="margin-top:4px;color:#e0a000"></div>' +
     '<div id="jh-ans" style="display:none;margin-top:6px;padding:6px;' +
     'background:#1a1a1a;border:1px solid #333;border-radius:5px;' +
@@ -109,6 +113,7 @@ function injectPanel() {
   $("#jh-fill-profile").addEventListener("click", runProfileFill);
   $("#jh-answer").addEventListener("click", () => runAnswer());
   $("#jh-salary").addEventListener("click", () => runAnswer(SALARY_QUESTION));
+  $("#jh-cl").addEventListener("click", runCoverLetter);
   $("#jh-copy").addEventListener("click", copyAnswer);
   // The authoritative bookkeeping signal: the human, who just submitted, says so.
   $("#jh-submitted").addEventListener("click", () => MATCH && bookSubmitted(MATCH.snapshot_id));
@@ -169,13 +174,14 @@ async function runAnswer(presetQ) {
   const q = preset || ($("#jh-q").value || "").trim();
   const askBtn = $("#jh-answer");
   const salBtn = $("#jh-salary");
+  const clBtn = $("#jh-cl");
   const active = preset ? salBtn : askBtn;
   const warn = $("#jh-ans-warn");
   const box = $("#jh-ans");
   const ground = $("#jh-ans-ground");
   const copy = $("#jh-copy");
   if (!q || !active) return;
-  askBtn.disabled = salBtn.disabled = true;
+  askBtn.disabled = salBtn.disabled = clBtn.disabled = true;
   const origText = active.textContent;
   active.textContent = preset ? "estimating… (first ask ~20 s)" : "answering…";
   warn.textContent = "";
@@ -184,7 +190,7 @@ async function runAnswer(presetQ) {
   ground.textContent = "";
 
   const res = await bg({ type: "answer", question: q, page_host: pageHost() });
-  askBtn.disabled = salBtn.disabled = false;
+  askBtn.disabled = salBtn.disabled = clBtn.disabled = false;
   active.textContent = origText;
   if (!res || !res.ok) {
     warn.innerHTML = red("answer failed: " + ((res && res.error) || "?"));
@@ -211,6 +217,47 @@ async function runAnswer(presetQ) {
   }
   copy.style.display = "block";
   copy.textContent = "Copy answer";
+}
+
+// The reviewed cover letter for the focus-resolved job, into the same
+// box + Copy flow as answers — fetched and displayed, never page-filled.
+async function runCoverLetter() {
+  const askBtn = $("#jh-answer");
+  const salBtn = $("#jh-salary");
+  const clBtn = $("#jh-cl");
+  const warn = $("#jh-ans-warn");
+  const box = $("#jh-ans");
+  const ground = $("#jh-ans-ground");
+  const copy = $("#jh-copy");
+  askBtn.disabled = salBtn.disabled = clBtn.disabled = true;
+  const origText = clBtn.textContent;
+  clBtn.textContent = "fetching…";
+  warn.textContent = "";
+  box.style.display = "none";
+  copy.style.display = "none";
+  ground.textContent = "";
+
+  const res = await bg({ type: "cover-letter", page_host: pageHost() });
+  askBtn.disabled = salBtn.disabled = clBtn.disabled = false;
+  clBtn.textContent = origText;
+  if (!res || !res.ok) {
+    warn.innerHTML = red("cover letter failed: " + ((res && res.error) || "?"));
+    return;
+  }
+  const d = res.data;
+  for (const w of d.warnings || []) {
+    warn.innerHTML += "⚠ " + esc(w) + "<br>";
+  }
+  box.textContent = d.cover_letter;
+  box.style.display = "block";
+  const g = d.grounding || {};
+  ground.innerHTML = "cover letter: " + esc(g.company || "?") + " · " +
+    esc(g.title || "?") + " · via " + esc(g.via || "?");
+  for (const n of d.notes || []) {
+    ground.innerHTML += "<br>· " + esc(n);
+  }
+  copy.style.display = "block";
+  copy.textContent = "Copy cover letter";
 }
 
 async function copyAnswer() {

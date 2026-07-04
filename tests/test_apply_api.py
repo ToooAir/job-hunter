@@ -479,6 +479,41 @@ class AnswerTest(unittest.TestCase):
         self.assertIsNotNone(focus)
         self.assertEqual(focus["job_id"], "lever-1")
 
+    # ── /cover-letter — same job resolution, letter for the panel copy ────────
+
+    def _cl(self, **body):
+        return self.client.post("/cover-letter", json=body,
+                                headers={"Authorization": f"Bearer {TOKEN}"})
+
+    def test_cover_letter_snapshot_letter_wins(self):
+        from utils.db import set_focus, update_application_snapshot
+        update_application_snapshot(self.conn, self.sids["lever-1"],
+                                    cover_letter="Dear team, reviewed letter.")
+        set_focus(self.conn, self.sids["lever-1"], "lever-1")
+        body = self._cl(page_host="jobs.lever.co").json()
+        self.assertEqual(body["cover_letter"], "Dear team, reviewed letter.")
+        self.assertEqual(body["grounding"]["via"], "focus")
+        self.assertEqual(body["grounding"]["company"], "Mustermann AI")
+        self.assertEqual(body["notes"], [])
+
+    def test_cover_letter_falls_back_to_scoring_draft(self):
+        from utils.db import set_focus
+        set_focus(self.conn, self.sids["lever-1"], "lever-1")
+        body = self._cl().json()   # snapshot has no letter → jobs draft
+        self.assertEqual(body["cover_letter"], "Own the FDE team.")
+        self.assertTrue(any("scoring-stage" in n for n in body["notes"]))
+
+    def test_cover_letter_no_context_is_404_not_a_guess(self):
+        # two lever drafts, no focus — refusing beats copying the wrong letter
+        r = self._cl(page_host="jobs.lever.co")
+        self.assertEqual(r.status_code, 404)
+        self.assertIn("focus", r.json()["detail"])
+
+    def test_cover_letter_none_stored_is_404(self):
+        from utils.db import set_focus
+        set_focus(self.conn, self.sids["lever-2"], "lever-2")  # no letter anywhere
+        self.assertEqual(self._cl().status_code, 404)
+
 
 if __name__ == "__main__":
     unittest.main()

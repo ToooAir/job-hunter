@@ -24,7 +24,11 @@ async function api(path, opts) {
       ...opts,
       headers: { Authorization: "Bearer " + token, ...(opts && opts.headers) },
     });
-    if (!r.ok) return { ok: false, error: "HTTP " + r.status };
+    if (!r.ok) {
+      let detail = "";
+      try { detail = (await r.json()).detail || ""; } catch (_e) { /* not JSON */ }
+      return { ok: false, error: "HTTP " + r.status + (detail ? " — " + detail : "") };
+    }
     return r;
   } catch (e) {
     return { ok: false, error: e.message };
@@ -50,6 +54,14 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ question: msg.question, page_host: msg.page_host }),
+      });
+      sendResponse(r.ok === false ? r : { ok: true, data: await r.json() });
+    } else if (msg.type === "cover-letter") {
+      // the letter for the job being applied to (focus-resolved, like /answer)
+      const r = await api("/cover-letter", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ page_host: msg.page_host }),
       });
       sendResponse(r.ok === false ? r : { ok: true, data: await r.json() });
     } else if (msg.type === "submitted") {
