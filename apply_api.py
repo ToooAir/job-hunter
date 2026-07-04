@@ -24,9 +24,11 @@ Run (in the container, via compose service `apply_api`):
     uvicorn apply_api:app --host 0.0.0.0 --port 8531
 """
 
+import json
 import logging
 import os
 import re
+from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urlparse
@@ -163,6 +165,17 @@ def pending():
         conn.close()
 
 
+def _append_fill_plan_stat(stat: dict) -> None:
+    """Durable copy of the bucket-0 measurement (container logs are ephemeral).
+    Path resolved per call so tests can redirect it via the env var."""
+    path = Path(os.getenv("FILL_PLAN_STATS_PATH", "./data/fill_plan_stats.jsonl"))
+    try:
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(stat, ensure_ascii=False) + "\n")
+    except Exception as exc:
+        log.warning("fill-plan stats append failed: %s", exc)
+
+
 @app.post("/fill-plan", dependencies=[Depends(require_token)])
 def fill_plan(req: FillPlanRequest):
     """Snapshot-free fact fill: the extension sends the fields it live-extracted
@@ -204,15 +217,25 @@ def fill_plan(req: FillPlanRequest):
                       "source": f"profile:{match.key}", "needs_review": needs_review})
 
     # Measurement (improvement bucket 0): which sites fail, and how — this
-    # log decides whether the LLM-extraction fallback / widget adapters are
-    # ever worth building. Labels only; never values.
+    # data decides whether the LLM-extraction fallback / widget adapters are
+    # ever worth building. Labels only; never values. Appended to a JSONL
+    # under ./data because container logs die with the container.
+    stat = {
+        "ts": datetime.now().isoformat(timespec="seconds"),
+        "host": req.page_host or "?",
+        "fields": len(req.fields),
+        "fills": len(fills),
+        "review": sum(1 for x in fills if x["needs_review"]),
+        "never": len(skipped),
+        "unmatched": [(u["label"] or u["name"] or "")[:60] for u in unmatched],
+    }
     log.info(
         "fill-plan host=%s fields=%d fills=%d review=%d unmatched=%d never=%d",
-        req.page_host or "?", len(req.fields), len(fills),
-        sum(1 for x in fills if x["needs_review"]), len(unmatched), len(skipped))
+        stat["host"], stat["fields"], stat["fills"], stat["review"],
+        len(stat["unmatched"]), stat["never"])
     if unmatched:
-        log.info("fill-plan unmatched: %s",
-                 [(u["label"] or u["name"])[:60] for u in unmatched])
+        log.info("fill-plan unmatched: %s", stat["unmatched"])
+    _append_fill_plan_stat(stat)
     return {"fills": fills, "skipped_never_fill": skipped, "unmatched": unmatched}
 
 

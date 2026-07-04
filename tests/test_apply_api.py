@@ -155,6 +155,9 @@ class FillPlanTest(unittest.TestCase):
 
     def setUp(self):
         os.environ["APPLY_API_TOKEN"] = TOKEN
+        self.tmp = tempfile.TemporaryDirectory()
+        self.stats_path = Path(self.tmp.name) / "fill_plan_stats.jsonl"
+        os.environ["FILL_PLAN_STATS_PATH"] = str(self.stats_path)
         import apply_api
         from utils.profile_loader import CandidateProfile
         self.apply_api = apply_api
@@ -163,6 +166,8 @@ class FillPlanTest(unittest.TestCase):
 
     def tearDown(self):
         os.environ.pop("APPLY_API_TOKEN", None)
+        os.environ.pop("FILL_PLAN_STATS_PATH", None)
+        self.tmp.cleanup()
 
     def _post(self, fields):
         return self.client.post("/fill-plan", json={"fields": fields},
@@ -216,6 +221,24 @@ class FillPlanTest(unittest.TestCase):
         self.assertEqual(fill["action"], "check")
         self.assertTrue(fill["value"])
         self.assertEqual(fill["source"], "profile:consent")
+
+    def test_measurement_persisted_to_jsonl(self):
+        # Bucket-0 data must survive container recreation: every call appends
+        # one JSONL record — unmatched labels only, never filled values.
+        import json as _json
+        self._plan([{"label": "First Name", "name": "fn", "type": "text"},
+                    {"label": "Describe your biggest failure", "name": "q1",
+                     "type": "textarea"}])
+        lines = self.stats_path.read_text(encoding="utf-8").strip().splitlines()
+        self.assertEqual(len(lines), 1)
+        stat = _json.loads(lines[0])
+        self.assertEqual(stat["fields"], 2)
+        self.assertEqual(stat["fills"], 1)
+        self.assertEqual(stat["unmatched"], ["Describe your biggest failure"])
+        self.assertNotIn("Max", lines[0])          # labels only, no values
+        self._plan([{"label": "Email", "name": "email", "type": "email"}])
+        lines = self.stats_path.read_text(encoding="utf-8").strip().splitlines()
+        self.assertEqual(len(lines), 2)             # append, not overwrite
 
     def test_select_resolves_to_real_option(self):
         plan = self._plan([{"label": "German level", "name": "de", "type": "select",
