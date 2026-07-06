@@ -25,6 +25,11 @@ services:
       --server.headless=true
       --server.port=8501
     env_file: .env
+    environment:
+      # MUST match apply_api: the answer-panel focus TTL compares naive local
+      # timestamps written here against now() there — a TZ mismatch (UTC vs
+      # Berlin = exactly 2 h in summer) would expire every focus on arrival.
+      - TZ=Europe/Berlin
     ports:
       - "8501:8501"
     volumes:

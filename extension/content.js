@@ -1,13 +1,19 @@
 /* job-hunter autofill — content script.
  *
- * Phase 1 (PHASE1_PLAN.md): on a structured-ATS apply page, find the reviewed
- * draft for this page (via the background worker → apply_api /pending, matched
- * by host), and fill the form with it. The fill engine (selector replay with a
- * label-match fallback, React-safe native setter) is the spike's, unchanged —
- * only the data source moved from the clipboard to the sidecar.
+ * One fill mode (snapshot replay retired 2026-07-02 with Stage 1's mapping
+ * chain): "Fill facts from profile" (runProfileFill) live-extracts the
+ * fields on ANY page, asks the sidecar (POST /fill-plan) which map to a
+ * profile fact, and fills those (incl. the CV into resume file inputs) via
+ * the React-safe native setter. Open questions stay blank — the human
+ * answers them (cover letter in the dashboard is the raw material).
+ * Reaches any page via toolbar-click injection (background.js), and ATS
+ * iframes on disguised career pages via all_frames.
  *
- * Out of scope here (later tasks): CV upload (task 3), auto-mark-submitted
- * (task 4), gated auto-submit (task 5), iframe traversal (top frame only).
+ * The pending-draft match (findPending) remains for bookkeeping: it shows
+ * which snapshot this page belongs to and carries the "I submitted it"
+ * button + confirmation watch that book the application.
+ *
+ * Out of scope here: gated auto-submit, custom-JS widgets / dropzones.
  */
 
 "use strict";
@@ -16,7 +22,13 @@ let MATCH = null; // the pending snapshot for this page, if any
 let HOST = null;  // light-DOM host element carrying the panel's shadow root
 let PANEL = null; // the shadow root — the UI lives here, isolated from page CSS
 
-if (window.top === window.self) {
+// Structured-ATS hosts (keep in sync with manifest matches): a subframe on one
+// of these is the disguised-embed case (gh_jid iframe on a company careers
+// page) — the form lives there, so the panel must too. Other subframes stay
+// silent; in the top frame the panel always runs.
+const ATS_FRAME_RE = /(^|\.)(greenhouse\.io|ashbyhq\.com|jobs\.personio\.de|lever\.co|workable\.com)$/i;
+
+if (window.top === window.self || ATS_FRAME_RE.test(location.hostname)) {
   injectPanel();
   init();
 }
@@ -64,14 +76,45 @@ function injectPanel() {
     '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
     "<b>job-hunter autofill</b>" +
     '<button id="jh-close" style="' + btn + '">×</button></div>' +
-    '<button id="jh-fill" style="' + btn + ';width:100%" disabled>checking…</button>' +
+    '<button id="jh-fill-profile" style="' + btn +
+    ';width:100%">Fill facts from profile</button>' +
     '<button id="jh-submitted" style="' + btn +
     ';width:100%;margin-top:6px;display:none">✓ I submitted it</button>' +
     '<div id="jh-status" style="margin-top:6px;color:#888"></div>' +
     '<div id="jh-out" style="margin-top:8px;color:#aaa"></div>' +
+    // answer panel (ANSWER_PANEL_PLAN.md): paste a question, get a grounded
+    // answer + Copy button. The answer is NEVER filled into the page —
+    // reading-before-pasting is the review gate.
+    '<div style="margin-top:10px;border-top:1px solid #333;padding-top:8px">' +
+    '<textarea id="jh-q" rows="3" placeholder="Paste the form&#39;s question…" ' +
+    'style="width:100%;box-sizing:border-box;background:#1e1e1e;color:#eee;' +
+    'border:1px solid #555;border-radius:5px;padding:5px;font:inherit;resize:vertical"></textarea>' +
+    '<button id="jh-answer" style="' + btn + ';width:100%;margin-top:4px">' +
+    "Answer from my background</button>" +
+    // one-click for the most frequent form question: estimator-backed figure
+    // (server generates + caches the job's salary estimate on first ask)
+    '<button id="jh-salary" style="' + btn + ';width:100%;margin-top:4px">' +
+    "💰 Salary expectation</button>" +
+    // the reviewed letter for the focused job — kills the last dashboard
+    // round-trip (fetch → read → Copy, same review gate as answers)
+    '<button id="jh-cl" style="' + btn + ';width:100%;margin-top:4px">' +
+    "📄 Cover letter</button>" +
+    '<div id="jh-ans-warn" style="margin-top:4px;color:#e0a000"></div>' +
+    '<div id="jh-ans" style="display:none;margin-top:6px;padding:6px;' +
+    'background:#1a1a1a;border:1px solid #333;border-radius:5px;' +
+    'white-space:pre-wrap;color:#ddd"></div>' +
+    '<div id="jh-ans-ground" style="margin-top:4px;color:#888"></div>' +
+    '<button id="jh-copy" style="' + btn +
+    ';width:100%;margin-top:4px;display:none">Copy answer</button>' +
+    "</div>" +
     "</div>";
   document.documentElement.appendChild(HOST);
-  $("#jh-fill").addEventListener("click", run);
+  // Works on ANY page, no snapshot needed — fills only profile facts.
+  $("#jh-fill-profile").addEventListener("click", runProfileFill);
+  $("#jh-answer").addEventListener("click", () => runAnswer());
+  $("#jh-salary").addEventListener("click", () => runAnswer(SALARY_QUESTION));
+  $("#jh-cl").addEventListener("click", runCoverLetter);
+  $("#jh-copy").addEventListener("click", copyAnswer);
   // The authoritative bookkeeping signal: the human, who just submitted, says so.
   $("#jh-submitted").addEventListener("click", () => MATCH && bookSubmitted(MATCH.snapshot_id));
   $("#jh-close").addEventListener("click", closePanel);
@@ -96,25 +139,19 @@ function togglePanel() {
 // ── find the draft for this page ───────────────────────────────────────────────
 async function findPending() {
   const status = $("#jh-status");
-  const fill = $("#jh-fill");
-  if (!fill) return; // panel hidden
+  if (!status) return; // panel hidden
   const res = await bg({ type: "pending" });
   if (!res || !res.ok) {
-    fill.textContent = "not connected";
     status.innerHTML = red((res && res.error) || "no response") + " — check options.";
     return;
   }
   MATCH = res.data.find((s) => s.host && hostMatch(pageHost(), s.host));
   if (MATCH) {
-    fill.textContent = "Fill — " + MATCH.company;
-    fill.disabled = false;
     $("#jh-submitted").style.display = "block";
-    status.textContent =
-      "snapshot #" + MATCH.snapshot_id + " · " + (MATCH.ats || "?") + " · T" + MATCH.tier;
+    status.textContent = MATCH.company + " · snapshot #" + MATCH.snapshot_id +
+      " · " + (MATCH.ats || "?") + " · T" + MATCH.tier;
   } else {
-    fill.textContent = "No draft for this page";
-    fill.disabled = true;
-    status.textContent = res.data.length + " pending on other pages";
+    status.textContent = res.data.length + " pending draft(s), none for this page";
   }
 }
 
@@ -122,77 +159,242 @@ function hostMatch(a, b) {
   return a === b || a.endsWith("." + b) || b.endsWith("." + a);
 }
 
-// ── fill ───────────────────────────────────────────────────────────────────────
-async function run() {
-  if (!MATCH) return;
-  const out = $("#jh-out");
-  if (!out) return;
-  out.textContent = "fetching draft…";
-  const res = await bg({ type: "snapshot", id: MATCH.snapshot_id });
+// ── fill facts from the profile on ANY page ───────────────────────────────────
+// No snapshot/job_id needed — facts (name/email/visa/salary…) are the same for
+// every application. Live-extract the fields, ask the sidecar which map to a
+// fact, fill those; open/job-specific questions come back unmatched and stay
+// blank (never invented). The human answers those, then checks & submits.
+// ── answer panel: grounded answers on demand, copy-paste interface ────────────
+// The canonical salary question — hits the server's fact short-circuit, which
+// generates + caches the job's salary estimate on first ask (~20 s).
+const SALARY_QUESTION = "What is your expected compensation?";
+
+async function runAnswer(presetQ) {
+  const preset = typeof presetQ === "string" ? presetQ : "";
+  const q = preset || ($("#jh-q").value || "").trim();
+  const askBtn = $("#jh-answer");
+  const salBtn = $("#jh-salary");
+  const clBtn = $("#jh-cl");
+  const active = preset ? salBtn : askBtn;
+  const warn = $("#jh-ans-warn");
+  const box = $("#jh-ans");
+  const ground = $("#jh-ans-ground");
+  const copy = $("#jh-copy");
+  if (!q || !active) return;
+  askBtn.disabled = salBtn.disabled = clBtn.disabled = true;
+  const origText = active.textContent;
+  active.textContent = preset ? "estimating… (first ask ~20 s)" : "answering…";
+  warn.textContent = "";
+  box.style.display = "none";
+  copy.style.display = "none";
+  ground.textContent = "";
+
+  const res = await bg({ type: "answer", question: q, page_host: pageHost() });
+  askBtn.disabled = salBtn.disabled = clBtn.disabled = false;
+  active.textContent = origText;
   if (!res || !res.ok) {
-    out.innerHTML = red("draft fetch failed: " + ((res && res.error) || "?"));
+    warn.innerHTML = red("answer failed: " + ((res && res.error) || "?"));
     return;
   }
-  const actions = ((res.data.form_payload || {}).actions) || [];
-  if (!actions.length) {
-    out.innerHTML = red("no actions in this draft");
-    return;
+  const d = res.data;
+  for (const w of d.warnings || []) {
+    warn.innerHTML += "⚠ " + esc(w) + "<br>";
   }
-  await fillActions(out, actions);
-  // Remember we're applying here so a confirmation books it submitted, even
-  // after the form navigates to a thank-you page (which reloads this script).
-  await chrome.storage.local.set({
-    applying: { id: MATCH.snapshot_id, host: pageHost(), ts: Date.now() },
-  });
-  startConfirmWatch(MATCH.snapshot_id);
+  box.textContent = d.answer;
+  box.style.display = "block";
+  const g = d.grounding || {};
+  ground.innerHTML =
+    g.kind === "job+profile"
+      ? "grounded: " + esc(g.company || "?") + " · " + esc(g.title || "?") +
+        " · via " + esc(g.via || "?")
+      : g.kind === "profile-fact"
+      ? "profile fact: " + esc(g.fact || "?") +
+        (g.company ? " · " + esc(g.company) : "") + " (deterministic, no LLM)"
+      : '<span style="color:#e0a000">⚠ no job context — profile facts only.' +
+        " Set the focus (🎯) in the dashboard for a grounded answer.</span>";
+  for (const n of d.notes || []) {
+    ground.innerHTML += "<br>· " + esc(n);
+  }
+  copy.style.display = "block";
+  copy.textContent = "Copy answer";
 }
 
-async function fillActions(out, actions) {
-  // Pass 1 — measure (no fill): selector target vs label target, per field.
-  const rows = actions.map((a) => {
-    const selEl = a.selector ? safeQuery(a.selector) : null;
-    const labEl = a.label ? resolveByLabel(a.label) : null;
-    return { a, selEl, labEl, selFound: !!selEl, labFound: !!labEl, agree: !!selEl && selEl === labEl };
-  });
-  // Pass 2 — fill via selector, falling back to label. Files are deferred to
-  // an async CV-upload step below (DataTransfer needs the bytes from the API).
-  for (const r of rows) {
-    const target = r.selEl || r.labEl;
-    r.detected = !!target;
-    if ((r.a.kind || "").toLowerCase() === "file") {
-      r.isFile = true;
-      r.fileTarget = target;
-      r.filled = false;
-      r.filledBy = null;
-      r.note = "cv pending";
-    } else {
-      r.filledBy = r.selEl ? "selector" : r.labEl ? "label" : null;
-      r.filled = target ? fillField(target, r.a) : false;
-    }
-  }
-  out.innerHTML = renderTable(rows);
+// The reviewed cover letter for the focus-resolved job, into the same
+// box + Copy flow as answers — fetched and displayed, never page-filled.
+async function runCoverLetter() {
+  const askBtn = $("#jh-answer");
+  const salBtn = $("#jh-salary");
+  const clBtn = $("#jh-cl");
+  const warn = $("#jh-ans-warn");
+  const box = $("#jh-ans");
+  const ground = $("#jh-ans-ground");
+  const copy = $("#jh-copy");
+  askBtn.disabled = salBtn.disabled = clBtn.disabled = true;
+  const origText = clBtn.textContent;
+  clBtn.textContent = "fetching…";
+  warn.textContent = "";
+  box.style.display = "none";
+  copy.style.display = "none";
+  ground.textContent = "";
 
-  // CV upload: fetch the bytes once, drop the File into each file input.
-  const fileRows = rows.filter((r) => r.isFile && r.fileTarget);
-  if (fileRows.length) {
-    out.innerHTML = renderTable(rows) +
-      '<div style="margin-top:6px;color:#aaa">uploading CV…</div>';
-    const cv = await bg({ type: "cv", id: MATCH.snapshot_id });
-    for (const r of fileRows) {
-      if (!cv || !cv.ok) r.note = "cv error: " + ((cv && cv.error) || "?");
-      else if (setFile(r.fileTarget, cv)) { r.filled = true; r.note = "cv uploaded"; }
-      else r.note = "not a file input — attach manually";
-      r.filledBy = r.note;
-    }
-    out.innerHTML = renderTable(rows);
+  const res = await bg({ type: "cover-letter", page_host: pageHost() });
+  askBtn.disabled = salBtn.disabled = clBtn.disabled = false;
+  clBtn.textContent = origText;
+  if (!res || !res.ok) {
+    warn.innerHTML = red("cover letter failed: " + ((res && res.error) || "?"));
+    return;
   }
-  // eslint-disable-next-line no-console
-  console.table(
-    rows.map((r) => ({
-      label: r.a.label, kind: r.a.kind, selector: r.selFound,
-      label_match: r.labFound, agree: r.agree, filledBy: r.filledBy, filled: r.filled,
-    }))
-  );
+  const d = res.data;
+  for (const w of d.warnings || []) {
+    warn.innerHTML += "⚠ " + esc(w) + "<br>";
+  }
+  box.textContent = d.cover_letter;
+  box.style.display = "block";
+  const g = d.grounding || {};
+  ground.innerHTML = "cover letter: " + esc(g.company || "?") + " · " +
+    esc(g.title || "?") + " · via " + esc(g.via || "?");
+  for (const n of d.notes || []) {
+    ground.innerHTML += "<br>· " + esc(n);
+  }
+  copy.style.display = "block";
+  copy.textContent = "Copy cover letter";
+}
+
+async function copyAnswer() {
+  const box = $("#jh-ans");
+  const copy = $("#jh-copy");
+  if (!box || !box.textContent) return;
+  try {
+    await navigator.clipboard.writeText(box.textContent);
+    copy.textContent = "✓ copied — paste it into the form";
+  } catch (_e) {
+    copy.textContent = "clipboard blocked — select the text manually";
+  }
+}
+
+const CV_LABEL_RE = /resume|\bcv\b|lebenslauf/i;
+
+async function runProfileFill() {
+  const out = $("#jh-out");
+  if (!out) return;
+  const els = fillableFields();
+  if (!els.length) {
+    out.innerHTML = red("no fillable fields on this page");
+    return;
+  }
+  // File inputs never go to /fill-plan (no fact can be a file) — they're
+  // handled below: resume-labelled ones get the CV, the rest stay manual.
+  const fileEls = els.filter((el) => (el.type || "").toLowerCase() === "file");
+  const textEls = els.filter((el) => !fileEls.includes(el));
+
+  // Send id/label/name/type/options; the server echoes `id` back so the plan
+  // maps to the exact element — `name` alone is ambiguous (radio groups share
+  // one name across options).
+  const byId = new Map();
+  const fields = textEls.map((el, i) => {
+    const id = "jh-" + i;
+    byId.set(id, el);
+    return {
+      id,
+      label: collapse(fieldLabel(el)).slice(0, 140),
+      name: el.name || el.id || "",
+      type: el.tagName === "SELECT" ? "select" : (el.type || "text").toLowerCase(),
+      options:
+        el.tagName === "SELECT"
+          ? [...el.options].map((o) => o.textContent.trim()).filter(Boolean).slice(0, 25)
+          : undefined,
+    };
+  });
+
+  out.textContent = "matching " + fields.length + " fields to profile…";
+  const res = await bg({ type: "fill-plan", fields, page_host: pageHost() });
+  if (!res || !res.ok) {
+    out.innerHTML = red("fill-plan failed: " + ((res && res.error) || "?"));
+    return;
+  }
+
+  const plan = res.data;
+  let filled = 0;
+  const reviewNotes = [];
+  for (const f of plan.fills) {
+    const el = byId.get(f.id);
+    if (!el) continue;
+    let ok;
+    if (f.action === "check") {
+      setNativeChecked(el, true);
+      ok = el.checked === true;
+    } else if (f.action === "select_option") {
+      ok = fillSelect(el, f.value);
+    } else if ((el.type || "").toLowerCase() === "radio") {
+      // A fact value for a radio option: tick it only when THIS option is the
+      // value (word-boundary match on its label). Never setNativeValue on a
+      // radio — that rewrites its submit value. No match → stays blank for
+      // the human (a wrongly ticked radio is worse than an empty one).
+      const want = normalize(String(f.value == null ? "" : f.value));
+      const have = normalize(collapse(fieldLabel(el)) + " " + (el.value || ""));
+      ok = !!want && new RegExp("(^| )" + escapeRe(want) + "( |$)").test(have);
+      if (ok) setNativeChecked(el, true);
+    } else {
+      setNativeValue(el, f.value == null ? "" : String(f.value));
+      ok = true;
+    }
+    if (ok) filled++;
+    if (f.needs_review) reviewNotes.push((f.label || f.name) + " → confirm the dropdown");
+  }
+
+  // CV upload: only into inputs whose label says resume/CV — a cover-letter or
+  // certificates upload must not silently get the CV.
+  const cvNotes = [];
+  const cvTargets = fileEls.filter((el) => CV_LABEL_RE.test(fieldLabel(el)));
+  if (cvTargets.length) {
+    out.innerHTML = renderProfileResult(fields.length, filled, plan, reviewNotes, cvNotes) +
+      '<div style="margin-top:6px;color:#aaa">uploading CV…</div>';
+    const cv = await bg({ type: "profile-cv" });
+    for (const el of cvTargets) {
+      if (!cv || !cv.ok) cvNotes.push("CV fetch failed: " + ((cv && cv.error) || "?"));
+      else if (setFile(el, cv)) { cvNotes.push("CV → " + collapse(fieldLabel(el)).slice(0, 40)); filled++; }
+      else cvNotes.push("not a real file input — attach the CV manually");
+    }
+  }
+  for (const el of fileEls.filter((e) => !cvTargets.includes(e))) {
+    cvNotes.push("file field “" + collapse(fieldLabel(el)).slice(0, 40) + "” — attach manually");
+  }
+  out.innerHTML = renderProfileResult(fields.length + cvTargets.length, filled, plan, reviewNotes, cvNotes);
+
+  // Filling on a page that has a pending draft = we are applying here: arm
+  // the confirmation watch so a thank-you page books it submitted. Keyed by
+  // host so two applications in two tabs never clobber each other's watch.
+  if (MATCH) {
+    const { applyingByHost } = await chrome.storage.local.get({ applyingByHost: {} });
+    applyingByHost[pageHost()] = { id: MATCH.snapshot_id, ts: Date.now() };
+    await chrome.storage.local.set({ applyingByHost });
+    startConfirmWatch(MATCH.snapshot_id);
+  }
+}
+
+function renderProfileResult(total, filled, plan, reviewNotes, cvNotes) {
+  const summary =
+    '<div style="margin:6px 0;color:#ddd">filled <b>' + filled + "</b>/" + total +
+    " · unmatched " + plan.unmatched.length +
+    " · never-fill " + plan.skipped_never_fill.length +
+    (reviewNotes.length ? ' · <span style="color:#e0a000">review ' + reviewNotes.length + "</span>" : "") +
+    "</div>";
+  const hint =
+    '<div style="color:#888">unmatched = open / job-specific questions — left ' +
+    "blank on purpose. Answer them yourself, then check &amp; submit.</div>";
+  const review = reviewNotes.length
+    ? '<div style="margin-top:4px;color:#e0a000">' +
+      reviewNotes.map((n) => "⚠ " + esc(n)).join("<br>") + "</div>"
+    : "";
+  const cv = (cvNotes && cvNotes.length)
+    ? '<div style="margin-top:4px;color:#aaa">' +
+      cvNotes.map((n) => esc(n)).join("<br>") + "</div>"
+    : "";
+  return summary + hint + review + cv;
+}
+
+function collapse(s) {
+  return (s || "").replace(/\s+/g, " ").trim();
 }
 
 // Drop the CV bytes into a real <input type=file> via DataTransfer. Custom
@@ -234,23 +436,32 @@ const CONFIRM_RE = new RegExp([
 ].join("|"), "i");
 
 // On load, resume a watch if we were applying on this host (set when Fill ran).
-// A stale flag (>2h) or a different host is ignored.
+// Stale entries (>2h) are pruned; other hosts' entries are left alone.
 async function maybeWatchConfirmation() {
-  const { applying } = await chrome.storage.local.get({ applying: null });
-  if (!applying) return;
-  if (Date.now() - applying.ts > 2 * 3600 * 1000) {
-    await chrome.storage.local.remove("applying");
-    return;
+  const { applyingByHost } = await chrome.storage.local.get({ applyingByHost: {} });
+  let dirty = false;
+  let mine = null;
+  for (const [host, entry] of Object.entries(applyingByHost)) {
+    if (Date.now() - entry.ts > 2 * 3600 * 1000) {
+      delete applyingByHost[host];
+      dirty = true;
+    } else if (hostMatch(pageHost(), host)) {
+      mine = entry;
+    }
   }
-  if (!hostMatch(pageHost(), applying.host)) return;
-  startConfirmWatch(applying.id);
+  if (dirty) await chrome.storage.local.set({ applyingByHost });
+  if (mine) startConfirmWatch(mine.id);
 }
 
 // The single booking path, used by the authoritative "I submitted it" button
 // and by the best-effort confirmation watch. Idempotent: a 409 (already
 // submitted) is shown as success.
 async function bookSubmitted(id) {
-  await chrome.storage.local.remove("applying");
+  const { applyingByHost } = await chrome.storage.local.get({ applyingByHost: {} });
+  for (const [host, entry] of Object.entries(applyingByHost)) {
+    if (entry.id === id) delete applyingByHost[host];
+  }
+  await chrome.storage.local.set({ applyingByHost });
   const res = await bg({ type: "submitted", id });
   if (res && res.ok) return onBooked(id, false);
   if (res && /409/.test(res.error || "")) return onBooked(id, true);
@@ -268,9 +479,7 @@ function onBooked(id, already) {
     s.innerHTML = '<span style="color:#5fd35f">✓ ' +
       (already ? "already submitted" : "marked submitted") + " (#" + id + ")</span>";
   }
-  const fill = $("#jh-fill");
   const sub = $("#jh-submitted");
-  if (fill) fill.disabled = true;
   if (sub) sub.style.display = "none";
 }
 
@@ -295,67 +504,7 @@ function startConfirmWatch(id) {
   check(); // navigation case: the confirmation page is already here
 }
 
-// ── B: selector replay ─────────────────────────────────────────────────────────
-function safeQuery(sel) {
-  try {
-    const el = document.querySelector(sel);
-    if (el) return el;
-  } catch (_e) {
-    /* invalid CSS (e.g. digit-leading id) — fall through */
-  }
-  // Personio & co. use digit-prefixed UUID ids; #123 is invalid CSS.
-  const m = sel.match(/^#(.+)$/);
-  if (m) {
-    try {
-      return document.querySelector('[id="' + cssEscape(m[1]) + '"]');
-    } catch (_e) {
-      return null;
-    }
-  }
-  return null;
-}
-
-// ── A: label match ──────────────────────────────────────────────────────────
-// A tiny German/English alias set — enough to test whether label matching can
-// carry the long tail. Each group's first token is the canonical concept.
-const ALIAS_GROUPS = [
-  ["first name", "first", "vorname", "given name"],
-  ["last name", "last", "nachname", "surname", "family name"],
-  ["email", "e-mail", "email address", "e-mail-adresse"],
-  ["phone", "telephone", "telefon", "phone number", "mobile", "mobil"],
-  ["salutation", "anrede", "gender", "geschlecht", "title", "titel"],
-  ["linkedin", "linkedin url", "linkedin profile"],
-  ["available from", "earliest start date", "verfügbar ab", "eintrittstermin", "start date"],
-  ["country", "land"],
-  ["city", "stadt", "ort"],
-  ["cover letter", "anschreiben", "motivation"],
-  ["resume", "cv", "lebenslauf"],
-  ["salary", "gehalt", "gehaltsvorstellung", "salary expectation"],
-];
-
-function resolveByLabel(rawLabel) {
-  const want = normalize(rawLabel);
-  if (!want) return null;
-  const wantAlias = aliasKey(want);
-  const fields = fillableFields();
-
-  const scored = [];
-  for (const el of fields) {
-    const have = normalize(fieldLabel(el));
-    if (!have) continue;
-    let score = 0;
-    if (have === want) score = 100;
-    else if (have.includes(want) || want.includes(have)) score = 70;
-    else if (wantAlias && wantAlias === aliasKey(have)) score = 60;
-    if (score) scored.push({ el, score });
-  }
-  if (!scored.length) return null;
-  scored.sort((a, b) => b.score - a.score);
-  // ambiguity guard (drift_recovery discipline): a tie at the top = don't guess.
-  if (scored.length > 1 && scored[1].score === scored[0].score) return null;
-  return scored[0].el;
-}
-
+// ── live field extraction ─────────────────────────────────────────────────────
 function fillableFields() {
   return [...document.querySelectorAll("input, select, textarea")].filter((el) => {
     const t = (el.type || "").toLowerCase();
@@ -384,21 +533,6 @@ function fieldLabel(el) {
 }
 
 // ── fill primitives ─────────────────────────────────────────────────────────
-function fillField(el, a) {
-  try {
-    if (el.tagName === "SELECT") return fillSelect(el, a.value);
-    const t = (el.type || "").toLowerCase();
-    if (t === "checkbox" || t === "radio") {
-      setNativeChecked(el, true);
-      return el.checked === true;
-    }
-    setNativeValue(el, a.value == null ? "" : String(a.value));
-    return el.value === (a.value == null ? "" : String(a.value));
-  } catch (_e) {
-    return false;
-  }
-}
-
 function fillSelect(el, value) {
   const want = normalize(String(value));
   let opt = [...el.options].find((o) => normalize(o.value) === want || normalize(o.textContent) === want);
@@ -432,41 +566,6 @@ function setNativeChecked(el, checked) {
   el.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
-// ── reporting ────────────────────────────────────────────────────────────────
-function renderTable(rows) {
-  const n = rows.length;
-  const sel = rows.filter((r) => r.selFound).length;
-  const lab = rows.filter((r) => r.labFound).length;
-  const filled = rows.filter((r) => r.filled).length;
-  const cell = "padding:2px 4px;border-bottom:1px solid #2a2a2a;vertical-align:top";
-  const head =
-    '<div style="margin:6px 0;color:#ddd">selector ' + pct(sel, n) +
-    " · label " + pct(lab, n) + " · filled " + pct(filled, n) + "</div>";
-  const body = rows
-    .map((r) => {
-      const lbl = (r.a.label || r.a.selector || "?").slice(0, 28);
-      return (
-        '<tr><td style="' + cell + '">' + esc(lbl) + "</td>" +
-        '<td style="' + cell + '">' + esc(r.a.kind || "") + "</td>" +
-        '<td style="' + cell + ';text-align:center">' + mark(r.selFound) + "</td>" +
-        '<td style="' + cell + ';text-align:center">' + mark(r.labFound) + "</td>" +
-        '<td style="' + cell + ';text-align:center">' + (r.agree ? "=" : "") + "</td>" +
-        '<td style="' + cell + '">' + esc(r.filledBy || r.note || "—") + "</td>" +
-        '<td style="' + cell + ';text-align:center">' + mark(r.filled) + "</td></tr>"
-      );
-    })
-    .join("");
-  return (
-    head +
-    '<table style="width:100%;border-collapse:collapse">' +
-    '<thead><tr style="color:#888">' +
-    ["field", "kind", "sel", "lbl", "=", "by", "ok"]
-      .map((h) => '<th style="' + cell + ';text-align:left">' + h + "</th>")
-      .join("") +
-    "</tr></thead><tbody>" + body + "</tbody></table>"
-  );
-}
-
 // ── small utils ──────────────────────────────────────────────────────────────
 function normalize(s) {
   return (s || "")
@@ -477,23 +576,12 @@ function normalize(s) {
     .trim();
 }
 
-function aliasKey(norm) {
-  for (const group of ALIAS_GROUPS) {
-    if (group.some((tok) => norm === tok || norm.includes(tok))) return group[0];
-  }
-  return null;
-}
-
 function cssEscape(s) {
   return window.CSS && CSS.escape ? CSS.escape(s) : s.replace(/["\\]/g, "\\$&");
 }
 
-function mark(ok) {
-  return ok ? '<span style="color:#5fd35f">✓</span>' : '<span style="color:#e06666">✗</span>';
-}
-
-function pct(k, n) {
-  return k + "/" + n + " (" + (n ? Math.round((100 * k) / n) : 0) + "%)";
+function escapeRe(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function red(msg) {

@@ -15,8 +15,16 @@ Ranking (deterministic, applied in order):
   1. freshness bucket — fetched_at <= FRESH_BUCKET_DAYS first (protects
      perishable sources like wearedevelopers, whose jobs die young)
   2. grade A before B
-  3. match_score descending
-  4. fetched_at newest first
+  3. addressable bucket — extension-fillable ATS first (env APPLY_PREFER_
+     ADDRESSABLE, default on); a gentle bias, never lets a B jump an A
+  4. match_score descending
+  5. fetched_at newest first
+
+Experiment gates (both default off) for the résumé-conversion cohort — apply
+only to high-fit jobs the extension can actually submit to, then measure the
+interview rate with utils.resume_stats:
+  APPLY_MIN_SCORE=85       drop candidates below this match_score
+  APPLY_ADDRESSABLE_ONLY=1 keep only extension-fillable ATS (is_addressable)
 
 Dedup gate (per candidate, on normalized company name):
   block — company already has a pipeline record, or another job of the same
@@ -47,6 +55,33 @@ DEFAULT_BUDGET = 25
 LIVENESS_MAX_AGE_DAYS = 7
 FRESH_BUCKET_DAYS = 3
 DEAD_ATS = ("gone", "fetch-error")
+
+# ATS the browser extension can actually auto-fill (native inputs, no custom-JS
+# widget/dropzone/captcha wall). join/indeed/softgarden are deliberately absent —
+# three field tests proved they die at field-extraction or fill or reCAPTCHA and
+# stay a human floor. See memory extension-autofill-spike.
+ADDRESSABLE_ATS = frozenset({"greenhouse", "lever", "ashby", "workable", "personio"})
+
+# Structured ATS often hides behind a job board / redirect / iframe, so the `ats`
+# column reads "unknown"/"unknown-external". These apply_url fingerprints pierce
+# the disguise (e.g. Workato's careers page whose form is Greenhouse via gh_jid).
+_ADDRESSABLE_URL_PATTERNS = (
+    "greenhouse.io", "gh_jid=", "grnh.se",
+    "lever.co",
+    "ashbyhq.com",
+    "personio.de", "personio.com", "jobs.personio",
+    "workable.com",
+)
+
+
+def is_addressable(job: dict) -> bool:
+    """True when the extension can auto-fill this application, incl. structured
+    ATS disguised behind a board/redirect/iframe (detected via apply_url).
+    Everything else (join custom-JS, indeed account-wall, captcha) is human-only."""
+    if (job.get("ats") or "").lower() in ADDRESSABLE_ATS:
+        return True
+    url = (job.get("apply_url") or "").lower()
+    return any(p in url for p in _ADDRESSABLE_URL_PATTERNS)
 
 # Same notion of "in the pipeline" as the dashboard: once a company has any of
 # these, a new application there needs a human decision first.
@@ -98,12 +133,16 @@ def job_age_days(fetched_at: str | None, now: datetime) -> int | None:
     return (now - dt).days if dt else None
 
 
-def sort_key(job: dict, now: datetime):
+def sort_key(job: dict, now: datetime, prefer_addressable: bool = False):
     age = job_age_days(job["fetched_at"], now)
     fresh_bucket = 0 if age is not None and age <= FRESH_BUCKET_DAYS else 1
     grade_rank = 0 if job["fit_grade"] == "A" else 1
+    # Among same-freshness, same-grade jobs, float ones the extension can actually
+    # submit to. Never lets a B jump an A — a gentle bias, not an override.
+    addr_bucket = 0 if (prefer_addressable and is_addressable(job)) else 1
     fetched = _parse_dt(job["fetched_at"]) or datetime.min
-    return (fresh_bucket, grade_rank, -(job["match_score"] or 0), -fetched.timestamp())
+    return (fresh_bucket, grade_rank, addr_bucket,
+            -(job["match_score"] or 0), -fetched.timestamp())
 
 
 class DedupContext:
@@ -205,6 +244,13 @@ def build_queue(conn, budget: int | None = None, now: datetime | None = None,
     now = now or datetime.now()
     liveness_cutoff = now - timedelta(days=LIVENESS_MAX_AGE_DAYS)
 
+    # Ranking bias toward extension-fillable ATS (default on).
+    prefer_addressable = os.getenv("APPLY_PREFER_ADDRESSABLE", "1") != "0"
+    # Experiment gates (default off): the résumé-conversion cohort is "85+ score,
+    # extension-fillable only". Set both to emit exactly that batch.
+    addressable_only = os.getenv("APPLY_ADDRESSABLE_ONLY", "0") == "1"
+    min_score = int(os.getenv("APPLY_MIN_SCORE", "0"))
+
     in_flight_job_ids = {
         r["job_id"]
         for r in conn.execute(
@@ -219,6 +265,10 @@ def build_queue(conn, budget: int | None = None, now: datetime | None = None,
     for job in fetch_candidates(conn):
         if job["id"] in in_flight_job_ids:
             continue  # already has a snapshot in motion — not queued again
+        if (job["match_score"] or 0) < min_score:
+            continue  # experiment cohort: below the score floor
+        if addressable_only and not is_addressable(job):
+            continue  # experiment cohort: extension-fillable ATS only
         if job["ats"] in DEAD_ATS:
             dead.append(job)
             continue
@@ -229,14 +279,15 @@ def build_queue(conn, budget: int | None = None, now: datetime | None = None,
             continue
         eligible.append(job)  # stale ones included only when include_stale (Pass A verifies)
 
-    eligible.sort(key=lambda j: sort_key(j, now))
+    eligible.sort(key=lambda j: sort_key(j, now, prefer_addressable))
 
     queue, blocked = [], []
     ctx = DedupContext.from_db(conn)
     for job in eligible:
         verdict, reason = dedup_gate(job, ctx)
         job = {**job, "age_days": job_age_days(job["fetched_at"], now),
-               "dedup": verdict, "dedup_reason": reason}
+               "dedup": verdict, "dedup_reason": reason,
+               "addressable": is_addressable(job)}
         if verdict == "block":
             blocked.append(job)
         else:
@@ -255,19 +306,22 @@ def build_queue(conn, budget: int | None = None, now: datetime | None = None,
 
 
 def _print_queue(result: dict, top: int) -> None:
-    header = f"{'#':>3} {'gr':<2} {'sc':>3} {'age':>4} {'source':<16} {'company':<26} {'title':<34} {'ats':<14} dedup"
+    header = f"{'#':>3} {'gr':<2} {'sc':>3} {'age':>4} {'fill':<4} {'source':<16} {'company':<26} {'title':<34} {'ats':<14} dedup"
     print(header)
     print("-" * len(header))
     rows = result["queue"] + result["over_budget"]
     budget = len(result["queue"])
+    addr_n = sum(1 for j in result["queue"] if j.get("addressable"))
     for job in rows[:top]:
         if job["rank"] == budget + 1:
             print(f"--- 預算截斷線（APPLY_DAILY_BUDGET={budget}）---")
         dedup = f"{job['dedup']}: {job['dedup_reason']}" if job["dedup"] != "ok" else ""
         age = f"{job['age_days']}d" if job["age_days"] is not None else "?"
+        fill = "✓" if job.get("addressable") else "·"
         print(f"{job['rank']:>3} {job['fit_grade']:<2} {job['match_score']:>3} {age:>4} "
-              f"{job['source']:<16} {job['company'][:25]:<26} {job['title'][:33]:<34} "
+              f"{fill:<4} {job['source']:<16} {job['company'][:25]:<26} {job['title'][:33]:<34} "
               f"{(job['ats'] or '?'):<14} {dedup}")
+    print(f"\n可觸及 ATS（套件可投）：{addr_n}/{len(result['queue'])} 筆在預算內")
 
     print(f"\n佇列 {len(result['queue'])} 筆（預算內）"
           f"+ {len(result['over_budget'])} 筆超出預算"

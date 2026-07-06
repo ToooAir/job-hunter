@@ -8,8 +8,11 @@ Two passes (Step 4 design, approved 2026-06-12):
   (user decision: never use heise's own application wizard). Every visited
   job gets its ats_checked_at refreshed (JIT liveness).
 
-  Pass B (LLM, no browser): run the per-job LangGraph pipeline — map fields,
-  generate/reuse content, verify, assign tier, save a draft snapshot.
+  Pass B (LLM, no browser): run the per-job LangGraph pipeline — reuse the
+  scored cover letter, verify, assign tier, save a draft snapshot. (The
+  field-mapping chain was retired 2026-07-02 — facts are filled live at
+  apply time by the extension's /fill-plan; the extracted field table now
+  only feeds the weak-form verdict.)
 
 Accounting invariant: every queue job ends as exactly one of
   draft saved (tier 1/2/3) | failed (reason recorded). Nothing is dropped.

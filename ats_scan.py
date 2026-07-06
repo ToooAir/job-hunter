@@ -364,6 +364,8 @@ def main():
         checked_at = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
         jobs = fetch_jobs(args.limit)
         print(f"掃描 {len(jobs)} 筆德國境內 A + B≥70 職缺（workers={MAX_WORKERS}）...")
+        if not jobs:
+            return  # scheduled runs: an empty pool is a no-op, not an error
 
         results = []
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:

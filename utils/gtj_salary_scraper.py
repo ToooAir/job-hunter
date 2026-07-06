@@ -124,7 +124,12 @@ def _save_cache(cache: dict) -> None:
 
 def _is_fresh(entry: dict) -> bool:
     try:
-        age = (datetime.now(timezone.utc) - datetime.fromisoformat(entry["fetched_at"])).days
+        fetched = datetime.fromisoformat(entry["fetched_at"])
+        if fetched.tzinfo is None:
+            # Stored timestamps are naive UTC strings; make them aware so the
+            # subtraction below cannot raise (a raise here == cache never hits).
+            fetched = fetched.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - fetched).days
         return age < CACHE_TTL_DAYS
     except Exception:
         return False
