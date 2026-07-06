@@ -95,6 +95,18 @@ _DE_POSTAL_RE = re.compile(r"\b\d{5}\b")
 _DE_TOKEN_RE = re.compile(r",\s*de\s*(?=,|$)", re.I)
 
 
+def has_non_de_marker(location: str | None) -> bool:
+    """True when the location outright names a non-German country/city.
+
+    Used by phase2_scorer as a scoring veto: a job whose location says
+    "Municipality of Madrid, Spain" can never enter the Germany-only apply
+    queue, so LLM-scoring it is pure spend. Bare/ambiguous locations
+    ("Remote", "Schlieren") return False — absence of a marker is not
+    evidence of Germany, so they still get scored.
+    """
+    return bool(_NON_DE_RE.search((location or "").lower()))
+
+
 def is_germany_location(location: str | None) -> bool:
     """Precise check: does this location string place the job in Germany?
 
