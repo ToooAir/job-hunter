@@ -92,7 +92,7 @@ job-hunter/
 ├── requirements.txt
 ├── Dockerfile
 ├── docker-compose.yml
-├── run_pipeline.sh                   # Shell 包裝器（launchd / 手動執行）
+├── run_pipeline.sh                   # 手動全鏈執行（儀表板「立即執行」按鈕呼叫）
 ├── scheduler.py                      # 追趕式排程器（間隔制,中斷後從未完成的 stage 續跑）
 ├── phase1_ingestor.py                # 爬取職缺（16 個來源）
 ├── remote_geo_triage.py              # Remote/漏網德國地名按受僱資格重標
