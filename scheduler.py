@@ -60,17 +60,19 @@ EX_TEMPFAIL        = 75   # contract with phase2_scorer.EXIT_TRANSIENT
 BACKOFF_BASE_S     = 300  # first retry after a transient failure: 5 min
 BACKOFF_MAX_S      = 3600
 
-STAGES = ("phase1_ingestor.py", "phase2_scorer.py", "remote_geo_triage.py",
+STAGES = ("phase1_ingestor.py", "remote_geo_triage.py", "phase2_scorer.py",
           "ats_scan.py", "apply_stage1.py")
 # Best-effort stages: a non-zero exit is logged but does not fail the run
-# (the core scrape+score already succeeded by the time these run).
+# (the core scrape+score still counts; a failed triage only means one day
+# without the relabel/cost savings).
 BEST_EFFORT_STAGES = frozenset({"remote_geo_triage.py", "ats_scan.py", "apply_stage1.py"})
-# Extra CLI args per stage. remote_geo_triage must run before ats_scan: it
-# relabels bare location='Remote' to "Remote — Germany"/"— EU"/"— non-EU"
-# (rules-only here; the --llm pass stays manual), and ats_scan's GERMANY_LIKE
-# filter only sees the Germany-eligible ones after that. ats_scan must run
-# before apply_stage1: it backfills jobs.ats, and under APPLY_ADDRESSABLE_ONLY
-# a NULL-ats job is dropped before the needs_recheck branch, so Pass A alone
+# Extra CLI args per stage. remote_geo_triage runs BEFORE phase2_scorer: its
+# rule verdicts are free, and a "Remote — non-EU" label lets the scorer skip
+# the job before any LLM spend (rules-only here; the --llm pass stays manual).
+# It thereby also precedes ats_scan, whose GERMANY_LIKE filter only sees the
+# Germany-eligible ones after relabeling. ats_scan must run before
+# apply_stage1: it backfills jobs.ats, and under APPLY_ADDRESSABLE_ONLY a
+# NULL-ats job is dropped before the needs_recheck branch, so Pass A alone
 # would never classify it.
 STAGE_ARGS = {"remote_geo_triage.py": ("--write-db",), "ats_scan.py": ("--write-db",)}
 
