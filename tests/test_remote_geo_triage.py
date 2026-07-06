@@ -14,7 +14,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from remote_geo_triage import (  # noqa: E402
     LABELS,
     LLM_UNCLEAR_LABEL,
+    WORLDWIDE_LOCATIONS,
     classify_rules,
+    fetch_de_candidates,
     fetch_remote_jobs,
 )
 
@@ -70,8 +72,12 @@ class TestFetchAndWriteBack(unittest.TestCase):
         rows = [
             ("j1", "Acme", "Backend", "Remote", "scored", 90, "Remote within Germany", None),
             ("j2", "Umbrella", "ML", "Remote", "scored", 85, None, "US only role"),
-            ("j3", "Initech", "Dev", "Hamburg", "scored", 88, "irrelevant", None),  # not Remote
+            ("j3", "Initech", "Dev", "Hamburg", "scored", 88, "irrelevant", None),  # keyword match
             ("j4", "Hooli", "SRE", "Remote", "applied", 92, "anywhere", None),      # not scored
+            ("j5", "Piper", "Go dev", "Anywhere in the World", "scored", 90, "great team", None),
+            ("j6", "Vandelay", "QA", "Remote / New York", "scored", 88, "eng org", None),
+            ("j7", "Sirius", "Data", "Dresden (DE)", "scored", 88, "eng org", None),
+            ("j8", "Globex", "SRE", "Municipality of Madrid, Spain", "scored", 88, "x", None),
         ]
         self.conn.executemany("INSERT INTO jobs VALUES (?,?,?,?,?,?,?,?)", rows)
         self.conn.commit()
@@ -80,28 +86,50 @@ class TestFetchAndWriteBack(unittest.TestCase):
         self.conn.close()
         Path(self.tmp.name).unlink(missing_ok=True)
 
-    def test_fetch_only_bare_remote_scored(self):
+    def test_fetch_remote_pool_includes_variants(self):
         jobs = fetch_remote_jobs(self.conn)
-        self.assertEqual({j["id"] for j in jobs}, {"j1", "j2"})
+        self.assertEqual({j["id"] for j in jobs}, {"j1", "j2", "j5", "j6"})
 
     def test_llm_unclear_label_leaves_fetch_scope(self):
         # once marked, the job must not be fetched (and thus billed) again
         self.conn.execute(
             "UPDATE jobs SET location=? WHERE id='j2'", (LLM_UNCLEAR_LABEL,))
         jobs = fetch_remote_jobs(self.conn)
-        self.assertEqual({j["id"] for j in jobs}, {"j1"})
+        self.assertEqual({j["id"] for j in jobs}, {"j1", "j5", "j6"})
+
+    def test_worldwide_locations_are_lowercase(self):
+        # membership test in main() lowers the location first
+        for loc in WORLDWIDE_LOCATIONS:
+            self.assertEqual(loc, loc.lower())
+
+    def test_de_candidates_pool(self):
+        # keyword-matched (j3 Hamburg), Remote-ish (j1/j2/j6), worldwide (j5)
+        # and non-scored (j4) are all out; the pool is the label gap only
+        jobs = fetch_de_candidates(self.conn)
+        self.assertEqual({j["id"] for j in jobs}, {"j7", "j8"})
 
     def test_write_back_guard_is_idempotent(self):
         self.conn.execute(
-            "UPDATE jobs SET location=? WHERE id=? AND location='Remote'",
-            (LABELS["germany"], "j1"))
-        # second pass: j1 no longer matches location='Remote'
+            "UPDATE jobs SET location=? WHERE id=? AND location=?",
+            (LABELS["germany"], "j1", "Remote"))
+        # second pass carries the stale old location — must not overwrite
         cur = self.conn.execute(
-            "UPDATE jobs SET location=? WHERE id=? AND location='Remote'",
-            (LABELS["non_eu"], "j1"))
+            "UPDATE jobs SET location=? WHERE id=? AND location=?",
+            (LABELS["non_eu"], "j1", "Remote"))
         self.assertEqual(cur.rowcount, 0)
         loc = self.conn.execute("SELECT location FROM jobs WHERE id='j1'").fetchone()[0]
         self.assertEqual(loc, LABELS["germany"])
+
+    def test_pass0_relabel_reaches_keyword_filter(self):
+        # the appended label must contain 'German' so apply_queue picks it up
+        new_loc = "Dresden (DE), Germany"
+        self.conn.execute(
+            "UPDATE jobs SET location=? WHERE id=? AND location=?",
+            (new_loc, "j7", "Dresden (DE)"))
+        self.assertIn("German", new_loc)
+        # and the job leaves the pass-0 pool on the next run
+        jobs = fetch_de_candidates(self.conn)
+        self.assertEqual({j["id"] for j in jobs}, {"j8"})
 
 
 if __name__ == "__main__":

@@ -586,52 +586,11 @@ PIPELINE_STATUSES = ('applied', 'interview_1', 'interview_2', 'offer', 'rejected
 # Sources with no geographic filtering capability; excluded from default view
 REMOTE_GLOBAL_SOURCES = ["remotive", "jobicy", "weworkremotely"]
 
-# Sentinel used in _GERMANY_PATTERNS to trigger a 5-digit postal code GLOB in fetch_jobs
-_DE_POSTAL = "__de_postal__"
-
-# City alias expansion: handles English/German name variants and common misspellings
-_GERMANY_PATTERNS = [
-    _DE_POSTAL,          # matches "74076 Heilbronn", "07743 Jena", etc.
-    # country-level markers
-    "germany", "deutschland", "bundesweit",
-    # "(DE)" suffix — e.g. "Hamburg (DE)"
-    "(de)",
-    # German federal states
-    "nordrhein", "westfalen", "rheinland", "pfalz",
-    "sachsen", "thüringen", "thueringen",
-    "schleswig", "holstein", "mecklenburg",
-    "niedersachsen", "hessen", "saarland",
-    "bayern", "bavaria", "brandenbur",
-    # major cities (English + German + Anglicised spellings)
-    "hamburg", "berlin",
-    "munich", "münchen", "muenchen",
-    "cologne", "köln", "koeln",
-    "frankfurt",
-    "düsseldorf", "dusseldorf",
-    "stuttgart",
-    "nuremberg", "nürnberg", "nuernberg",
-    "leipzig",
-    "hannover", "hanover",
-    "bremen",
-    "dresden",
-    "essen", "dortmund", "bochum",
-    "karlsruhe", "mannheim", "heidelberg",
-    "augsburg", "freiburg",
-    "wiesbaden", "mainz", "bonn",
-    "kiel", "rostock", "lübeck", "luebeck",
-    "konstanz", "ulm", "regensburg",
-    # additional cities present in DB
-    "potsdam", "jena", "halle",
-    "magdeburg", "erfurt", "schwerin",
-    "oldenburg", "bremerhaven", "neumünster", "neumuenster",
-    "paderborn", "bielefeld", "münster", "muenster",
-    "osnabrück", "osnabrueck",
-    "aachen", "göttingen", "goettingen",
-    "wolfsburg", "braunschweig", "brunswick",
-    "kassel", "darmstadt", "offenbach",
-    "saarbrücken", "saarbruecken",
-    "koblenz", "trier",
-]
+# Pattern list + postal-code sentinel live in utils.geo_de, shared with
+# remote_geo_triage (which relabels German locations so the apply queue's
+# short keyword list matches them).
+from utils.geo_de import DE_POSTAL_SENTINEL as _DE_POSTAL  # noqa: E402
+from utils.geo_de import GERMANY_PATTERNS as _GERMANY_PATTERNS  # noqa: E402
 
 _LOCATION_ALIASES: dict[str, list[str]] = {
     # Germany-wide search (also accept "german" without trailing 'y')
