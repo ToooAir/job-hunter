@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
-"""remote_geo_triage.py — classify bare-"Remote" jobs by Germany-hiring eligibility.
+"""remote_geo_triage.py — relabel locations the Germany filters cannot see.
 
-Scrapers of global remote boards (remotive/jobicy/weworkremotely/wttj) label
-jobs with a bare location="Remote", which the Germany filters downstream
-(apply_queue.GERMANY_KEYWORDS, ats_scan.GERMANY_LIKE) can neither include nor
-exclude — the whole bucket silently falls out of the apply queue.
+The downstream Germany filters (apply_queue.GERMANY_KEYWORDS,
+ats_scan.GERMANY_LIKE) are a 14-keyword LIKE list. Two whole classes of
+scored jobs silently fall out of the apply queue because of that:
 
-This stage relabels location on status='scored' jobs where location='Remote':
+Pass 0 — German locations the keywords miss. Second-tier cities
+("Nuremberg", "Karlsruhe"), "(DE)" suffixes ("Dresden (DE)"), postal-code
+forms ("54595 Prüm"), small towns and "Bundesweit". geo_de.is_germany_location
+vets them (any non-DE country/city marker vetoes), then ", Germany" is
+appended so the existing keyword filters match with zero downstream changes.
+
+Pass 1/2 — bare-"Remote" jobs from global boards (remotive/jobicy/
+weworkremotely/wttj), plus variants ("Anywhere in the World", "Remote / X"),
+classified by Germany-hiring eligibility from the JD text:
 
     Remote — Germany   JD says Germany-eligible (or hire-from-anywhere)
     Remote — EU        Europe/EU-wide remote; Germany plausible, human decides
@@ -40,6 +47,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+from utils.apply_queue import GERMANY_KEYWORDS  # noqa: E402 — pure stdlib
+from utils.geo_de import is_germany_location  # noqa: E402
+
 ROOT = Path(__file__).parent
 DB_PATH = ROOT / "data" / "jobs.db"
 
@@ -53,6 +63,15 @@ LABELS = {
 # next --llm run's bill. Transient LLM *failures* stay bare 'Remote' instead,
 # so they are retried.
 LLM_UNCLEAR_LABEL = "Remote — unclear"
+
+# Location strings that mean hire-from-anywhere — Germany-eligible by
+# definition, no JD evidence needed. Matched on the exact (lowered) string
+# only: the word "anywhere" inside a JD is NOT trusted ("work anywhere in
+# the US" would slip through classify_rules).
+WORLDWIDE_LOCATIONS = {
+    "anywhere", "anywhere in the world", "work from anywhere",
+    "worldwide", "remote worldwide", "remote (worldwide)",
+}
 
 GERMANY_RE = re.compile(
     r"\b(germany|deutschland|german entity|hamburg|berlin|munich|münchen|"
@@ -119,16 +138,50 @@ def classify_llm(client, model, job) -> str:
 
 
 def fetch_remote_jobs(conn, limit=None):
+    """Bare 'Remote' plus variants ("Remote / X", "Anywhere in the World").
+
+    The triage labels ('Remote — …') use an em-dash, so they never match the
+    'Remote /%' / 'Remote, %' patterns — labelled jobs stay out of the pool.
+    """
+    ww = ",".join("?" * len(WORLDWIDE_LOCATIONS))
     sql = (
-        "SELECT id, company, title, match_score, "
+        "SELECT id, company, title, location, match_score, "
         "       COALESCE(title,'') || ' ' || COALESCE(raw_jd_text,'') || ' ' "
         "       || COALESCE(translated_jd_text,'') AS jd "
-        "FROM jobs WHERE status='scored' AND location='Remote' "
+        "FROM jobs WHERE status='scored' AND ("
+        "    location='Remote' OR location LIKE 'Remote /%' "
+        f"   OR location LIKE 'Remote, %' OR LOWER(location) IN ({ww})"
+        ") ORDER BY match_score DESC"
+    )
+    if limit:
+        sql += f" LIMIT {int(limit)}"
+    return [dict(r) for r in conn.execute(sql, tuple(WORLDWIDE_LOCATIONS))]
+
+
+def _matches_germany_keywords(location: str) -> bool:
+    low = (location or "").lower()
+    return any(k.lower() in low for k in GERMANY_KEYWORDS)
+
+
+def fetch_de_candidates(conn, limit=None):
+    """Pass 0 pool: scored jobs the 14-keyword Germany filter does not match.
+
+    Remote-ish locations are excluded — they belong to the remote pass, and
+    substring city matching on them backfires ("Remote / Lisbonne" contains
+    "bonn").
+    """
+    sql = (
+        "SELECT id, company, title, location, match_score "
+        "FROM jobs WHERE status='scored' "
+        "AND location IS NOT NULL AND location != '' "
+        "AND location NOT LIKE 'Remote%' "
         "ORDER BY match_score DESC"
     )
     if limit:
         sql += f" LIMIT {int(limit)}"
-    return [dict(r) for r in conn.execute(sql)]
+    return [dict(r) for r in conn.execute(sql)
+            if not _matches_germany_keywords(r["location"])
+            and r["location"].strip().lower() not in WORLDWIDE_LOCATIONS]
 
 
 def main():
@@ -144,18 +197,35 @@ def main():
 
     conn = sqlite3.connect(args.db)
     conn.row_factory = sqlite3.Row
+    relabel: list[tuple[str, str, str]] = []  # (new_location, job_id, old_location)
+
+    # ── Pass 0: German locations the 14-keyword filter misses ─────────────
+    de_jobs = fetch_de_candidates(conn, args.limit)
+    de_hits = [j for j in de_jobs if is_germany_location(j["location"])]
+    print(f"分類 Pass 0:{len(de_jobs)} 筆非德國標記地點中,{len(de_hits)} 筆"
+          f"判定在德國 → 加註 ', Germany'", flush=True)
+    for j in de_hits:
+        relabel.append((f"{j['location']}, Germany", j["id"], j["location"]))
+        print(f"  ✓ {j['match_score'] or 0:>3} {(j['company'] or '')[:30]}"
+              f" — {j['location'][:45]}", flush=True)
+
+    # ── Pass 1/2: Remote pool (rules, then optional LLM) ──────────────────
     jobs = fetch_remote_jobs(conn, args.limit)
-    print(f"分類 {len(jobs)} 筆 location='Remote' 的 scored 職缺(rules"
+    print(f"分類 {len(jobs)} 筆 Remote 類 scored 職缺(rules"
           f"{' + LLM' if args.llm else ''}, write={args.write_db})", flush=True)
 
     client = model = None
     llm_calls = llm_errors = consecutive_errors = 0
     llm_enabled = args.llm
     counts: Counter = Counter()
-    relabel: list[tuple[str, str]] = []  # (new_location, job_id)
 
     for job in jobs:
-        region = classify_rules(job["jd"])
+        loc = (job["location"] or "").strip()
+        if loc.lower() in WORLDWIDE_LOCATIONS:
+            region = "germany"  # the location string itself says anywhere
+        else:
+            # variants like "Remote / Berlin" carry the signal in the label
+            region = classify_rules(f"{loc} {job['jd']}")
         llm_said_unclear = False
         if region == "unclear" and llm_enabled and (job["match_score"] or 0) >= args.llm_min_score:
             if client is None:
@@ -181,17 +251,18 @@ def main():
                     time.sleep(10 * consecutive_errors)
         counts[region] += 1
         if region in LABELS:
-            relabel.append((LABELS[region], job["id"]))
+            relabel.append((LABELS[region], job["id"], job["location"]))
+            if region == "germany":
+                print(f"  ✓ Germany-eligible: {job['match_score'] or 0:>3} "
+                      f"{(job['company'] or '')[:30]} — {(job['title'] or '')[:45]}",
+                      flush=True)
         elif llm_said_unclear:
             # persist the verdict so the next --llm run skips this job
             counts["llm_unclear"] += 1
-            relabel.append((LLM_UNCLEAR_LABEL, job["id"]))
-            if region == "germany":
-                print(f"  ✓ Germany-eligible: {job['match_score']:>3} "
-                      f"{job['company'][:30]} — {job['title'][:45]}", flush=True)
+            relabel.append((LLM_UNCLEAR_LABEL, job["id"], job["location"]))
 
-    print(f"\n=== 分類結果(共 {len(jobs)} 筆,LLM 呼叫 {llm_calls} 次"
-          f",失敗 {llm_errors} 次)===")
+    print(f"\n=== 分類結果(Pass 0 加註 {len(de_hits)} 筆;Remote 池 "
+          f"{len(jobs)} 筆,LLM 呼叫 {llm_calls} 次,失敗 {llm_errors} 次)===")
     for region in ("germany", "europe", "non_eu", "unclear"):
         n = counts.get(region, 0)
         label = LABELS.get(region, "(不變)")
@@ -201,9 +272,10 @@ def main():
               f"{LLM_UNCLEAR_LABEL},下次 --llm 不再重判)")
 
     if args.write_db and relabel:
-        # location='Remote' guard keeps the update idempotent and race-safe
+        # matching the original location keeps the update idempotent and
+        # race-safe (a job relabelled in the meantime is left alone)
         cur = conn.executemany(
-            "UPDATE jobs SET location=? WHERE id=? AND location='Remote'", relabel)
+            "UPDATE jobs SET location=? WHERE id=? AND location=?", relabel)
         conn.commit()
         print(f"已寫入 DB:{cur.rowcount} 筆 location 重標")
     conn.close()
