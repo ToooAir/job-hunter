@@ -93,7 +93,7 @@ job-hunter/
 ├── requirements.txt
 ├── Dockerfile
 ├── docker-compose.yml
-├── run_pipeline.sh                   # Shell wrapper for launchd / manual runs
+├── run_pipeline.sh                   # Manual full-chain run (dashboard "Run now" button)
 ├── scheduler.py                      # Catch-up scheduler: interval-based, resumes interrupted runs
 ├── phase1_ingestor.py                # Scrape jobs (16 sources)
 ├── remote_geo_triage.py              # Relabel remote/mislabelled locations by Germany eligibility
