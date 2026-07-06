@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from utils.geo_de import (  # noqa: E402
     DE_POSTAL_SENTINEL,
     GERMANY_PATTERNS,
+    has_non_de_marker,
     is_germany_location,
 )
 
@@ -83,6 +84,35 @@ class TestIsGermanyLocation(unittest.TestCase):
     def test_sentinel_is_not_matched_as_substring(self):
         self.assertIn(DE_POSTAL_SENTINEL, GERMANY_PATTERNS)
         self.assertFalse(is_germany_location("__de_postal__ somewhere"))
+
+
+class TestHasNonDeMarker(unittest.TestCase):
+    """Scoring-veto predicate: only outright foreign markers count."""
+
+    def test_foreign_locations_marked(self):
+        self.assertTrue(has_non_de_marker("Municipality of Madrid, Spain"))
+        self.assertTrue(has_non_de_marker("New York, United States of America"))
+        self.assertTrue(has_non_de_marker("Charing Cross, United Kingdom"))
+        self.assertTrue(has_non_de_marker("Wien oder Remote"))
+
+    def test_ambiguous_locations_still_scored(self):
+        # absence of a marker is not evidence of Germany — these must score
+        self.assertFalse(has_non_de_marker("Remote"))
+        self.assertFalse(has_non_de_marker("Schlieren"))   # bare Swiss town
+        self.assertFalse(has_non_de_marker(""))
+        self.assertFalse(has_non_de_marker(None))
+
+    def test_triage_labels(self):
+        # non-EU is excluded via phase2_scorer.geo_excluded's exact match,
+        # not via this marker; EU stays scored for the human-review ranking
+        self.assertFalse(has_non_de_marker("Remote — EU"))
+        self.assertFalse(has_non_de_marker("Remote — non-EU"))
+        self.assertFalse(has_non_de_marker("Remote — Germany"))
+
+    def test_german_locations_never_marked(self):
+        self.assertFalse(has_non_de_marker("Hamburg"))
+        self.assertFalse(has_non_de_marker("Dresden (DE)"))
+        self.assertFalse(has_non_de_marker("54595 Prüm"))
 
 
 if __name__ == "__main__":

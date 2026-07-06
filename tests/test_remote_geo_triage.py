@@ -78,6 +78,9 @@ class TestFetchAndWriteBack(unittest.TestCase):
             ("j6", "Vandelay", "QA", "Remote / New York", "scored", 88, "eng org", None),
             ("j7", "Sirius", "Data", "Dresden (DE)", "scored", 88, "eng org", None),
             ("j8", "Globex", "SRE", "Municipality of Madrid, Spain", "scored", 88, "x", None),
+            # un-scored: triage now runs before phase2_scorer and must see these
+            ("j9", "Wonka", "Rust dev", "Remote", "un-scored", None, "EU-wide, CET overlap", None),
+            ("j10", "Stark", "Embedded", "Karlsruhe", "un-scored", None, "x", None),
         ]
         self.conn.executemany("INSERT INTO jobs VALUES (?,?,?,?,?,?,?,?)", rows)
         self.conn.commit()
@@ -88,14 +91,14 @@ class TestFetchAndWriteBack(unittest.TestCase):
 
     def test_fetch_remote_pool_includes_variants(self):
         jobs = fetch_remote_jobs(self.conn)
-        self.assertEqual({j["id"] for j in jobs}, {"j1", "j2", "j5", "j6"})
+        self.assertEqual({j["id"] for j in jobs}, {"j1", "j2", "j5", "j6", "j9"})
 
     def test_llm_unclear_label_leaves_fetch_scope(self):
         # once marked, the job must not be fetched (and thus billed) again
         self.conn.execute(
             "UPDATE jobs SET location=? WHERE id='j2'", (LLM_UNCLEAR_LABEL,))
         jobs = fetch_remote_jobs(self.conn)
-        self.assertEqual({j["id"] for j in jobs}, {"j1", "j5", "j6"})
+        self.assertEqual({j["id"] for j in jobs}, {"j1", "j5", "j6", "j9"})
 
     def test_worldwide_locations_are_lowercase(self):
         # membership test in main() lowers the location first
@@ -104,9 +107,9 @@ class TestFetchAndWriteBack(unittest.TestCase):
 
     def test_de_candidates_pool(self):
         # keyword-matched (j3 Hamburg), Remote-ish (j1/j2/j6), worldwide (j5)
-        # and non-scored (j4) are all out; the pool is the label gap only
+        # and post-pipeline states (j4 applied) are out; un-scored (j10) is in
         jobs = fetch_de_candidates(self.conn)
-        self.assertEqual({j["id"] for j in jobs}, {"j7", "j8"})
+        self.assertEqual({j["id"] for j in jobs}, {"j7", "j8", "j10"})
 
     def test_write_back_guard_is_idempotent(self):
         self.conn.execute(
@@ -129,7 +132,7 @@ class TestFetchAndWriteBack(unittest.TestCase):
         self.assertIn("German", new_loc)
         # and the job leaves the pass-0 pool on the next run
         jobs = fetch_de_candidates(self.conn)
-        self.assertEqual({j["id"] for j in jobs}, {"j8"})
+        self.assertEqual({j["id"] for j in jobs}, {"j8", "j10"})
 
 
 if __name__ == "__main__":

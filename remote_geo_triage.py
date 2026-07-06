@@ -3,7 +3,10 @@
 
 The downstream Germany filters (apply_queue.GERMANY_KEYWORDS,
 ats_scan.GERMANY_LIKE) are a 14-keyword LIKE list. Two whole classes of
-scored jobs silently fall out of the apply queue because of that:
+jobs silently fall out of the apply queue because of that. This stage runs
+on un-scored AND scored jobs, BEFORE phase2_scorer: its rule verdicts cost
+nothing, and a "Remote — non-EU" label lets the scorer skip the job before
+any LLM spend (see phase2_scorer.geo_excluded).
 
 Pass 0 — German locations the keywords miss. Second-tier cities
 ("Nuremberg", "Karlsruhe"), "(DE)" suffixes ("Dresden (DE)"), postal-code
@@ -29,7 +32,11 @@ out, which is the current (implicit) behaviour made explicit.
 
 Pass 1 is regex rules over the JD text (free, runs on the whole bucket).
 Pass 2 (--llm) sends still-unclear jobs with match_score >= --llm-min-score
-to the LLM via the shared apply_llm plumbing.
+to the LLM via the shared apply_llm plumbing. Un-scored jobs have no
+match_score yet, so the LLM gate naturally skips them — they are picked up
+by a later --llm run once scored. German-language JDs may miss the English
+rule patterns before phase2 adds translated_jd_text; they stay bare 'Remote'
+and get a second rule pass (with translation) on the next daily run.
 
 Usage:
     python remote_geo_triage.py                  # dry run, rules only
@@ -148,7 +155,7 @@ def fetch_remote_jobs(conn, limit=None):
         "SELECT id, company, title, location, match_score, "
         "       COALESCE(title,'') || ' ' || COALESCE(raw_jd_text,'') || ' ' "
         "       || COALESCE(translated_jd_text,'') AS jd "
-        "FROM jobs WHERE status='scored' AND ("
+        "FROM jobs WHERE status IN ('un-scored','scored') AND ("
         "    location='Remote' OR location LIKE 'Remote /%' "
         f"   OR location LIKE 'Remote, %' OR LOWER(location) IN ({ww})"
         ") ORDER BY match_score DESC"
@@ -172,7 +179,7 @@ def fetch_de_candidates(conn, limit=None):
     """
     sql = (
         "SELECT id, company, title, location, match_score "
-        "FROM jobs WHERE status='scored' "
+        "FROM jobs WHERE status IN ('un-scored','scored') "
         "AND location IS NOT NULL AND location != '' "
         "AND location NOT LIKE 'Remote%' "
         "ORDER BY match_score DESC"
