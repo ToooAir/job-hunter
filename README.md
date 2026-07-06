@@ -37,6 +37,12 @@ This tool automates the tedious parts (scraping, deduplication, scoring, cover l
 - A/B/C grading with source bonus (Relocate.me, Greenhouse, Lever, Bundesagentur)
 - Cover letter generated per job, editable with 3 tone presets (Formal / Startup / Concise)
 
+**Semi-auto Apply**
+- Geo triage: bare "Remote" listings classified by Germany-hiring eligibility (free regex rules daily; optional LLM pass on demand), mislabelled German locations normalised so they reach the queue
+- ATS scan: per-job ATS platform classification, liveness check, direct apply-URL backfill
+- Ranked apply queue with company-level dedup gate and daily budget; Stage 1 generates grounded draft answers for each queued job
+- Browser extension: one-click profile autofill on ATS forms (CV upload included), 💰 salary-expectation and 📄 cover-letter answer panel, submission accounting back into the tracker — human reviews and submits, always
+
 **Chancenkarte & Visa**
 - Coarse visa classification on every job (`open` / `eu_only` / `sponsored` / `unclear`)
 - On-demand deep Chancenkarte compatibility analysis: scans JD for restrictive phrases, reasons about §20a AufenthG eligibility, suggests how to address visa status in cover letter and first contact
@@ -63,14 +69,18 @@ This tool automates the tedious parts (scraping, deduplication, scoring, cover l
 
 ## How It Works
 
+Daily pipeline (runs inside Docker, interval-based catch-up):
+
 ```
-Phase 1 (Ingestor)   →   Phase 2 (Scorer)   →   Phase 3 (Dashboard)
-16 sources scraped       RAG + LLM grades         Review, edit CL, apply,
-into SQLite              each job, generates       track interviews,
-auto-deduped             cover letter + scores     on-demand AI analysis
+phase1_ingestor → remote_geo_triage → phase2_scorer → ats_scan → apply_stage1
+16 sources        Germany-eligibility  RAG + LLM       ATS platform  apply-queue
+→ SQLite,         relabeling of        scoring, CL,    + liveness    drafts for
+auto-deduped      remote locations     translation     check         human review
 ```
 
-**Phase 1** pulls from 16 sources and deduplicates by JD content hash (chars 50–550, skipping platform boilerplate). **Phase 2** detects German JDs, translates them, scores against your candidate knowledge base via RAG, and grades A/B/C. **Phase 3** is a Streamlit dashboard for reviewing, editing, applying, and tracking your full interview pipeline.
+**Phase 1** pulls from 16 sources and deduplicates by JD content hash (chars 50–550, skipping platform boilerplate). **Geo triage** relabels bare `Remote` listings by Germany-hiring eligibility and normalises German locations the keyword filters would miss (`"Dresden (DE)"`, `"54595 Prüm"`, second-tier cities) — outright-foreign listings are excluded from LLM scoring entirely, cutting scoring spend roughly in half. **Phase 2** detects German JDs, translates them, scores against your candidate knowledge base via RAG, and grades A/B/C. **ats_scan** classifies which ATS each queue candidate runs on (Greenhouse / Lever / Ashby / Workable / Personio / …) and whether the posting is still live. **Stage 1** builds a ranked apply queue (company-level dedup, daily budget) and generates grounded application drafts.
+
+**Phase 3** is a Streamlit dashboard for reviewing, editing, applying, and tracking your full interview pipeline. A companion browser extension autofills ATS forms from your profile and answers open questions via copy-paste — **you always review and click Submit yourself; nothing is ever auto-submitted.**
 
 ---
 
@@ -84,10 +94,16 @@ job-hunter/
 ├── Dockerfile
 ├── docker-compose.yml
 ├── run_pipeline.sh                   # Shell wrapper for launchd / manual runs
-├── scheduler.py                      # Stdlib scheduler (runs inside Docker)
+├── scheduler.py                      # Catch-up scheduler: interval-based, resumes interrupted runs
 ├── phase1_ingestor.py                # Scrape jobs (16 sources)
+├── remote_geo_triage.py              # Relabel remote/mislabelled locations by Germany eligibility
 ├── phase2_scorer.py                  # LLM score + cover letter + interview brief
+├── ats_scan.py                       # ATS platform classification + liveness for queue candidates
+├── apply_stage1.py                   # Apply-queue draft generation
+├── apply_api.py                      # Local sidecar API for the browser extension (127.0.0.1:8531)
 ├── phase3_dashboard.py               # Streamlit review dashboard (EN / 中文)
+├── extension/                        # Browser extension: ATS autofill + answer panel
+├── tests/                            # Unit tests (run inside the container)
 ├── check_api.py                      # Quick LLM + embedding connectivity check
 ├── LICENSE
 ├── README.md
@@ -115,6 +131,10 @@ job-hunter/
     ├── db.py                         # SQLite helpers + status transitions
     ├── kb_loader.py                  # Build Qdrant knowledge base from candidate_kb/
     ├── llm.py                        # OpenAI / Mistral / Azure / custom endpoint factory
+    ├── geo_de.py                     # Germany location matching (single source of truth)
+    ├── apply_queue.py                # Ranked apply queue (dedup gate, budget, ATS bias)
+    ├── apply_llm.py                  # Shared LLM plumbing for apply flows
+    ├── apply_verifier.py             # Fact-check pass over generated drafts
     ├── company_researcher.py         # On-demand company profile (scrape + LLM)
     ├── levels_scraper.py             # Levels.fyi aggregate stats scraper (cache + FX conversion)
     ├── salary_estimator.py           # On-demand salary estimate + negotiation tips
@@ -153,7 +173,7 @@ docker compose exec pipeline python check_api.py
 # Dashboard opens at http://localhost:8501
 ```
 
-The `pipeline` service runs `scheduler.py` which fires Phase 1 + Phase 2 daily at 07:30 (Europe/Berlin timezone). The `dashboard` service stays up continuously.
+The `pipeline` service runs `scheduler.py`, an interval-based catch-up scheduler: the full chain (scrape → geo triage → score → ATS scan → draft generation) fires as soon as the last finished run ended ≥20h ago **and** the machine is online — so a laptop that was asleep at any fixed hour still catches up when it wakes, and a run interrupted mid-way resumes from the first unfinished stage. Tune with `PIPELINE_MIN_INTERVAL_HOURS`. The `dashboard` and `apply_api` services stay up continuously.
 
 **Rebuild after code changes:**
 ```bash
@@ -351,6 +371,7 @@ Phase 2 detects German-language JDs using a token frequency heuristic (>8% Germa
 |-----------|--------|
 | Age from `fetched_at` exceeds source TTL (see table below) | → `expired` (TTL-based, runs first) |
 | `expires_at` is in the past | → `expired` (explicit deadline) |
+| Location names a non-German country/city outright, or geo triage labelled it `Remote — non-EU` | → skipped, stays `un-scored` (no LLM call; TTL cleans it up) |
 | JD text shorter than 100 characters | → `error` (no LLM call) |
 
 **Source TTL defaults** (applied when `expires_at` is not set by the scraper):
@@ -395,7 +416,8 @@ un-scored
   scored ──────────────────────────────────────────────────────────┐
     │                                                              │
     ├─→ applied → interview_1 → interview_2 → offer               │
-    │              └──────────────────────────┴─→ rejected         │
+    │      │       └──────────────────────────┴─→ rejected         │
+    │      └─→ ghosted   (auto after 35 days with no response)      │
     ├─→ skipped                                                     │
     ├─→ error        (LLM error — retry from dashboard)             │
     └─→ expired      (expires_at passed OR TTL exceeded)           ◄─┘
@@ -501,5 +523,6 @@ All on-demand analyses (visa, salary, company research) are opt-in per job — t
 
 - Bundesagentur API runs with SSL verification disabled (`verify=False`). Remove when the API's cert is stable.
 - All personal files (`.env`, `candidate_kb/*.md`, `config/grading_rules.md`, `config/search_targets.yaml`, `data/`, `qdrant_data/`) are excluded from git via `.gitignore`.
-- The scheduler runs at 07:30 **Europe/Berlin** time (set via `TZ=Europe/Berlin` in `docker-compose.yml`). To change the time: edit the `command:` line in `docker-compose.yml` (args are `hour minute`).
+- Scheduling is interval-based (`PIPELINE_MIN_INTERVAL_HOURS`, default 20h) with an online probe — clock arguments to `scheduler.py` are deprecated. The container timezone is **Europe/Berlin** (`TZ` in `docker-compose.yml`); dashboard and apply-API timestamps rely on it.
+- The last three pipeline stages (geo triage, ATS scan, draft generation) are best-effort: if one fails, the run still counts as a successful scrape+score catch-up.
 - `check_api.py` verifies both chat and embedding API connectivity and prints the detected embedding dimension — useful after switching providers.

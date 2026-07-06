@@ -37,6 +37,12 @@
 - A/B/C 分級，含來源加分機制（Relocate.me、Greenhouse、Lever、Bundesagentur）
 - 每筆職缺自動產出 Cover Letter，支援三種語氣調整（正式 / 新創 / 精簡）
 
+**半自動投遞**
+- 地理分流：裸 "Remote" 職缺按「德國可否受僱」分類（每日免費規則層;LLM 補判按需手動觸發），關鍵字漏掉的德國地名自動正規化,不再默默掉出佇列
+- ATS 掃描：逐筆判定 ATS 平台、職缺存活狀態、回填直達投遞連結
+- 排序投遞佇列（同公司去重閘門 + 每日額度），Stage 1 為每筆佇列職缺生成有依據的草稿回答
+- 瀏覽器套件：ATS 表單一鍵填入個人資料（含 CV 上傳）、💰 期望薪資與 📄 Cover Letter 回答面板、投遞後自動回帳追蹤——**永遠由人審閱、人按送出**
+
 **Chancenkarte & 簽證**
 - 每筆職缺自動分類簽證限制（`open` / `eu_only` / `sponsored` / `unclear`）
 - 一鍵深度 Chancenkarte 相容性分析：掃描 JD 中的限制字句、依 §20a AufenthG 判斷申請可行性、建議如何在 Cover Letter 和第一封信中說明簽證身份
@@ -63,14 +69,17 @@
 
 ## 運作方式
 
+每日 pipeline（Docker 內執行,間隔式追趕排程）：
+
 ```
-Phase 1（爬取）      →   Phase 2（評分）      →   Phase 3（儀表板）
-16 個來源爬入            RAG + LLM 評分            審閱、編輯 CL、投遞、
-SQLite 自動去重          每筆職缺產出               追蹤面試流程、
-                         Cover Letter + 分數        按需 AI 分析
+phase1_ingestor → remote_geo_triage → phase2_scorer → ats_scan → apply_stage1
+16 個來源爬入      Remote/漏網德國      RAG + LLM       ATS 平台      投遞佇列
+SQLite 自動去重    地名重標             評分、CL、翻譯   + 存活檢查    草稿生成
 ```
 
-**Phase 1** 從 16 個來源爬取，依 JD 內容雜湊（第 50–550 字元，跳過平台套版開頭）去重。**Phase 2** 偵測德文 JD 並翻譯，透過 RAG 對照個人知識庫評分，分出 A/B/C 級。**Phase 3** 是 Streamlit 儀表板，用於審閱、編輯、投遞和追蹤完整面試流程。
+**Phase 1** 從 16 個來源爬取，依 JD 內容雜湊（第 50–550 字元，跳過平台套版開頭）去重。**地理分流**把裸 `Remote` 職缺按德國可否受僱重標,並正規化關鍵字漏掉的德國地名（`"Dresden (DE)"`、`"54595 Prüm"`、二線城市）——明確境外的職缺完全跳過 LLM 評分,評分開銷約砍半。**Phase 2** 偵測德文 JD 並翻譯，透過 RAG 對照個人知識庫評分，分出 A/B/C 級。**ats_scan** 判定每筆佇列候選跑在哪個 ATS（Greenhouse / Lever / Ashby / Workable / Personio…）以及是否還活著。**Stage 1** 建立排序佇列（同公司去重、每日額度）並生成有依據的投遞草稿。
+
+**Phase 3** 是 Streamlit 儀表板，用於審閱、編輯、投遞和追蹤完整面試流程;搭配瀏覽器套件在 ATS 表單一鍵填入個人資料、複製貼上式回答開放題——**送出永遠由人審閱後親自按下,不會自動投遞。**
 
 ---
 
@@ -84,10 +93,16 @@ job-hunter/
 ├── Dockerfile
 ├── docker-compose.yml
 ├── run_pipeline.sh                   # Shell 包裝器（launchd / 手動執行）
-├── scheduler.py                      # 排程器（在 Docker 內運行）
+├── scheduler.py                      # 追趕式排程器（間隔制,中斷後從未完成的 stage 續跑）
 ├── phase1_ingestor.py                # 爬取職缺（16 個來源）
+├── remote_geo_triage.py              # Remote/漏網德國地名按受僱資格重標
 ├── phase2_scorer.py                  # LLM 評分 + Cover Letter + 面試準備單
+├── ats_scan.py                       # ATS 平台判定 + 佇列候選存活檢查
+├── apply_stage1.py                   # 投遞佇列草稿生成
+├── apply_api.py                      # 瀏覽器套件的本機 sidecar API（127.0.0.1:8531）
 ├── phase3_dashboard.py               # Streamlit 審閱儀表板（支援 EN / 中文）
+├── extension/                        # 瀏覽器套件：ATS 自動填入 + 回答面板
+├── tests/                            # 單元測試（在容器內執行）
 ├── check_api.py                      # LLM + Embedding API 連線快速檢查
 ├── LICENSE
 ├── README.md
@@ -115,6 +130,10 @@ job-hunter/
     ├── db.py                         # SQLite 操作 + 狀態流轉
     ├── kb_loader.py                  # 從 candidate_kb/ 建立 Qdrant 知識庫
     ├── llm.py                        # OpenAI / Mistral / Azure / 自訂端點工廠
+    ├── geo_de.py                     # 德國地點比對（單一事實來源）
+    ├── apply_queue.py                # 投遞佇列（去重閘門、額度、ATS 偏好排序）
+    ├── apply_llm.py                  # 投遞流程共用 LLM plumbing
+    ├── apply_verifier.py             # 生成草稿的事實查核層
     ├── company_researcher.py         # 按需公司研究（爬網站 + LLM）
     ├── levels_scraper.py             # Levels.fyi 彙整數據爬蟲（含快取 + 匯率轉換）
     ├── salary_estimator.py           # 按需薪資估計 + 談判建議
@@ -153,7 +172,7 @@ docker compose exec pipeline python check_api.py
 # 儀表板開啟於 http://localhost:8501
 ```
 
-`pipeline` 服務執行 `scheduler.py`，每天 07:30（歐洲柏林時區）自動觸發 Phase 1 + Phase 2。`dashboard` 服務持續運行。
+`pipeline` 服務執行 `scheduler.py`——間隔式追趕排程：只要上次完成的 run 距今 ≥20 小時**且**機器在線,整條鏈（爬取 → 地理分流 → 評分 → ATS 掃描 → 草稿生成）就會開跑;筆電在任何固定時刻睡著都沒關係,醒來自動補跑,中斷的 run 從未完成的 stage 續跑。用 `PIPELINE_MIN_INTERVAL_HOURS` 調整間隔。`dashboard` 與 `apply_api` 服務持續運行。
 
 **修改程式碼後重建：**
 ```bash
@@ -350,6 +369,7 @@ Phase 2 使用 Token 頻率啟發式方法（>8% 德文功能詞）偵測德文 
 |------|------|
 | 自 `fetched_at` 起超過來源 TTL（見下表） | → `expired`（TTL 到期，最先執行） |
 | `expires_at` 已過期 | → `expired`（明確截止日） |
+| 地點明寫非德國國家/城市，或地理分流已判 `Remote — non-EU` | → 跳過，保持 `un-scored`（不呼叫 LLM;由 TTL 清理） |
 | JD 文字少於 100 字元 | → `error`（不呼叫 LLM） |
 
 **來源 TTL 預設值**（scraper 未填入 `expires_at` 時使用）：
@@ -394,7 +414,8 @@ un-scored（待評分）
   scored（已評分）──────────────────────────────────────────────────┐
     │                                                              │
     ├─→ applied（已投遞）→ interview_1（一面）→ interview_2（二面）→ offer（Offer）│
-    │                      └──────────────────────────────┴─→ rejected（已拒絕）│
+    │       │              └──────────────────────────────┴─→ rejected（已拒絕）│
+    │       └─→ ghosted（已讀不回）（35 天無回應自動標記）            │
     ├─→ skipped（已略過）                                           │
     ├─→ error（失敗）     （LLM 錯誤 — 可從儀表板重試）             │
     └─→ expired（已過期） （expires_at 已過，或超過來源 TTL）       ◄─┘
@@ -500,5 +521,6 @@ un-scored（待評分）
 
 - Bundesagentur API 目前停用 SSL 驗證（`verify=False`）。待 API 憑證穩定後移除。
 - 所有個人檔案（`.env`、`candidate_kb/*.md`、`config/grading_rules.md`、`config/search_targets.yaml`、`data/`、`qdrant_data/`）已透過 `.gitignore` 排除在版本控制外。
-- 排程器在 **歐洲柏林時區** 07:30 執行（透過 `docker-compose.yml` 中的 `TZ=Europe/Berlin` 設定）。如需調整時間，修改 `docker-compose.yml` 中的 `command:` 行（參數為 `時 分`）。
+- 排程為間隔制（`PIPELINE_MIN_INTERVAL_HOURS`，預設 20 小時）加在線探測——`scheduler.py` 的時鐘參數已棄用。容器時區為 **歐洲柏林**（`docker-compose.yml` 的 `TZ`），儀表板與 apply API 的時間戳依賴它。
+- Pipeline 後三個 stage（地理分流、ATS 掃描、草稿生成）為 best-effort：其中一個失敗,該次 run 的爬取+評分仍算成功。
 - `check_api.py` 同時驗證 Chat 和 Embedding API 連線，並印出偵測到的 Embedding 維度——切換 Provider 後特別有用。
