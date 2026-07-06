@@ -1,0 +1,31 @@
+# Template for the Cowork agent working folder (see cowork_sonnet5_apply.md).
+# Copy to answers.yaml in the working folder and fill with real values.
+# Real answers.yaml must NOT be committed — fictional data only in this example.
+
+first_name: Max
+last_name: Mustermann
+email: max.mustermann@example.com
+phone: "+49 40 12345678"
+city: Hamburg, Germany
+
+salary_expectation: "70000 EUR gross per year"
+start_date: "2026-08-01"
+notice_period: "1 month"
+notice_period_de: "1 Monat"
+
+work_permit: "Yes — valid German residence permit with full work authorization"
+work_permit_de: "Ja — gültiger Aufenthaltstitel mit uneingeschränkter Arbeitserlaubnis"
+visa_sponsorship: "No sponsorship required"
+
+linkedin_url: "https://www.linkedin.com/in/max-mustermann"
+github_url: "https://github.com/mustermann"
+
+years_experience: "5"
+languages:
+  english: "Fluent (C1)"
+  german: "Intermediate (B1)"
+  chinese: "Native"
+
+referral_source: "Company careers page"
+relocation: "Already based in Hamburg; open to relocation within Germany"
+work_mode: "Hybrid or remote preferred, on-site possible"

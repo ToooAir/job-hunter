@@ -1,25 +1,32 @@
 """apply_graph.py — per-job LangGraph pipeline for Stage 1 draft generation.
 
 Step 4 architecture is two passes (orchestrated by apply_stage1.py):
-  Pass A (browser, container headless) produces per job: verdict + field
-  node table + pruned HTML, then closes the page — no browser is held open
-  while LLM calls run.
+  Pass A (browser, container headless) verifies the apply page is alive and
+  classifies it (verdict), then closes — no browser is held open while LLM
+  calls run.
   Pass B runs this graph once per job:
 
-      START ──(has fields?)──► map_deterministic ─► map_llm ─► gen_content
-        │                                                          │
-        └─────────────► assign_tier ◄────────── verify ◄───────────┘
-                            │
-                        save_draft ─► END
+      START ──(verdict ok/captcha?)──► gen_content ─► verify
+        │                                               │
+        └────────────► assign_tier ◄────────────────────┘
+                           │
+                       save_draft ─► END
 
-Jobs whose Pass A verdict yielded no usable field table (external-board,
-no-form, nav-error, email-only, shadow-only, account-wall) skip the mapping
-chain: tier assignment plus an answer sheet are all we can produce for
-them. Captcha pages DO carry a field table — they get a full payload and
-Tier 3 ("fill everything, leave the captcha to the human").
+The field-mapping chain (map_deterministic → map_llm → map_agentic) was
+retired 2026-07-02: its selector-replay payload is superseded by the
+extension's live extraction (POST /fill-plan), and its pre-generated
+per-form answers were used by 0 of 74 historical snapshots' submissions.
+Facts are filled live at apply time; open questions are answered by the
+human (the cover letter below is their raw material). The mapper modules
+(field_mapper, agentic_mapper, the mapping half of apply_llm) and the
+agentic spike tools were deleted with it — git history keeps them.
+
+Jobs whose verdict is junk (external-board, no-form, nav-error, email-only,
+shadow-only, account-wall) skip straight to tier assignment: tier plus an
+answer sheet are all we can produce for them.
 
 Runtime dependencies arrive via config["configurable"]:
-  profile      CandidateProfile (required for mapping/verifying/saving)
+  profile      CandidateProfile (required for verifying/saving)
   db_path      jobs.db path (save_draft)
   dry_run      True → save_draft writes nothing
   qdrant_path  KB store for RAG context; None/missing → no retrieval
@@ -38,21 +45,17 @@ class ApplyState(TypedDict, total=False):
     job: dict                       # queue row + description/cover_letter_draft
     verdict: str                    # ok|captcha|external-board|no-form|...
     apply_url: str                  # final URL the form was found at
-    fields: list[dict]              # field node table (FormField.to_dict())
+    fields: list[dict]              # Pass A field table — kept for the verdict
+    #                                 (weak-form detection); no longer mapped
     pruned: dict                    # frame key -> pruned HTML
 
-    # ── form_payload parts (the Step 5 fill instruction set) ───────────
-    actions: list[dict]             # {selector, frame_path, kind, label,
-                                    #  action: fill|select_option|check|upload,
-                                    #  value, source: profile:KEY|llm|file|
-                                    #  cover_letter, needs_review}
-    unfilled: list[dict]            # {label, selector, reason, required}
+    # ── legacy form_payload keys (mapping chain retired; kept because the
+    #    verifier/save_draft read them with empty defaults) ──────────────
+    actions: list[dict]
+    unfilled: list[dict]
     never_fill_skipped: list[str]
-    pending: list[dict]             # deterministic leftovers (consumed by map_llm)
-    cover_letter_slots: list[dict]  # CL fields found on the form
 
     # ── generated content ──────────────────────────────────────────────
-    open_questions: list[dict]
     custom_qa: list[dict]           # {question, answer, source}
     cover_letter: str               # reused from jobs.cover_letter_draft
     kb_context: str                 # RAG context retrieved once per job
@@ -65,10 +68,7 @@ class ApplyState(TypedDict, total=False):
 
 
 NODE_ORDER = (
-    "map_deterministic",
-    "map_llm",
     "gen_content",
-    "map_agentic",
     "verify",
     "assign_tier",
     "save_draft",
@@ -102,111 +102,12 @@ def _retrieve_kb(cfg: dict, job: dict) -> tuple[str, str]:
         return "", f"kb-retrieval failed: {str(exc)[:100]}"
 
 
-def map_deterministic(state: ApplyState, config) -> dict:
-    from utils.field_mapper import map_fields
-    out = map_fields(state.get("fields") or [], _cfg(config)["profile"])
-    return {
-        "actions": out["actions"],
-        "pending": out["pending"],
-        "unfilled": out["unfilled"],
-        "never_fill_skipped": out["never_fill_skipped"],
-    }
-
-
-def map_llm(state: ApplyState, config) -> dict:
-    from utils.apply_llm import map_pending_fields
-    cfg = _cfg(config)
-    out = map_pending_fields(
-        state.get("pending") or [], cfg["profile"], state["job"],
-        client=cfg.get("client"), model=cfg.get("model"),
-    )
-    return {
-        "actions": (state.get("actions") or []) + out["actions"],
-        "open_questions": out["open_questions"],
-        "cover_letter_slots": out["cover_letter_slots"],
-        "unfilled": (state.get("unfilled") or []) + out["unfilled"],
-        "pending": [],
-    }
-
-
 def gen_content(state: ApplyState, config) -> dict:
-    """Reuse the scored cover letter; answer custom questions via LLM+RAG."""
-    from utils.apply_llm import answer_open_questions
-    from utils.field_mapper import _action
-
-    cfg = _cfg(config)
-    job = state["job"]
-    cl = (job.get("cover_letter_draft") or "").strip()
-    actions = list(state.get("actions") or [])
-    unfilled = list(state.get("unfilled") or [])
-    notes = list(state.get("notes") or [])
-
-    for slot in state.get("cover_letter_slots") or []:
-        if cl:
-            actions.append(_action(slot, "fill", cl, "cover_letter", True))
-        else:
-            unfilled.append({"label": slot.get("label", ""),
-                             "selector": slot.get("selector", ""),
-                             "reason": "no-cover-letter",
-                             "required": bool(slot.get("required"))})
-
-    custom_qa: list[dict] = []
-    kb_context = state.get("kb_context") or ""
-    questions = state.get("open_questions") or []
-    if questions:
-        if not kb_context:
-            kb_context, note = _retrieve_kb(cfg, job)
-            if note:
-                notes.append(note)
-        out = answer_open_questions(questions, job, kb_context,
-                                    client=cfg.get("client"), model=cfg.get("model"))
-        actions += out["actions"]
-        custom_qa = out["custom_qa"]
-        unfilled += out["unfilled"]
-
-    return {"actions": actions, "unfilled": unfilled, "custom_qa": custom_qa,
-            "cover_letter": cl, "kb_context": kb_context, "notes": notes}
-
-
-def map_agentic(state: ApplyState, config) -> dict:
-    """Hybrid fallback: the agentic mapper fills the long tail the deterministic
-    + LLM passes left empty. It sees the WHOLE field table (whole-page context
-    helps it answer — e.g. lever's context_hint questions the rule passes drop),
-    but only its actions for STILL-UNFILLED selectors are adopted; deterministic
-    / LLM actions stay authoritative. Every adopted action is needs_review, so
-    the draft can only reach Tier 2 (never auto-submit), and its free text is
-    audited by verify_draft's fabrication gate downstream.
-
-    Opt-out via config enable_agentic_fallback (default on). LLM-only; costs
-    +1 Mistral call per job, and only when an unfilled gap actually exists.
-    """
-    cfg = _cfg(config)
-    if not cfg.get("enable_agentic_fallback", True):
-        return {}
-    fields = state.get("fields") or []
-    actions = list(state.get("actions") or [])
-    actioned = {a.get("selector") for a in actions}
-    if not any(f.get("selector") not in actioned for f in fields):
-        return {}  # deterministic + LLM already covered every field — no call
-
-    from utils.agentic_mapper import map_page_agentic
-    out = map_page_agentic(fields, cfg["profile"], state["job"],
-                           client=cfg.get("client"), model=cfg.get("model"))
-    adopted = [a for a in out.get("actions", [])
-               if a.get("selector") and a.get("selector") not in actioned]
-    if not adopted:
-        return {}
-
-    adopted_sels = {a["selector"] for a in adopted}
-    adopted_vals = {a.get("value") for a in adopted}
-    unfilled = [u for u in (state.get("unfilled") or [])
-                if u.get("selector") not in adopted_sels]
-    custom_qa = list(state.get("custom_qa") or []) + [
-        q for q in out.get("custom_qa", []) if q.get("answer") in adopted_vals]
-    notes = list(state.get("notes") or [])
-    notes.append(f"agentic fallback: +{len(adopted)} gap fill(s)")
-    return {"actions": actions + adopted, "unfilled": unfilled,
-            "custom_qa": custom_qa, "notes": notes}
+    """Carry the scored cover letter into the draft — the cheat sheet's raw
+    material for the human's open answers. Per-form question answering left
+    with the retired mapping chain (see module docstring)."""
+    cl = (state["job"].get("cover_letter_draft") or "").strip()
+    return {"cover_letter": cl}
 
 
 def verify(state: ApplyState, config) -> dict:
@@ -289,11 +190,10 @@ def save_draft(state: ApplyState, config) -> dict:
 
 
 def _route_entry(state: ApplyState) -> str:
-    """Mapping chain runs when there is a real field table to fill: 'ok',
-    or 'captcha' (full payload, human presses the button). Junk tables
-    (weak-form = search bars etc.) skip straight to tier assignment."""
-    mappable = state.get("verdict") in (None, "", "ok", "captcha")
-    return "map" if state.get("fields") and mappable else "tier"
+    """Content + verification run for real apply pages ('ok', or 'captcha' —
+    human presses the button). Junk verdicts (weak-form = search bars,
+    external-board, no-form, …) skip straight to tier assignment."""
+    return "gen" if state.get("verdict") in (None, "", "ok", "captcha") else "tier"
 
 
 def build_graph(overrides: dict | None = None):
@@ -314,12 +214,9 @@ def build_graph(overrides: dict | None = None):
         g.add_node(name, impl[name])
     g.add_conditional_edges(
         START, _route_entry,
-        {"map": "map_deterministic", "tier": "assign_tier"},
+        {"gen": "gen_content", "tier": "assign_tier"},
     )
-    g.add_edge("map_deterministic", "map_llm")
-    g.add_edge("map_llm", "gen_content")
-    g.add_edge("gen_content", "map_agentic")
-    g.add_edge("map_agentic", "verify")
+    g.add_edge("gen_content", "verify")
     g.add_edge("verify", "assign_tier")
     g.add_edge("assign_tier", "save_draft")
     g.add_edge("save_draft", END)

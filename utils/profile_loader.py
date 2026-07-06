@@ -61,6 +61,11 @@ class ProfileField:
     aliases: tuple[str, ...]
     date_spec: str | None = None
     explanation: str | None = None
+    # Synonyms the VALUE may appear as in a <select>'s real options (e.g.
+    # value "Germany" but the dropdown says "Deutschland") — the label
+    # aliases above answer "is this field mine?", these answer "which
+    # option is my value?".
+    option_aliases: tuple[str, ...] = ()
     extra: dict = field(default_factory=dict)  # e.g. value_eur_year
 
     def resolve_date(self, today: date | None = None) -> str | None:
@@ -91,7 +96,8 @@ class CandidateProfile:
             aliases = tuple(_normalize(str(a)) for a in spec.get("aliases", []))
             extra = {
                 k: v for k, v in spec.items()
-                if k not in ("value", "aliases", "date_value", "explanation")
+                if k not in ("value", "aliases", "option_aliases",
+                             "date_value", "explanation")
             }
             self.fields[key] = ProfileField(
                 key=key,
@@ -99,6 +105,7 @@ class CandidateProfile:
                 aliases=aliases,
                 date_spec=spec.get("date_value"),
                 explanation=spec.get("explanation"),
+                option_aliases=tuple(str(o) for o in spec.get("option_aliases", [])),
                 extra=extra,
             )
 

@@ -22,6 +22,7 @@ import sqlite3
 
 from utils.db import (
     _now_local_iso,
+    clear_focus,
     update_application_snapshot,
     update_status,
 )
@@ -112,6 +113,25 @@ def abandon_snapshot(conn: sqlite3.Connection, snapshot_id: int,
                      reason: str = "") -> None:
     _transition(conn, _get(conn, snapshot_id), "abandoned",
                 note=f"abandoned: {reason}" if reason else "abandoned")
+
+
+def append_custom_qa(conn: sqlite3.Connection, snapshot_id: int,
+                     question: str, answer: str,
+                     source: str = "on-demand") -> None:
+    """Append one Q&A to the snapshot's evidence trail (answer panel).
+
+    Unlike edit_snapshot this is a data append, not a review transition:
+    submitted rows accept it too — the interview-prep trail keeps growing
+    as questions are actually met on the form."""
+    snap = _get(conn, snapshot_id)
+    try:
+        qa = json.loads(snap.get("custom_qa") or "[]")
+    except ValueError:
+        qa = []
+    qa.append({"question": question, "answer": answer, "source": source,
+               "asked_at": _now_local_iso()})
+    update_application_snapshot(
+        conn, snapshot_id, custom_qa=json.dumps(qa, ensure_ascii=False))
 
 
 def edit_snapshot(
@@ -215,4 +235,7 @@ def mark_submitted(conn: sqlite3.Connection, snapshot_id: int,
     _transition(conn, snap, "submitted", note=note or None,
                 submitted_at=now, submitted_by="human")
     update_status(conn, snap["job_id"], "applied", applied_at=now)
+    # the answer panel's focus is spent once its application is submitted
+    # (no-op when the focus has already moved on to another draft)
+    clear_focus(conn, snapshot_id=snapshot_id)
     return _abandon_sibling_drafts(conn, snap)
