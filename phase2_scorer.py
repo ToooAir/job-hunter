@@ -34,6 +34,7 @@ DB_PATH     = os.getenv("DB_PATH", "./data/jobs.db")
 QDRANT_PATH = os.getenv("QDRANT_PATH", "./qdrant_data")
 
 from utils.llm import make_client, chat_model, emb_model, LLM_PROVIDER, NO_STRUCTURED_OUTPUT_PROVIDERS, rate_limit  # noqa: E402
+from utils.geo_de import has_non_de_marker  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -439,6 +440,19 @@ Company: {company} | Title: {title} | Location: {location}
     return system_prompt, user_prompt
 
 
+def geo_excluded(location: str | None) -> bool:
+    """Locations that can never reach the Germany-only apply queue.
+
+    Two sources: an outright non-German country/city in the location string
+    ("Municipality of Madrid, Spain"), or remote_geo_triage's non-EU verdict
+    (it runs before this stage in the pipeline). Ambiguous locations
+    ("Remote", bare foreign town names without a country) are NOT excluded —
+    they still get scored, and the triage LLM gate needs those scores.
+    """
+    loc = (location or "").strip()
+    return loc == "Remote — non-EU" or has_non_de_marker(loc)
+
+
 # ── Main Scoring Loop ──────────────────────────────────────────────────────────
 
 
@@ -488,11 +502,18 @@ def score_jobs(
 
     expired_ids, valid_jobs = [], []
     short_jobs: list[tuple[str, int]] = []   # (job_id, jd_len)
+    n_foreign = 0
     for job in jobs:
         exp = job.get("expires_at")
         if exp and exp < now_str:
             expired_ids.append(job["id"])
             log.info("expired: %s (%s @ %s, exp=%s)", job["id"], job["title"], job["company"], exp)
+            continue
+        if geo_excluded(job.get("location")):
+            # can never enter the Germany-only apply queue — scoring is pure
+            # spend. Stays un-scored (no DB write): re-filtered each run for
+            # pennies of CPU until auto_expire's TTL removes it.
+            n_foreign += 1
             continue
         jd_len = len(job.get("raw_jd_text") or "")
         if jd_len < MIN_JD_CHARS:
@@ -515,8 +536,8 @@ def score_jobs(
         conn.close()
         return []
 
-    log.info("開始評分 %d 筆職缺（已過濾 %d 過期、%d JD 過短）",
-             len(jobs), len(expired_ids), len(short_jobs))
+    log.info("開始評分 %d 筆職缺（已過濾 %d 過期、%d JD 過短、%d 明確境外不評分）",
+             len(jobs), len(expired_ids), len(short_jobs), n_foreign)
 
     kb_ready = check_kb_ready(qdrant_path)
     if kb_ready:
