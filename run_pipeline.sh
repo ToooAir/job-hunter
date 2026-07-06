@@ -1,6 +1,6 @@
 #!/bin/bash
-# Daily job hunting pipeline: Phase 1 (ingest) + Phase 2 (score)
-# Invoked by launchd — see launchd/com.jobhunter.pipeline.plist
+# Manual full-pipeline run — invoked by the dashboard "Run now" button
+# (works from a shell too). Mirrors scheduler.py STAGES; keep the two in sync.
 
 set -euo pipefail
 
@@ -33,9 +33,21 @@ echo "--- Phase 1: ingest ---"
 echo "Phase 1 finished at $(date '+%H:%M:%S')"
 
 echo ""
+echo "--- Geo triage (best-effort) ---"
+"$PYTHON" remote_geo_triage.py --write-db || echo "geo triage failed — continuing"
+
+echo ""
 echo "--- Phase 2: score ---"
 "$PYTHON" phase2_scorer.py
 echo "Phase 2 finished at $(date '+%H:%M:%S')"
+
+echo ""
+echo "--- ATS scan (best-effort) ---"
+"$PYTHON" ats_scan.py --write-db || echo "ats_scan failed — continuing"
+
+echo ""
+echo "--- Stage 1 drafts (best-effort) ---"
+"$PYTHON" apply_stage1.py || echo "apply_stage1 failed — continuing"
 
 echo ""
 echo "Pipeline complete. $(date '+%Y-%m-%d %H:%M:%S')"
