@@ -60,14 +60,19 @@ EX_TEMPFAIL        = 75   # contract with phase2_scorer.EXIT_TRANSIENT
 BACKOFF_BASE_S     = 300  # first retry after a transient failure: 5 min
 BACKOFF_MAX_S      = 3600
 
-STAGES = ("phase1_ingestor.py", "phase2_scorer.py", "ats_scan.py", "apply_stage1.py")
+STAGES = ("phase1_ingestor.py", "phase2_scorer.py", "remote_geo_triage.py",
+          "ats_scan.py", "apply_stage1.py")
 # Best-effort stages: a non-zero exit is logged but does not fail the run
 # (the core scrape+score already succeeded by the time these run).
-BEST_EFFORT_STAGES = frozenset({"ats_scan.py", "apply_stage1.py"})
-# Extra CLI args per stage. ats_scan must run before apply_stage1: it backfills
-# jobs.ats, and under APPLY_ADDRESSABLE_ONLY a NULL-ats job is dropped before
-# the needs_recheck branch, so Pass A alone would never classify it.
-STAGE_ARGS = {"ats_scan.py": ("--write-db",)}
+BEST_EFFORT_STAGES = frozenset({"remote_geo_triage.py", "ats_scan.py", "apply_stage1.py"})
+# Extra CLI args per stage. remote_geo_triage must run before ats_scan: it
+# relabels bare location='Remote' to "Remote — Germany"/"— EU"/"— non-EU"
+# (rules-only here; the --llm pass stays manual), and ats_scan's GERMANY_LIKE
+# filter only sees the Germany-eligible ones after that. ats_scan must run
+# before apply_stage1: it backfills jobs.ats, and under APPLY_ADDRESSABLE_ONLY
+# a NULL-ats job is dropped before the needs_recheck branch, so Pass A alone
+# would never classify it.
+STAGE_ARGS = {"remote_geo_triage.py": ("--write-db",), "ats_scan.py": ("--write-db",)}
 
 LOG_FILE = Path(__file__).parent / "logs" / "pipeline.log"
 
@@ -89,6 +94,8 @@ _DOCKER_LOG_PATTERNS = (
     "完成：",        # phase2: 完成：N 筆成功，M 筆失敗 (note: colon avoids false matches)
     "級：",          # phase2: A 級/B 級/C 級 breakdown
     "en_required",   # phase2: language breakdown line
+    "分類 ",         # remote_geo_triage: pool size line (分類 N 筆 location='Remote' …)
+    "分類結果",      # remote_geo_triage: bucket summary header
     "掃描 ",         # ats_scan: pool size line (掃描 N 筆德國境內 …)
     "已寫入 DB",     # ats_scan: write-back confirmation (已寫入 DB：N 筆 …)
     "Stage 1",       # apply_stage1: queue size line + 對帳 accounting header
