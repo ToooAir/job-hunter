@@ -296,6 +296,15 @@ class FillPlanTest(unittest.TestCase):
         plan = self._plan([])
         self.assertEqual(plan, {"fills": [], "skipped_never_fill": [], "unmatched": []})
 
+    def test_labelless_unmatched_stat_keeps_diagnostics(self):
+        # 15/27 of the first real entries logged as '' — unlearnable; the stat
+        # must carry what we do know (type + placeholder) instead
+        import json as _json
+        self._plan([{"id": "jh-3", "label": "", "name": "", "type": "checkbox",
+                     "placeholder": "pick me"}])
+        last = _json.loads(self.stats_path.read_text().splitlines()[-1])
+        self.assertEqual(last["unmatched"], ["<no-label type=checkbox placeholder='pick me'>"])
+
 
 @unittest.skipUnless(HAS_FASTAPI, "fastapi not installed on this host")
 class AnswerTest(unittest.TestCase):
