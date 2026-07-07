@@ -296,7 +296,7 @@ def _salary_form_figure(estimate: str) -> int | None:
     Application Form' section with the figure meant for exactly this form
     field. Parse it (en/zh anchors); reject implausible parses."""
     m = re.search(r"(?:Suggested figure|建議填寫數字)[^€\d]*€?\s*(\d[\d.,]*)",
-                  estimate or "")
+                  estimate or "", re.IGNORECASE)
     if not m:
         return None
     try:

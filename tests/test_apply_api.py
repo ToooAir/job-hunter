@@ -416,7 +416,7 @@ class AnswerTest(unittest.TestCase):
         self.conn.execute(
             "UPDATE jobs SET salary_estimate ="
             " '### Gehaltsvorstellung — Application Form\n"
-            "- **Suggested figure**: €82,000' WHERE id='lever-1'")
+            "- **Suggested Figure**: €82,000' WHERE id='lever-1'")  # estimator capitalizes Figure
         self.conn.commit()
         set_focus(self.conn, self.sids["lever-1"], "lever-1")
         self.apply_api._llm = lambda: (FakeClient([]), "m")
