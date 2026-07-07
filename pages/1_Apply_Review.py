@@ -392,7 +392,10 @@ def _draft_card(conn, snap: dict) -> None:
     _, friction_label = _friction(snap)
     header = (f"T{tier} [{friction_label}] · {job.get('company')} — {job.get('title')}"
               + (f" · {T('match')} {score}" if score is not None else ""))
-    with st.expander(header, expanded=False):
+    # the 🎯 rerun (below) collapses every expander; keep the card the user is
+    # actively applying from open, or they must re-open it to reach the URL
+    with st.expander(header,
+                     expanded=st.session_state.get("keep_open") == snap["id"]):
         cap, focus_col = st.columns([4, 1])
         cap.caption(f"{T('channel')}: {snap.get('channel')} · "
                     f"{T('created')}: {snap.get('created_at')} · "
@@ -402,6 +405,7 @@ def _draft_card(conn, snap: dict) -> None:
         # job (same-ATS drafts collide, redirects change the host)
         if focus_col.button(f"🎯 {T('set_focus')}", key=f"focus_{snap['id']}"):
             set_focus(conn, snap["id"], snap["job_id"])
+            st.session_state["keep_open"] = snap["id"]
             st.rerun()
 
         _liveness_caption(snap)
@@ -437,6 +441,7 @@ def _draft_card(conn, snap: dict) -> None:
                 T("save_edits"), key=f"save_{snap['id']}"):
             edit_snapshot(conn, snap["id"], cover_letter=cl_new,
                           action_values=field_edits)
+            st.session_state["keep_open"] = snap["id"]
             st.rerun()
         if cols[1].button(T("mark_submitted"), key=f"submit_{snap['id']}",
                           type="primary"):

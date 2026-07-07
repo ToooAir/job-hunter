@@ -146,10 +146,21 @@ async function findPending() {
     return;
   }
   MATCH = res.data.find((s) => s.host && hostMatch(pageHost(), s.host));
+  let via = "";
+  if (!MATCH) {
+    // Aggregator redirect (a de.indeed.com draft's apply flow lands on
+    // smartapply.indeed.com) defeats host matching — fall back to the
+    // dashboard 🎯 focus. The status names the company + basis, so the human
+    // verifies it is the right application before booking.
+    const foc = await bg({ type: "focus" });
+    const sid = foc && foc.ok && foc.data && foc.data.snapshot_id;
+    if (sid) MATCH = res.data.find((s) => s.snapshot_id === sid) || null;
+    if (MATCH) via = " · via 🎯 focus";
+  }
   if (MATCH) {
     $("#jh-submitted").style.display = "block";
     status.textContent = MATCH.company + " · snapshot #" + MATCH.snapshot_id +
-      " · " + (MATCH.ats || "?") + " · T" + MATCH.tier;
+      " · " + (MATCH.ats || "?") + " · T" + MATCH.tier + via;
   } else {
     status.textContent = res.data.length + " pending draft(s), none for this page";
   }
@@ -299,6 +310,8 @@ async function runProfileFill() {
       label: collapse(fieldLabel(el)).slice(0, 140),
       name: el.name || el.id || "",
       type: el.tagName === "SELECT" ? "select" : (el.type || "text").toLowerCase(),
+      placeholder: (el.placeholder || "").slice(0, 40), // date-format mask hint
+
       options:
         el.tagName === "SELECT"
           ? [...el.options].map((o) => o.textContent.trim()).filter(Boolean).slice(0, 25)
@@ -325,6 +338,15 @@ async function runProfileFill() {
       ok = el.checked === true;
     } else if (f.action === "select_option") {
       ok = fillSelect(el, f.value);
+      if (!ok) {
+        // a silent select failure looked like "the extension skipped it" —
+        // always leave a visible trace instead
+        reviewNotes.push((f.label || f.name) + " → couldn't set the dropdown, pick it manually");
+      } else if (!isVisible(el)) {
+        // skinned select: the submit value is set, but the widget on screen
+        // still shows the old text — the human must eyeball it
+        reviewNotes.push((f.label || f.name) + " → filled the hidden select; its on-screen widget may still show the old text");
+      }
     } else if ((el.type || "").toLowerCase() === "radio") {
       // A fact value for a radio option: tick it only when THIS option is the
       // value (word-boundary match on its label). Never setNativeValue on a
@@ -509,9 +531,26 @@ function fillableFields() {
   return [...document.querySelectorAll("input, select, textarea")].filter((el) => {
     const t = (el.type || "").toLowerCase();
     if (["hidden", "submit", "button", "reset", "image"].includes(t)) return false;
-    const r = el.getBoundingClientRect();
-    return r.width > 0 && r.height > 0; // visible only
+    if (isVisible(el)) return true;
+    // Skinned native select (jQuery UI selectmenu / select2 / chosen …): the
+    // real <select> is hidden behind a widget but still carries the submit
+    // value (the rexx-ATS Geschlecht case) — fill it, flag it for eyes.
+    return el.tagName === "SELECT" && hasSelectSkin(el);
   });
+}
+
+function isVisible(el) {
+  const r = el.getBoundingClientRect();
+  return r.width > 0 && r.height > 0;
+}
+
+const SKIN_RE = /ui-selectmenu|select2|chosen-container|selectric|nice-select|selectboxit/i;
+
+function hasSelectSkin(el) {
+  const sib = el.nextElementSibling;
+  if (sib && SKIN_RE.test(sib.className || "")) return true;
+  const p = el.parentElement;
+  return !!(p && [...p.children].some((c) => SKIN_RE.test(c.className || "")));
 }
 
 function fieldLabel(el) {
