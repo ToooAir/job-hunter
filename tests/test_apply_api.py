@@ -264,10 +264,33 @@ class FillPlanTest(unittest.TestCase):
         self.assertEqual(fill["value"], "B1")   # value preserved, not silently wrong
 
     def test_date_field_resolves_to_concrete_date(self):
-        plan = self._plan([{"label": "Earliest start date", "name": "start", "type": "text"}])
-        # +30 days from today → an ISO date, not the literal "Immediately"
+        # native date inputs need ISO — the only mask <input type=date> accepts
+        plan = self._plan([{"label": "Earliest start date", "name": "start", "type": "date"}])
         value = plan["fills"][0]["value"]
         self.assertRegex(value, r"^\d{4}-\d{2}-\d{2}$")
+
+    def test_text_date_defaults_to_german_mask(self):
+        # Personio rejects ISO in text date fields ("Datumsformat ungültig");
+        # hint-less text fields default to DD.MM.YYYY — the pool is German sites
+        plan = self._plan([{"label": "Earliest start date *", "name": "start", "type": "text"}])
+        self.assertRegex(plan["fills"][0]["value"], r"^\d{2}\.\d{2}\.\d{4}$")
+
+    def test_text_date_follows_placeholder_mask(self):
+        plan = self._plan([
+            {"label": "Earliest start date", "name": "a", "type": "text",
+             "placeholder": "TT.MM.JJJJ"},
+            {"label": "Earliest start date", "name": "b", "type": "text",
+             "placeholder": "MM/DD/YYYY"},
+            {"label": "Earliest start date", "name": "c", "type": "text",
+             "placeholder": "YYYY-MM-DD"},
+        ])
+        values = [f["value"] for f in plan["fills"]]
+        self.assertRegex(values[0], r"^\d{2}\.\d{2}\.\d{4}$")
+        self.assertRegex(values[1], r"^\d{2}/\d{2}/\d{4}$")
+        self.assertRegex(values[2], r"^\d{4}-\d{2}-\d{2}$")
+        # US order: month first — cross-check against the German rendering
+        d_de, d_us = values[0].split("."), values[1].split("/")
+        self.assertEqual((d_us[0], d_us[1]), (d_de[1], d_de[0]))
 
     def test_empty_fields_empty_plan(self):
         plan = self._plan([])
