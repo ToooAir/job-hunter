@@ -462,6 +462,26 @@ conn = get_conn()
 st.title(T("title"))
 st.caption(T("intro"))
 
+
+# The extension books submissions through apply_api, outside this page's
+# reruns — poll a cheap queue signature and pull the whole page forward when
+# it changes, so a just-submitted draft disappears without a manual refresh.
+@st.fragment(run_every="3s")
+def _queue_watch():
+    c = get_conn()  # own connection: fragment reruns run outside the page's thread
+    try:
+        sig = tuple(r[0] for r in c.execute(
+            "SELECT id FROM application_snapshots WHERE status='draft' ORDER BY id"))
+    finally:
+        c.close()
+    prev = st.session_state.get("queue_sig")
+    st.session_state["queue_sig"] = sig
+    if prev is not None and prev != sig:
+        st.rerun(scope="app")
+
+
+_queue_watch()
+
 # current answer-panel focus — visible so a stale 🎯 can't misground quietly
 _focus = get_focus(conn)
 if _focus:
