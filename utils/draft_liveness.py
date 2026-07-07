@@ -9,6 +9,9 @@ re-checks each pending draft and:
   * live        -> refresh the job's ats_checked_at; mark snapshot.liveness='live'
 
 Two stages (cost vs reliability, per user decision):
+  0. jobs.ats == 'gone' (ats_scan saw the source listing 404) = clear-dead with
+     no request at all — catches Tier-3 drafts whose apply_url is a generic
+     careers page that always loads (the zombie-draft blind spot).
   A. cheap HTTP GET — 404/410 or a deep path that redirected to the bare host =
      clear-dead, no browser needed.
   B. headless confirm (only the rest) — the real liveness signal is whether the
@@ -150,8 +153,9 @@ def sweep_drafts(conn, http_get=None, headless_verdicts=None,
     """Re-verify every pending draft. Returns a tally dict."""
     http_get = http_get or _default_http_get
     drafts = [dict(r) for r in conn.execute(
-        "SELECT id AS sid, job_id, apply_url, form_payload FROM application_snapshots "
-        "WHERE status = 'draft'")]
+        "SELECT s.id AS sid, s.job_id, s.apply_url, s.form_payload, j.ats "
+        "FROM application_snapshots s JOIN jobs j ON j.id = s.job_id "
+        "WHERE s.status = 'draft'")]
     tally = {"checked": 0, "live": 0, "dead": 0, "suspicious": 0}
     needs_headless = []
 
@@ -162,6 +166,12 @@ def sweep_drafts(conn, http_get=None, headless_verdicts=None,
             apply_result(conn, d["sid"], d["job_id"], liveness, now, note)
 
     for d in drafts:
+        # ats_scan checks the SOURCE listing; 'gone' there is 404-grade evidence
+        # the posting is dead even when apply_url is a generic careers page that
+        # always loads (the Tier-3 zombie-draft blind spot).
+        if d.get("ats") == "gone":
+            record(d, "dead", "ats_scan: source listing gone")
+            continue
         url = d.get("apply_url")
         if not url:
             record(d, "suspicious", "no apply_url")
