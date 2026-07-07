@@ -119,6 +119,13 @@ class ExampleTemplateTest(unittest.TestCase):
         self.assertEqual(self.profile.match_field("first name").key, "first_name")
         self.assertEqual(self.profile.match_field("Name").key, "full_name")
 
+    def test_email_address_label_is_email_not_street(self):
+        # "Email Address" contains both "email" (5) and "address" (7); the
+        # longer "email address" alias must keep street_address from winning
+        self.assertEqual(self.profile.match_field("Email Address").key, "email")
+        self.assertEqual(self.profile.match_field("E-Mail Address *").key, "email")
+        self.assertEqual(self.profile.match_field("Address").key, "street_address")
+
     def test_no_substring_false_positive(self):
         # "land" (country) must not match inside the word "Deutschland"
         self.assertIsNone(self.profile.match_field("Deutschland"))

@@ -28,7 +28,7 @@ import json
 import logging
 import os
 import re
-from datetime import datetime
+from datetime import date, datetime
 from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urlparse
@@ -109,11 +109,35 @@ class FillField(BaseModel):
     name: str = ""
     type: str = "text"
     options: list[str] | None = None
+    placeholder: str = ""  # date-format hint source ("TT.MM.JJJJ", "MM/DD/YYYY")
 
 
 class FillPlanRequest(BaseModel):
     fields: list[FillField]
     page_host: str = ""   # measurement only: which site this fill ran on
+
+
+# Format mask tokens in a placeholder/label hint: DD.MM.YYYY, TT.MM.JJJJ
+# (German), MM/DD/YYYY, YYYY-MM-DD — the separator is reused from the hint.
+_DATE_MASK_RE = re.compile(r"(dd|tt|mm|yyyy|jjjj)([./-])(dd|tt|mm)\2(dd|tt|mm|yyyy|jjjj)")
+
+
+def _format_fact_date(iso: str, field: FillField) -> str:
+    """resolve_date() yields ISO; a native date input needs exactly that, but a
+    text input validates against a site-specific mask. Read the mask from the
+    placeholder/label hint; hint-less text fields default to DD.MM.YYYY (this
+    pool is German job sites — the Personio 'Datumsformat ungültig' case)."""
+    if field.type == "date":
+        return iso
+    try:
+        d = date.fromisoformat(iso)
+    except ValueError:
+        return iso            # concrete non-ISO date_value in the profile: as-is
+    m = _DATE_MASK_RE.search(f"{field.placeholder} {field.label}".lower())
+    tokens, sep = (m.group(1, 3, 4), m.group(2)) if m else (("dd", "mm", "yyyy"), ".")
+    part = {"dd": f"{d.day:02d}", "tt": f"{d.day:02d}",
+            "mm": f"{d.month:02d}", "yyyy": str(d.year), "jjjj": str(d.year)}
+    return sep.join(part[t] for t in tokens)
 
 
 def _resolve_option(value: str, options: list[str] | None,
@@ -165,6 +189,19 @@ def pending():
         conn.close()
 
 
+@app.get("/focus", dependencies=[Depends(require_token)])
+def focus():
+    """The dashboard 🎯 focus (TTL-guarded), or {} when unset/stale. Lets the
+    extension bind the 'I submitted it' button when host matching fails —
+    aggregator apply flows leave the draft's host (a de.indeed.com draft
+    redirects to smartapply.indeed.com, which matches nothing)."""
+    conn = _conn()
+    try:
+        return get_focus(conn) or {}
+    finally:
+        conn.close()
+
+
 def _append_fill_plan_stat(stat: dict) -> None:
     """Durable copy of the bucket-0 measurement (container logs are ephemeral).
     Path resolved per call so tests can redirect it via the env var."""
@@ -205,7 +242,8 @@ def fill_plan(req: FillPlanRequest):
         if match is None:
             unmatched.append(ident)                   # no fact → leave blank
             continue
-        value = match.resolve_date() or match.value   # date fields → concrete date
+        iso = match.resolve_date()                    # date facts → concrete date,
+        value = _format_fact_date(iso, f) if iso else match.value  # site's mask
         needs_review = False
         if f.type == "select":
             value, needs_review = _resolve_option(value, f.options,
@@ -296,7 +334,7 @@ def _salary_form_figure(estimate: str) -> int | None:
     Application Form' section with the figure meant for exactly this form
     field. Parse it (en/zh anchors); reject implausible parses."""
     m = re.search(r"(?:Suggested figure|建議填寫數字)[^€\d]*€?\s*(\d[\d.,]*)",
-                  estimate or "")
+                  estimate or "", re.IGNORECASE)
     if not m:
         return None
     try:

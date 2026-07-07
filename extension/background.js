@@ -64,6 +64,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         body: JSON.stringify({ page_host: msg.page_host }),
       });
       sendResponse(r.ok === false ? r : { ok: true, data: await r.json() });
+    } else if (msg.type === "focus") {
+      // dashboard 🎯 focus — the fallback binding for "I submitted it" when
+      // the page host matches no pending draft (aggregator redirects)
+      const r = await api("/focus");
+      sendResponse(r.ok === false ? r : { ok: true, data: await r.json() });
     } else if (msg.type === "submitted") {
       const r = await api("/snapshot/" + msg.id + "/submitted", { method: "POST" });
       sendResponse(r.ok === false ? r : { ok: true, data: await r.json() });

@@ -160,6 +160,24 @@ class SweepTest(unittest.TestCase):
         self.assertEqual(status("manual")["lv"], "live")     # live without headless
         self.assertEqual(status("captcha")["lv"], "suspicious")
 
+    def test_ats_gone_kills_draft_even_when_page_loads(self):
+        # Tier-3 zombie: apply_url is a generic careers page (always 200), but
+        # ats_scan already saw the source listing 404 — must die without HTTP.
+        self.conn.execute("UPDATE jobs SET ats='gone' WHERE id='manual'")
+        self.conn.commit()
+        verdicts = {"https://x.com/live": "ok", "https://x.com/gone": "gone",
+                    "https://x.com/captcha": "captcha"}
+        tally = sweep_drafts(
+            self.conn, http_get=lambda u: (200, u) if not u.endswith("/dead404") else (404, u),
+            headless_verdicts=lambda ds: ((d, verdicts[d["apply_url"]]) for d in ds))
+        self.assertEqual(tally["dead"], 3)   # dead404 + gone + the ats-gone manual
+        self.assertEqual(tally["live"], 1)   # only the live form draft
+        row = self.conn.execute(
+            "SELECT s.status ss, j.status js FROM application_snapshots s "
+            "JOIN jobs j ON j.id=s.job_id WHERE s.id=?", (self.sid["manual"],)).fetchone()
+        self.assertEqual(row["ss"], "abandoned")
+        self.assertEqual(row["js"], "expired")
+
     def test_dry_run_writes_nothing(self):
         tally = sweep_drafts(self.conn, http_get=lambda u: (404, u),
                              headless_verdicts=lambda ds: iter(()), dry_run=True)
