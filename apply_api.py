@@ -256,13 +256,18 @@ def fill_plan(req: FillPlanRequest):
         iso = match.resolve_date()                    # date facts → concrete date,
         value = _format_fact_date(iso, f) if iso else match.value  # site's mask
         needs_review = False
+        extra = {}
         if f.type == "select":
             value, needs_review = _resolve_option(value, f.options,
                                                   match.option_aliases)
             action = "select_option"
         else:
             action = "fill"
-        fills.append({**ident, "action": action, "value": value,
+            if f.type == "radio" and match.option_aliases:
+                # the option label may say the value another way ("Male" for
+                # value "Männlich") — same synonym set the selects use
+                extra["synonyms"] = list(match.option_aliases)
+        fills.append({**ident, "action": action, "value": value, **extra,
                       "source": f"profile:{match.key}", "needs_review": needs_review})
 
     # Measurement (improvement bucket 0): which sites fail, and how — this

@@ -296,6 +296,19 @@ class FillPlanTest(unittest.TestCase):
         plan = self._plan([])
         self.assertEqual(plan, {"fills": [], "skipped_never_fill": [], "unmatched": []})
 
+    def test_radio_fill_carries_option_synonyms(self):
+        # radios can't be resolved server-side (one element per option) — ship
+        # the fact's option_aliases so the client can tick "Deutschland" for
+        # value "Germany"
+        plan = self._plan([{"id": "jh-1", "label": "Country of residence",
+                            "name": "country", "type": "radio"}])
+        fill = plan["fills"][0]
+        self.assertEqual(fill["value"], "Germany")
+        self.assertEqual(fill["synonyms"], ["Deutschland", "DE"])
+        # non-radio fills don't grow a synonyms key
+        text = self._plan([{"label": "First Name", "name": "fn", "type": "text"}])
+        self.assertNotIn("synonyms", text["fills"][0])
+
     def test_labelless_unmatched_stat_keeps_diagnostics(self):
         # 15/27 of the first real entries logged as '' — unlearnable; the stat
         # must carry what we do know (type + placeholder) instead
