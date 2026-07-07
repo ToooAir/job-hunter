@@ -305,9 +305,12 @@ async function runProfileFill() {
   const fields = textEls.map((el, i) => {
     const id = "jh-" + i;
     byId.set(id, el);
+    const isRadio = (el.type || "").toLowerCase() === "radio";
     return {
       id,
-      label: collapse(fieldLabel(el)).slice(0, 140),
+      // a radio's own label is its OPTION ("Male") — the matchable question
+      // ("What gender do you identify as?") lives on the group
+      label: collapse((isRadio && radioGroupLabel(el)) || fieldLabel(el)).slice(0, 140),
       name: el.name || el.id || "",
       type: el.tagName === "SELECT" ? "select" : (el.type || "text").toLowerCase(),
       placeholder: (el.placeholder || "").slice(0, 40), // date-format mask hint
@@ -349,12 +352,14 @@ async function runProfileFill() {
       }
     } else if ((el.type || "").toLowerCase() === "radio") {
       // A fact value for a radio option: tick it only when THIS option is the
-      // value (word-boundary match on its label). Never setNativeValue on a
-      // radio — that rewrites its submit value. No match → stays blank for
-      // the human (a wrongly ticked radio is worse than an empty one).
-      const want = normalize(String(f.value == null ? "" : f.value));
+      // value or one of its synonyms (word-boundary match on its label).
+      // Never setNativeValue on a radio — that rewrites its submit value. No
+      // match → stays blank (a wrongly ticked radio is worse than an empty one).
+      const wants = [f.value, ...(f.synonyms || [])]
+        .map((v) => normalize(String(v == null ? "" : v)))
+        .filter(Boolean);
       const have = normalize(collapse(fieldLabel(el)) + " " + (el.value || ""));
-      ok = !!want && new RegExp("(^| )" + escapeRe(want) + "( |$)").test(have);
+      ok = wants.some((w) => new RegExp("(^| )" + escapeRe(w) + "( |$)").test(have));
       if (ok) setNativeChecked(el, true);
     } else {
       setNativeValue(el, f.value == null ? "" : String(f.value));
@@ -551,6 +556,41 @@ function hasSelectSkin(el) {
   if (sib && SKIN_RE.test(sib.className || "")) return true;
   const p = el.parentElement;
   return !!(p && [...p.children].some((c) => SKIN_RE.test(c.className || "")));
+}
+
+// The question a radio group answers. Semantic containers first (fieldset
+// legend, role=radiogroup); generic fallback for div-soup forms (lever): climb
+// to the ancestor holding every same-name radio, take its first text block
+// that is neither an option label nor a widget wrapper.
+function radioGroupLabel(el) {
+  const fs = el.closest("fieldset");
+  if (fs) {
+    const leg = fs.querySelector("legend");
+    if (leg && leg.textContent.trim()) return leg.textContent;
+  }
+  const grp = el.closest('[role="radiogroup"]');
+  if (grp) {
+    const aria = grp.getAttribute("aria-label");
+    if (aria) return aria;
+    const ref = grp.getAttribute("aria-labelledby");
+    if (ref) {
+      const n = document.getElementById(ref);
+      if (n && n.textContent.trim()) return n.textContent;
+    }
+  }
+  if (!el.name) return "";
+  const peers = [...document.querySelectorAll('input[type="radio"]')].filter((r) => r.name === el.name);
+  if (peers.length < 2) return "";
+  let node = el.parentElement;
+  while (node && node !== document.body && !peers.every((p) => node.contains(p))) node = node.parentElement;
+  if (!node || node === document.body) return "";
+  for (const cand of node.querySelectorAll("div, span, p, legend, h1, h2, h3, h4")) {
+    if (cand.closest("label")) continue; // option text, not the question
+    if (cand.querySelector("input, select, textarea")) continue; // wrapper
+    const txt = cand.textContent.trim();
+    if (txt) return txt;
+  }
+  return "";
 }
 
 function fieldLabel(el) {
