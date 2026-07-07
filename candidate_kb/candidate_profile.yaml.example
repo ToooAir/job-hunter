@@ -139,6 +139,7 @@ fields:
   gender:
     value: "TODO"                      # e.g. "Männlich" / "Weiblich" / "Divers"
     aliases: [gender, geschlecht]
+    option_aliases: [Male, männlich]       # EN forms say Male; DE radios may lowercase
 
   disability_status:
     value: "TODO"                      # e.g. "Nein" — Schwerbehinderung is a standard German HR question
