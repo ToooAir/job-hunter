@@ -202,6 +202,16 @@ def focus():
         conn.close()
 
 
+def _stat_label(f: FillField) -> str:
+    """Bucket-0 stat entry for one unmatched field. Fields with no label AND
+    no name used to log as '' (15 of the first 27 entries) — unlearnable. Log
+    what we do know instead, so the aggregation can name the extraction gap."""
+    lab = (f.label or f.name).strip()
+    if lab:
+        return lab[:60]
+    return f"<no-label type={f.type} placeholder={f.placeholder[:24]!r}>"
+
+
 def _append_fill_plan_stat(stat: dict) -> None:
     """Durable copy of the bucket-0 measurement (container logs are ephemeral).
     Path resolved per call so tests can redirect it via the env var."""
@@ -225,7 +235,7 @@ def fill_plan(req: FillPlanRequest):
     tickable consents. resolve_date turns date-picker fields into a concrete date.
     """
     profile = _profile()
-    fills, skipped, unmatched = [], [], []
+    fills, skipped, unmatched, unmatched_fields = [], [], [], []
     for f in req.fields:
         label = f.label or f.name
         ident = {"id": f.id, "label": f.label, "name": f.name}
@@ -241,6 +251,7 @@ def fill_plan(req: FillPlanRequest):
             match = profile.match_field(f.name)       # fall back to the input name
         if match is None:
             unmatched.append(ident)                   # no fact → leave blank
+            unmatched_fields.append(f)
             continue
         iso = match.resolve_date()                    # date facts → concrete date,
         value = _format_fact_date(iso, f) if iso else match.value  # site's mask
@@ -265,7 +276,7 @@ def fill_plan(req: FillPlanRequest):
         "fills": len(fills),
         "review": sum(1 for x in fills if x["needs_review"]),
         "never": len(skipped),
-        "unmatched": [(u["label"] or u["name"] or "")[:60] for u in unmatched],
+        "unmatched": [_stat_label(f) for f in unmatched_fields],
     }
     log.info(
         "fill-plan host=%s fields=%d fills=%d review=%d unmatched=%d never=%d",
