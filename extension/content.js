@@ -146,6 +146,17 @@ async function findPending() {
     return;
   }
   MATCH = res.data.find((s) => s.host && hostMatch(pageHost(), s.host));
+  let via = "";
+  if (!MATCH) {
+    // Aggregator redirect (a de.indeed.com draft's apply flow lands on
+    // smartapply.indeed.com) defeats host matching — fall back to the
+    // dashboard 🎯 focus. The status names the company + basis, so the human
+    // verifies it is the right application before booking.
+    const foc = await bg({ type: "focus" });
+    const sid = foc && foc.ok && foc.data && foc.data.snapshot_id;
+    if (sid) MATCH = res.data.find((s) => s.snapshot_id === sid) || null;
+    if (MATCH) via = " · via 🎯 focus";
+  }
   if (MATCH) {
     $("#jh-submitted").style.display = "block";
     status.textContent = MATCH.company + " · snapshot #" + MATCH.snapshot_id +

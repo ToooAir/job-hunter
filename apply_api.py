@@ -189,6 +189,19 @@ def pending():
         conn.close()
 
 
+@app.get("/focus", dependencies=[Depends(require_token)])
+def focus():
+    """The dashboard 🎯 focus (TTL-guarded), or {} when unset/stale. Lets the
+    extension bind the 'I submitted it' button when host matching fails —
+    aggregator apply flows leave the draft's host (a de.indeed.com draft
+    redirects to smartapply.indeed.com, which matches nothing)."""
+    conn = _conn()
+    try:
+        return get_focus(conn) or {}
+    finally:
+        conn.close()
+
+
 def _append_fill_plan_stat(stat: dict) -> None:
     """Durable copy of the bucket-0 measurement (container logs are ephemeral).
     Path resolved per call so tests can redirect it via the env var."""

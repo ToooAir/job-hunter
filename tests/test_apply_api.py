@@ -433,6 +433,21 @@ class AnswerTest(unittest.TestCase):
         self.assertEqual(body["grounding"]["kind"], "profile-fact")
         self.assertEqual(body["grounding"]["fact"], "notice_period")
 
+    def test_focus_endpoint_serves_extension_fallback(self):
+        # the extension's "I submitted it" fallback binding when host matching
+        # fails (de.indeed.com draft → smartapply.indeed.com apply flow)
+        from utils.db import set_focus
+        hdr = {"Authorization": f"Bearer {TOKEN}"}
+        self.assertEqual(self.client.get("/focus", headers=hdr).json(), {})
+        set_focus(self.conn, self.sids["lever-1"], "lever-1")
+        body = self.client.get("/focus", headers=hdr).json()
+        self.assertEqual(body["snapshot_id"], self.sids["lever-1"])
+        self.assertEqual(body["job_id"], "lever-1")
+        # stale focus must return {} — never bind an old application
+        self.conn.execute("UPDATE app_state SET updated_at='2020-01-01T00:00:00'")
+        self.conn.commit()
+        self.assertEqual(self.client.get("/focus", headers=hdr).json(), {})
+
     def test_salary_uses_estimator_form_figure(self):
         from tests.test_apply_llm import FakeClient
         from utils.db import set_focus
