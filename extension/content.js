@@ -299,6 +299,8 @@ async function runProfileFill() {
       label: collapse(fieldLabel(el)).slice(0, 140),
       name: el.name || el.id || "",
       type: el.tagName === "SELECT" ? "select" : (el.type || "text").toLowerCase(),
+      placeholder: (el.placeholder || "").slice(0, 40), // date-format mask hint
+
       options:
         el.tagName === "SELECT"
           ? [...el.options].map((o) => o.textContent.trim()).filter(Boolean).slice(0, 25)
