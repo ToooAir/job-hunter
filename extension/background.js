@@ -69,6 +69,23 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       // the page host matches no pending draft (aggregator redirects)
       const r = await api("/focus");
       sendResponse(r.ok === false ? r : { ok: true, data: await r.json() });
+    } else if (msg.type === "email-match") {
+      // ✉️ flow: whole pasted email → intent + nominated application(s);
+      // the server's LLM picks only from the closed active-application list
+      const r = await api("/email-match", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email_text: msg.email_text }),
+      });
+      sendResponse(r.ok === false ? r : { ok: true, data: await r.json() });
+    } else if (msg.type === "email-book") {
+      // the human clicked the intent-matched button on a named application
+      const r = await api("/email-status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ job_id: msg.job_id, status: msg.status }),
+      });
+      sendResponse(r.ok === false ? r : { ok: true, data: await r.json() });
     } else if (msg.type === "submitted") {
       const r = await api("/snapshot/" + msg.id + "/submitted", { method: "POST" });
       sendResponse(r.ok === false ? r : { ok: true, data: await r.json() });

@@ -574,6 +574,194 @@ def cover_letter(req: CoverLetterRequest):
         conn.close()
 
 
+# ── /email-match + /email-status: book a decision email in one paste ──────────
+# The panel's ✉️ flow. Design (memory: rejection-email booking): the LLM sees
+# the CLOSED list of active applications and can only nominate numbers from it
+# — never a company the candidate did not apply to. It also classifies the
+# email's intent, and the panel derives its action button FROM that intent, so
+# a pasted interview invite structurally cannot offer a "mark rejected" button.
+# Booking itself stays a separate human click (/email-status).
+_EMAIL_INTENTS = ("rejection", "interview_invite", "received_confirmation",
+                  "other")
+# intent → the one status the panel may book for it. Everything else
+# (confirmations, newsletters, misreads) has no booking action at all.
+_EMAIL_BOOKABLE = {"rejection": "rejected", "interview_invite": "interview_1"}
+_EMAIL_ACTIVE_STATUSES = ("applied", "interview_1", "interview_2")
+MAX_EMAIL_CHARS = 8000
+MAX_EMAIL_MATCHES = 3
+
+_EMAIL_SYSTEM = (
+    "You process one email about the candidate's job applications."
+    " Two tasks:\n"
+    "1. Classify the email's intent:\n"
+    '   "rejection" — the application is declined.\n'
+    '   "interview_invite" — they want to schedule or conduct an interview'
+    " or assessment.\n"
+    '   "received_confirmation" — application received / under review,'
+    " no decision yet.\n"
+    '   "other" — anything else (newsletters, job ads, unrelated mail).\n'
+    "2. Match the email to the numbered list of active applications."
+    " Company names often differ in form between the list and the email"
+    " (legal suffix, brand vs legal name, a recruiter writing on behalf of"
+    " a client) — use the job title and every other cue as well. List at"
+    " most 3 plausible candidates, best first; an empty list when none"
+    " plausibly matches. Never invent numbers that are not on the list.\n"
+    "Reply ONLY with JSON:"
+    ' {"intent": "...", "matches": [numbers], "evidence": "the exact'
+    " sentence from the email that justifies the intent, quoted verbatim,"
+    ' max 200 chars"}'
+)
+
+
+class EmailMatchRequest(BaseModel):
+    email_text: str
+
+
+class EmailBookRequest(BaseModel):
+    job_id: str
+    status: str  # must be one of _EMAIL_BOOKABLE's values
+
+
+def _active_applications(conn) -> list[dict]:
+    """Applications a decision email can be about — in flight, newest first."""
+    rows = conn.execute(
+        "SELECT id, company, title, applied_at, status FROM jobs"
+        " WHERE status IN (?, ?, ?) ORDER BY applied_at DESC",
+        _EMAIL_ACTIVE_STATUSES).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _company_in_text(company: str, text: str) -> bool:
+    """Cross-check for the panel's look-twice warning: does the company name
+    string-overlap the email at all? Token-level, so 'Dorsch Gruppe' in the
+    email counts for 'Dorsch Service GmbH' (the smoke test's false alarm).
+    A legit LLM match can still fail this (agency posting, renamed brand) —
+    it flags, never vetoes."""
+    from utils.apply_queue import normalize_company
+    norm = normalize_company(company or "")
+    hay = re.sub(r"[^a-z0-9]", "", (text or "").lower())
+    if not norm or not hay:
+        return False
+    full = re.sub(r"[^a-z0-9]", "", norm)
+    if full in hay:
+        return True
+    # any distinctive name token (≥4 chars keeps 'data'/'gmbh'-grade noise out;
+    # short names like 'H&Z' are covered by the full-squash check above)
+    return any(tok in hay for tok in norm.split() if len(tok) >= 4)
+
+
+def _append_email_match_stat(stat: dict) -> None:
+    """Measurement, fill_plan-stats style: one JSONL line per paste. Counts
+    and flags only — never the email text (it lands in a durable file)."""
+    path = Path(os.getenv("EMAIL_MATCH_STATS_PATH",
+                          "./data/email_match_stats.jsonl"))
+    try:
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(stat, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        log.warning("email-match stat not written: %s", exc)
+
+
+@app.post("/email-match", dependencies=[Depends(require_token)])
+def email_match(req: EmailMatchRequest):
+    """Paste a whole decision email → its intent, the active application(s)
+    it is about, and the evidence sentence. Nominates only — booking is the
+    human's click on /email-status."""
+    text = _sanitize(req.email_text or "").strip()
+    if not text:
+        raise HTTPException(status_code=422, detail="empty email text")
+    if len(text) > MAX_EMAIL_CHARS:
+        text = text[:MAX_EMAIL_CHARS]
+
+    conn = _conn()
+    try:
+        cands = _active_applications(conn)
+    finally:
+        conn.close()
+    if not cands:
+        return {"intent": "other", "evidence": "", "matches": [],
+                "book_as": None, "warnings": ["no active applications"]}
+
+    listing = "\n".join(
+        f"{i + 1}. {c['company']} — {c['title']}"
+        f" (applied {(c['applied_at'] or '?')[:10]}, {c['status']})"
+        for i, c in enumerate(cands))
+    client, model = _llm()
+    out = _chat_json(client, model, _EMAIL_SYSTEM,
+                     f"Active applications:\n{listing}\n\nEmail:\n{text}",
+                     max_tokens=300) or {}
+
+    intent = out.get("intent")
+    if intent not in _EMAIL_INTENTS:
+        intent = "other"
+    evidence = str(out.get("evidence") or "").strip()[:300]
+    warnings: list[str] = []
+    # grounding check: the "verbatim quote" must actually be in the email
+    if evidence and " ".join(evidence.split()) not in " ".join(text.split()):
+        warnings.append("evidence quote not found verbatim in the email —"
+                        " read the email again before booking")
+
+    matches, seen = [], set()
+    for n in out.get("matches") or []:
+        if not isinstance(n, int) or not 1 <= n <= len(cands) or n in seen:
+            continue  # invented / duplicate numbers are dropped, never guessed at
+        seen.add(n)
+        c = cands[n - 1]
+        matches.append({**c, "company_in_email": _company_in_text(c["company"],
+                                                                  text)})
+        if len(matches) >= MAX_EMAIL_MATCHES:
+            break
+
+    _append_email_match_stat({
+        "ts": datetime.now().isoformat(timespec="seconds"),
+        "intent": intent, "matches": len(matches),
+        "no_overlap": sum(1 for m in matches if not m["company_in_email"]),
+        "candidates": len(cands), "email_chars": len(text),
+    })
+    return {"intent": intent, "evidence": evidence, "matches": matches,
+            "book_as": _EMAIL_BOOKABLE.get(intent), "warnings": warnings}
+
+
+@app.post("/email-status", dependencies=[Depends(require_token)])
+def email_status(req: EmailBookRequest):
+    """The booking half of the ✉️ flow: the human clicked the intent-matched
+    button on a named application. Only email-bookable statuses, only on an
+    active application; an interview invite on an interview_1 job advances to
+    interview_2 (peak_stage/follow_up handled by update_status)."""
+    if req.status not in _EMAIL_BOOKABLE.values():
+        raise HTTPException(status_code=422,
+                            detail=f"{req.status!r} is not bookable from an email")
+    conn = _conn()
+    try:
+        job = conn.execute("SELECT id, company, title, status FROM jobs"
+                           " WHERE id = ?", (req.job_id,)).fetchone()
+        if job is None:
+            raise HTTPException(status_code=404, detail="job not found")
+        if job["status"] not in _EMAIL_ACTIVE_STATUSES:
+            raise HTTPException(
+                status_code=409,
+                detail=f"job is {job['status']}, not an active application")
+        target = req.status
+        if target == "interview_1" and job["status"] == "interview_1":
+            target = "interview_2"
+        elif target == "interview_1" and job["status"] == "interview_2":
+            raise HTTPException(
+                status_code=409,
+                detail="already at interview_2 — book further rounds in the"
+                       " dashboard")
+        from utils.db import update_status
+        update_status(conn, req.job_id, target)
+        conn.execute(
+            "UPDATE jobs SET notes = COALESCE(notes, '') || ? WHERE id = ?",
+            (f"\n[{date.today().isoformat()}] {target} booked from pasted"
+             f" email (extension)", req.job_id))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"ok": True, "job_id": job["id"], "company": job["company"],
+            "title": job["title"], "status": target}
+
+
 @app.get("/snapshot/{snapshot_id}", dependencies=[Depends(require_token)])
 def snapshot(snapshot_id: int):
     """The fill plan for one draft: form_payload + custom_qa + cover_letter."""
