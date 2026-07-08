@@ -308,7 +308,11 @@ def estimate_salary(job_id: str, db_path: str, lang: str = "en") -> str | None:
             resp = client.chat.completions.create(
                 model=chat_model(),
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
+                # Greedy decoding: the extension asks cache-first while the
+                # dashboard button regenerates, and at 0.3 two runs on the SAME
+                # job/market data suggested €65k vs €75k (ALTEN, 2026-07-08).
+                # An estimate the human negotiates from must be repeatable.
+                temperature=0.0,
             )
             result = resp.choices[0].message.content.strip()
             set_salary_estimate(conn, job_id, result)
