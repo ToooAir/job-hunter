@@ -156,6 +156,10 @@ never_fill:
   - photo / bewerbungsfoto
   - religion / konfession
   - marital status / familienstand
+  # referral questions ask for SOMEONE ELSE's name — 'full name' inside the
+  # label must not pull the candidate's own name fact into it
+  - referred / empfohlen
+  - employee referral / mitarbeiterempfehlung
 
 # Structured CV data — for portals that want manual education/work-history
 # entry (most ATS parse the uploaded CV PDF instead, and agent support for
