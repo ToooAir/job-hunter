@@ -21,6 +21,7 @@ from utils.snapshot_io import (  # noqa: E402
     edit_snapshot,
     fetch_work,
     mark_submitted,
+    reconcile_applied_job,
 )
 
 PAYLOAD = {"actions": [{"selector": "#fn", "kind": "text", "label": "Vorname",
@@ -141,6 +142,23 @@ class SnapshotIOTest(unittest.TestCase):
             "SELECT status FROM application_snapshots WHERE id=?",
             (keep,)).fetchone()
         self.assertEqual(row["status"], "draft")
+
+    def test_reconcile_applied_job_abandons_own_and_sibling_drafts(self):
+        # The dashboard apply button books jobs.applied_at without touching
+        # snapshots (GWQ #95, 2026-07-08): the job's own draft and a same-
+        # company sibling must both leave the queue; other companies stay.
+        job_id = self._job("a", "Acme GmbH")
+        own = self._snapshot(job_id)
+        sibling = self._snapshot(self._job("b", "Acme AG"))
+        keep = self._snapshot(self._job("c", "Globex SE"))
+        freed = reconcile_applied_job(self.conn, job_id)
+        self.assertEqual(sorted(freed), sorted([own, sibling]))
+        statuses = {sid: self.conn.execute(
+            "SELECT status FROM application_snapshots WHERE id=?",
+            (sid,)).fetchone()["status"] for sid in (own, sibling, keep)}
+        self.assertEqual(statuses[own], "abandoned")
+        self.assertEqual(statuses[sibling], "abandoned")
+        self.assertEqual(statuses[keep], "draft")
 
     # ── in-place edits before submission ────────────────────────────────────
 
