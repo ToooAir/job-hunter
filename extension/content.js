@@ -28,6 +28,13 @@ let PANEL = null; // the shadow root — the UI lives here, isolated from page C
 // silent; in the top frame the panel always runs.
 const ATS_FRAME_RE = /(^|\.)(greenhouse\.io|ashbyhq\.com|jobs\.personio\.de|lever\.co|workable\.com)$/i;
 
+// Declared BEFORE the boot block below: injectPanel() runs immediately, and a
+// `const` referenced across that call must already be initialized (TDZ) —
+// 0.7.0 had it after the block, which killed the whole script on injection.
+const BTN_STYLE =
+  "cursor:pointer;border:1px solid #555;background:#1e1e1e;color:#eee;" +
+  "border-radius:5px;padding:5px 9px;font:inherit";
+
 if (window.top === window.self || ATS_FRAME_RE.test(location.hostname)) {
   injectPanel();
   init();
@@ -60,10 +67,6 @@ function pageHost() {
 // ── panel ────────────────────────────────────────────────────────────────────
 // The panel lives in a closed shadow root, not the page DOM: the page's and
 // other extensions' CSS cannot reach in to resize, restyle, or collapse it.
-const BTN_STYLE =
-  "cursor:pointer;border:1px solid #555;background:#1e1e1e;color:#eee;" +
-  "border-radius:5px;padding:5px 9px;font:inherit";
-
 function injectPanel() {
   if (HOST && HOST.isConnected) return;
   HOST = document.createElement("div");
