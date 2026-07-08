@@ -46,6 +46,20 @@ chrome.runtime.onMessage.addListener((msg) => {
   if (msg && msg.type === "toggle-panel") togglePanel();
 });
 
+// A 🎯 focus set AFTER this panel loaded (the smartapply case: the redirect
+// page matches no host, so the user goes to the dashboard to press 🎯 and
+// comes back) — findPending ran once at injection and would stay stale
+// forever. Re-check whenever the tab regains the user's attention, but only
+// while unmatched: an established match must not be re-resolved mid-apply.
+window.addEventListener("focus", refindIfUnmatched);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") refindIfUnmatched();
+});
+
+function refindIfUnmatched() {
+  if (!MATCH && HOST && HOST.isConnected) findPending();
+}
+
 async function init() {
   await findPending();
   await maybeWatchConfirmation(); // resume a watch across the post-submit nav
