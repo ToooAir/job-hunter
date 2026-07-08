@@ -88,6 +88,7 @@ class ExampleTemplateTest(unittest.TestCase):
             "fields.date_of_birth.value",
             "fields.gender.value",
             "fields.disability_status.value",
+            "fields.ai_coding_agents.value",
         }
         self.assertEqual(todos, expected)
 

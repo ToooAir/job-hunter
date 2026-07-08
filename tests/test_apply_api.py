@@ -443,6 +443,24 @@ class AnswerTest(unittest.TestCase):
         r = self._ask(page_host="beispiel.jobs.personio.de")
         self.assertEqual(r.status_code, 502)
 
+    def test_insufficient_facts_warns_instead_of_denying(self):
+        # The profile's silence must never become "I have not used X" (the
+        # AI-coding-agent survey case): the model reports insufficient facts,
+        # the human gets a not-paste-ready warning, and nothing enters the
+        # interview-prep trail.
+        from utils.db import set_focus
+        set_focus(self.conn, self.sids["lever-1"], "lever-1")
+        self._llm_with(self._json.dumps(
+            {"answer": "", "insufficient_facts": True}))
+        r = self._ask(page_host="jobs.lever.co")
+        self.assertEqual(r.status_code, 200)  # empty answer is legitimate here
+        body = r.json()
+        self.assertTrue(any("NOT paste-ready" in w for w in body["warnings"]))
+        qa = self.conn.execute(
+            "SELECT custom_qa FROM application_snapshots WHERE id=?",
+            (self.sids["lever-1"],)).fetchone()["custom_qa"]
+        self.assertFalse(qa)  # no trail entry for a non-answer
+
     # ── fact short-circuit: fact questions get the fact, never LLM prose ──
     def test_fact_question_short_circuits_without_llm(self):
         from tests.test_apply_llm import FakeClient
