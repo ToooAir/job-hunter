@@ -140,6 +140,22 @@ class ExampleTemplateTest(unittest.TestCase):
         self.assertFalse(self.profile.is_never_fill("Geburtsdatum *"))
         self.assertFalse(self.profile.is_never_fill("First name"))
 
+    def test_referral_question_never_gets_the_candidates_own_name(self):
+        # This label contains 'full name', which would otherwise pull the
+        # candidate's own name into a field asking for the REFERRER's name
+        # (real fill on 2026-07-08) — never_fill wins before match_field.
+        label = ("If you have been referred, please enter the full name or"
+                 " employee number of the employee")
+        self.assertTrue(self.profile.is_never_fill(label))
+        self.assertTrue(self.profile.is_never_fill("Employee referral"))
+        self.assertTrue(self.profile.is_never_fill(
+            "Wurden Sie von einem Mitarbeiter empfohlen?"))
+        # …but 'Referral Source' is a how-did-you-hear field and must keep
+        # matching (its alias shares the word 'referral')
+        self.assertFalse(self.profile.is_never_fill("Referral Source"))
+        self.assertEqual(self.profile.match_field("Referral Source").key,
+                         "how_did_you_hear")
+
     def test_optional_disclosure_fields_match(self):
         self.assertEqual(self.profile.match_field("Geburtsdatum").key, "date_of_birth")
         self.assertEqual(self.profile.match_field("Geschlecht").key, "gender")
