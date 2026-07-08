@@ -575,5 +575,151 @@ class AnswerTest(unittest.TestCase):
         self.assertEqual(self._cl().status_code, 404)
 
 
+class EmailMatchTest(unittest.TestCase):
+    """POST /email-match + /email-status — the ✉️ decision-email flow.
+
+    Contract under test: the LLM only NOMINATES from the closed list of
+    active applications (invented numbers dropped), the intent decides the
+    one bookable status (a misread interview invite can never book a
+    rejection), and booking is a separate validated call."""
+
+    def setUp(self):
+        import json as _json
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = str(Path(self.tmp.name) / "test.db")
+        os.environ["DB_PATH"] = self.db_path
+        os.environ["APPLY_API_TOKEN"] = TOKEN
+        os.environ["EMAIL_MATCH_STATS_PATH"] = str(
+            Path(self.tmp.name) / "email_stats.jsonl")
+        self.conn = init_db(self.db_path)
+        rows = [  # fictional (Max Mustermann policy)
+            ("j-acme", "Acme Robotics GmbH", "Backend Engineer",
+             "applied", "2026-07-01T10:00:00"),
+            ("j-globex", "Globex SE", "ML Engineer",
+             "applied", "2026-07-02T10:00:00"),
+            ("j-initech", "Initech AG", "Platform Engineer",
+             "interview_1", "2026-06-20T10:00:00"),
+            ("j-scored", "Hooli GmbH", "Data Engineer",
+             "scored", None),  # not active — must never be nominated/booked
+        ]
+        for jid, comp, title, status, applied in rows:
+            self.conn.execute(
+                "INSERT INTO jobs (id, company, title, url, source,"
+                " raw_jd_text, fetched_at, status, applied_at)"
+                " VALUES (?,?,?,?, 'test', 'jd', '2026-06-01T08:00:00', ?, ?)",
+                (jid, comp, title, f"https://x/{jid}", status, applied))
+        self.conn.commit()
+        import apply_api
+        self.apply_api = apply_api
+        self._json = _json
+        self.client = TestClient(apply_api.app)
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.cleanup()
+        for k in ("DB_PATH", "APPLY_API_TOKEN", "EMAIL_MATCH_STATS_PATH"):
+            os.environ.pop(k, None)
+
+    def _llm_with(self, payload: dict):
+        from tests.test_apply_llm import FakeClient
+        self.apply_api._llm = lambda: (  # type: ignore[assignment]
+            FakeClient([self._json.dumps(payload)]), "m")
+
+    def _match(self, email_text):
+        return self.client.post(
+            "/email-match", json={"email_text": email_text},
+            headers={"Authorization": f"Bearer {TOKEN}"})
+
+    def _book(self, job_id, status):
+        return self.client.post(
+            "/email-status", json={"job_id": job_id, "status": status},
+            headers={"Authorization": f"Bearer {TOKEN}"})
+
+    REJECTION = ("Dear Max, thank you for your interest in Acme Robotics."
+                 " We have decided to move forward with another candidate"
+                 " for the Backend Engineer role.")
+
+    def test_requires_token(self):
+        self.assertEqual(self.client.post(
+            "/email-match", json={"email_text": "x"}).status_code, 401)
+        self.assertEqual(self.client.post(
+            "/email-status",
+            json={"job_id": "j-acme", "status": "rejected"}).status_code, 401)
+
+    def test_rejection_email_nominates_from_closed_list(self):
+        self._llm_with({"intent": "rejection", "matches": [1],
+                        "evidence": "We have decided to move forward with"
+                                    " another candidate"})
+        body = self._match(self.REJECTION).json()
+        self.assertEqual(body["intent"], "rejection")
+        self.assertEqual(body["book_as"], "rejected")
+        self.assertEqual(len(body["matches"]), 1)
+        # candidates are ordered newest-applied first: 1 = Globex, 2 = Acme
+        self.assertEqual(body["matches"][0]["id"], "j-globex")
+        self.assertEqual(body["warnings"], [])
+
+    def test_invented_numbers_dropped_and_unknown_intent_is_other(self):
+        # 99 is off the list, "spam" is not an intent — neither may survive
+        self._llm_with({"intent": "spam", "matches": [99, 2, 2, "x"],
+                        "evidence": "thank you for your interest in Acme"})
+        body = self._match(self.REJECTION).json()
+        self.assertEqual(body["intent"], "other")
+        self.assertIsNone(body["book_as"])
+        self.assertEqual([m["id"] for m in body["matches"]], ["j-acme"])
+
+    def test_confirmation_email_offers_no_booking(self):
+        self._llm_with({"intent": "received_confirmation", "matches": [2],
+                        "evidence": "thank you for your interest in Acme"})
+        body = self._match(self.REJECTION).json()
+        self.assertIsNone(body["book_as"])
+
+    def test_company_absent_from_email_is_flagged_not_vetoed(self):
+        # agency case: the match stands, but the panel gets the look-twice flag
+        self._llm_with({"intent": "rejection", "matches": [1],
+                        "evidence": "We have decided to move forward with"
+                                    " another candidate"})
+        body = self._match(self.REJECTION).json()  # says Acme, match is Globex
+        self.assertFalse(body["matches"][0]["company_in_email"])
+
+    def test_company_name_form_drift_still_counts_as_in_email(self):
+        # 'Acme Robotics GmbH' vs an email that only says 'Acme' — token-level
+        # overlap, so legal-suffix / brand-form drift doesn't cry wolf
+        self._llm_with({"intent": "rejection", "matches": [2],
+                        "evidence": "thank you for your interest in Acme"
+                                    " Robotics."})
+        body = self._match(self.REJECTION).json()
+        self.assertTrue(body["matches"][0]["company_in_email"])
+
+    def test_fabricated_evidence_quote_warns(self):
+        self._llm_with({"intent": "rejection", "matches": [2],
+                        "evidence": "We regret to inform you"})  # not in email
+        body = self._match(self.REJECTION).json()
+        self.assertTrue(any("evidence" in w for w in body["warnings"]))
+
+    def test_book_rejected_updates_job_and_notes(self):
+        r = self._book("j-acme", "rejected")
+        self.assertEqual(r.status_code, 200)
+        job = self.conn.execute(
+            "SELECT status, follow_up_at, notes, peak_stage FROM jobs"
+            " WHERE id='j-acme'").fetchone()
+        self.assertEqual(job["status"], "rejected")
+        self.assertIsNone(job["follow_up_at"])
+        self.assertIn("booked from pasted email", job["notes"])
+
+    def test_book_only_email_bookable_statuses(self):
+        self.assertEqual(self._book("j-acme", "offer").status_code, 422)
+        self.assertEqual(self._book("j-acme", "ghosted").status_code, 422)
+
+    def test_book_inactive_job_is_409(self):
+        self.assertEqual(self._book("j-scored", "rejected").status_code, 409)
+
+    def test_interview_invite_on_interview1_advances_to_interview2(self):
+        body = self._book("j-initech", "interview_1").json()
+        self.assertEqual(body["status"], "interview_2")
+        job = self.conn.execute(
+            "SELECT status FROM jobs WHERE id='j-initech'").fetchone()
+        self.assertEqual(job["status"], "interview_2")
+
+
 if __name__ == "__main__":
     unittest.main()
