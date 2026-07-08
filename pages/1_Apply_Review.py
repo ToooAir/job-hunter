@@ -464,7 +464,15 @@ def _draft_card(conn, snap: dict, applied_idx: dict) -> None:
         cl_new = _cover_letter_section(snap, editable=editable)
         _qa_section(snap)
         manual = not (payload.get("actions"))  # Tier 3 copy-paste path
-        if st.toggle(T("tab_sheet"), key=f"sheet_{snap['id']}", value=manual):
+        # Widget state dies whenever the widget isn't rendered for a run
+        # (page switch, filter change), after which `value=manual` re-opened
+        # the sheet the user had closed. Mirror the choice in a plain session
+        # key — those survive page switches — so a manual close sticks.
+        pref_key = f"sheet_pref_{snap['id']}"
+        show_sheet = st.toggle(T("tab_sheet"), key=f"sheet_{snap['id']}",
+                               value=st.session_state.get(pref_key, manual))
+        st.session_state[pref_key] = show_sheet
+        if show_sheet:
             _sheet_tab(snap, payload)
 
         # Spike harness (SPIKE_PLAN.md): the raw form_payload as one-click-copy
