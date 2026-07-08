@@ -65,6 +65,8 @@ _STRINGS = {
         "never_verified": "尚未重驗失效",
         "set_focus": "我要投這筆",
         "focus_now": "🎯 投遞中:{} — {}({})— 插件答案面板以此職缺為根據",
+        "dup_same_job": "⛔ 重複投遞:這個職缺已於 {} 投遞入帳——這份草稿請放棄",
+        "dup_same_company": "⚠️ 同公司已投過:{}({})— 確認不是同一職缺再投",
     },
     "en": {
         "title": "Apply Review Queue",
@@ -106,6 +108,8 @@ _STRINGS = {
         "never_verified": "not liveness-checked yet",
         "set_focus": "applying to this one",
         "focus_now": "🎯 applying: {} — {} ({}) — the answer panel grounds on this job",
+        "dup_same_job": "⛔ Duplicate: this job was booked applied on {} — abandon this draft",
+        "dup_same_company": "⚠️ Company already applied to: {} ({}) — make sure this is a different role",
     },
 }
 
@@ -384,13 +388,43 @@ def _liveness_caption(snap: dict) -> None:
         st.caption(T("never_verified"))
 
 
-def _draft_card(conn, snap: dict) -> None:
+def _applied_lookup(conn) -> dict[str, list[dict]]:
+    """normalized company → jobs already applied to, regardless of which path
+    booked them (mark_submitted or the dashboard's applied button). The queue
+    checks every draft against this so a duplicate submit gets a loud warning
+    instead of relying on each booking path having cleaned up after itself."""
+    from utils.apply_queue import normalize_company  # pure; lazy to avoid cycle
+    idx: dict[str, list[dict]] = {}
+    for r in conn.execute("SELECT id, company, title, applied_at FROM jobs"
+                          " WHERE applied_at IS NOT NULL"):
+        key = normalize_company(r["company"] or "")
+        if key:
+            idx.setdefault(key, []).append(dict(r))
+    return idx
+
+
+def _dup_applied(snap: dict, applied_idx: dict) -> tuple[str, dict] | None:
+    """('job'|'company', applied job) when this draft collides with a booked
+    application — same job id is a hard duplicate, same company a soft one."""
+    from utils.apply_queue import normalize_company
+    hits = applied_idx.get(normalize_company(snap["job"].get("company") or ""))
+    if not hits:
+        return None
+    same_job = [h for h in hits if h["id"] == snap["job_id"]]
+    if same_job:
+        return "job", same_job[0]
+    return "company", max(hits, key=lambda h: h["applied_at"] or "")
+
+
+def _draft_card(conn, snap: dict, applied_idx: dict) -> None:
     job = snap["job"]
     payload = snap.get("form_payload") or {}
     tier = snap.get("tier")
     score = job.get("match_score")
     _, friction_label = _friction(snap)
-    header = (f"T{tier} [{friction_label}] · {job.get('company')} — {job.get('title')}"
+    dup = _dup_applied(snap, applied_idx)
+    dup_mark = {"job": "⛔ ", "company": "⚠️ "}.get(dup[0]) if dup else ""
+    header = (f"{dup_mark}T{tier} [{friction_label}] · {job.get('company')} — {job.get('title')}"
               + (f" · {T('match')} {score}" if score is not None else ""))
     # the 🎯 rerun (below) collapses every expander; keep the card the user is
     # actively applying from open, or they must re-open it to reach the URL
@@ -407,6 +441,14 @@ def _draft_card(conn, snap: dict) -> None:
             set_focus(conn, snap["id"], snap["job_id"])
             st.session_state["keep_open"] = snap["id"]
             st.rerun()
+
+        if dup:
+            kind, hit = dup
+            when = (hit.get("applied_at") or "")[:10]
+            if kind == "job":
+                st.error(T("dup_same_job").format(when))
+            else:
+                st.warning(T("dup_same_company").format(hit.get("title"), when))
 
         _liveness_caption(snap)
         _verifier_block(snap.get("verifier_report"))
@@ -511,5 +553,6 @@ else:
     # high-value, low-effort drafts at the top of the queue.
     drafts.sort(key=lambda d: (_friction(d)[0],
                                -(d["job"].get("match_score") or 0)))
+    applied_idx = _applied_lookup(conn)
     for snap in drafts:
-        _draft_card(conn, snap)
+        _draft_card(conn, snap, applied_idx)

@@ -224,6 +224,37 @@ def _abandon_sibling_drafts(conn: sqlite3.Connection, submitted_snap: dict) -> l
     return abandoned
 
 
+def reconcile_applied_job(conn: sqlite3.Connection, job_id: str) -> list[int]:
+    """Reconcile the review queue after an application booked OUTSIDE it.
+
+    The dashboard's apply button writes jobs.applied_at directly (no snapshot
+    transition), so a draft for that very job — or for the same company —
+    kept sitting in the review queue with no warning (GWQ snapshot #95 bit
+    us on 2026-07-08). Abandon those drafts here, mirroring what
+    mark_submitted does for the in-queue path. Returns the abandoned ids."""
+    from utils.apply_queue import normalize_company  # pure; lazy to avoid cycle
+
+    row = conn.execute(
+        "SELECT company FROM jobs WHERE id = ?", (job_id,)).fetchone()
+    target = normalize_company(row["company"]) if row else ""
+    drafts = conn.execute(
+        """SELECT s.id, s.job_id, j.company
+           FROM application_snapshots s JOIN jobs j ON j.id = s.job_id
+           WHERE s.status = 'draft'""").fetchall()
+    abandoned = []
+    for d in drafts:
+        if d["job_id"] == job_id:
+            reason = "job applied outside the review queue"
+        elif target and normalize_company(d["company"]) == target:
+            reason = f"company already applied (job {job_id})"
+        else:
+            continue
+        abandon_snapshot(conn, d["id"], reason=reason)
+        clear_focus(conn, snapshot_id=d["id"])  # no-op unless it was focused
+        abandoned.append(d["id"])
+    return abandoned
+
+
 def mark_submitted(conn: sqlite3.Connection, snapshot_id: int,
                    note: str = "") -> list[int]:
     """Record that the human applied on the real site: snapshot → submitted,

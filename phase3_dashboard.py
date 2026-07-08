@@ -1452,7 +1452,12 @@ with right:
                             st.info(T("copy_docker_msg"))
                 with btn_cols[2]:
                     if st.button(T("apply_btn"), use_container_width=True, type="primary", key=f"apply_{job['id']}"):
+                        from utils.snapshot_io import reconcile_applied_job
                         update_status(conn, job["id"], "applied", applied_at=utcnow_iso())
+                        # this booking path bypasses mark_submitted, so it must
+                        # clean the review queue itself or same-company drafts
+                        # linger there inviting a duplicate submit
+                        reconcile_applied_job(conn, job["id"])
                         set_follow_up(conn, job["id"],
                             (datetime.now(timezone.utc) + timedelta(days=7)).strftime("%Y-%m-%d"))
                         st.session_state.pop("selected_idx", None)
