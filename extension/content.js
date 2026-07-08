@@ -60,14 +60,16 @@ function pageHost() {
 // ── panel ────────────────────────────────────────────────────────────────────
 // The panel lives in a closed shadow root, not the page DOM: the page's and
 // other extensions' CSS cannot reach in to resize, restyle, or collapse it.
+const BTN_STYLE =
+  "cursor:pointer;border:1px solid #555;background:#1e1e1e;color:#eee;" +
+  "border-radius:5px;padding:5px 9px;font:inherit";
+
 function injectPanel() {
   if (HOST && HOST.isConnected) return;
   HOST = document.createElement("div");
   HOST.id = "jh-autofill-host";
   PANEL = HOST.attachShadow({ mode: "closed" });
-  const btn =
-    "cursor:pointer;border:1px solid #555;background:#1e1e1e;color:#eee;" +
-    "border-radius:5px;padding:5px 9px;font:inherit";
+  const btn = BTN_STYLE;
   PANEL.innerHTML =
     '<div style="position:fixed;top:12px;right:12px;z-index:2147483647;width:380px;' +
     "max-height:82vh;overflow:auto;background:#111;color:#eee;" +
@@ -107,6 +109,20 @@ function injectPanel() {
     '<button id="jh-copy" style="' + btn +
     ';width:100%;margin-top:4px;display:none">Copy answer</button>' +
     "</div>" +
+    // ✉️ decision-email booking: paste a whole email (works on Gmail — the
+    // toolbar click injects the panel on any page), the server classifies it
+    // and nominates from the closed active-application list, and the button
+    // offered is derived from the INTENT — a pasted interview invite cannot
+    // present a "mark rejected" button. Booking = the human's click.
+    '<div style="margin-top:10px;border-top:1px solid #333;padding-top:8px">' +
+    '<textarea id="jh-email" rows="3" placeholder="Paste a decision email ' +
+    '(rejection / interview invite)…" ' +
+    'style="width:100%;box-sizing:border-box;background:#1e1e1e;color:#eee;' +
+    'border:1px solid #555;border-radius:5px;padding:5px;font:inherit;resize:vertical"></textarea>' +
+    '<button id="jh-email-match" style="' + btn + ';width:100%;margin-top:4px">' +
+    "✉️ Match email to application</button>" +
+    '<div id="jh-email-out" style="margin-top:6px"></div>' +
+    "</div>" +
     "</div>";
   document.documentElement.appendChild(HOST);
   // Works on ANY page, no snapshot needed — fills only profile facts.
@@ -115,6 +131,7 @@ function injectPanel() {
   $("#jh-salary").addEventListener("click", () => runAnswer(SALARY_QUESTION));
   $("#jh-cl").addEventListener("click", runCoverLetter);
   $("#jh-copy").addEventListener("click", copyAnswer);
+  $("#jh-email-match").addEventListener("click", runEmailMatch);
   // The authoritative bookkeeping signal: the human, who just submitted, says so.
   $("#jh-submitted").addEventListener("click", () => MATCH && bookSubmitted(MATCH.snapshot_id));
   $("#jh-close").addEventListener("click", closePanel);
@@ -281,6 +298,93 @@ async function copyAnswer() {
   } catch (_e) {
     copy.textContent = "clipboard blocked — select the text manually";
   }
+}
+
+// ── ✉️ decision-email booking ─────────────────────────────────────────────────
+const INTENT_LINE = {
+  rejection: '<span style="color:#e06666">✖ rejection</span>',
+  interview_invite: '<span style="color:#5fd35f">📅 interview invite</span>',
+  received_confirmation:
+    '<span style="color:#888">📨 received confirmation — no decision, nothing to book</span>',
+  other: '<span style="color:#888">— not a decision email, nothing to book</span>',
+};
+
+async function runEmailMatch() {
+  const btn = $("#jh-email-match");
+  const out = $("#jh-email-out");
+  const text = (($("#jh-email") || {}).value || "").trim();
+  if (!btn || !out) return;
+  if (!text) {
+    out.innerHTML = red("paste the email first");
+    return;
+  }
+  btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = "matching…";
+  out.textContent = "";
+  const res = await bg({ type: "email-match", email_text: text });
+  btn.disabled = false;
+  btn.textContent = orig;
+  if (!res || !res.ok) {
+    out.innerHTML = red("email match failed: " + ((res && res.error) || "?"));
+    return;
+  }
+  renderEmailResult(out, res.data);
+}
+
+function renderEmailResult(out, d) {
+  let html = '<div style="color:#ddd">' +
+    (INTENT_LINE[d.intent] || esc(d.intent || "?")) + "</div>";
+  if (d.evidence) {
+    // the sentence the classification stands on — verify THIS, not the whole email
+    html += '<div style="color:#888;font-style:italic;margin-top:2px">“' +
+      esc(d.evidence) + "”</div>";
+  }
+  for (const w of d.warnings || []) {
+    html += '<div style="color:#e0a000;margin-top:2px">⚠ ' + esc(w) + "</div>";
+  }
+  const label = d.book_as === "rejected" ? "Mark rejected"
+    : d.book_as === "interview_1" ? "Mark interview" : "";
+  const color = d.book_as === "rejected" ? "#e06666" : "#5fd35f";
+  if (!(d.matches || []).length) {
+    html += '<div style="color:#888;margin-top:4px">no active application' +
+      " matched — book it in the dashboard (⚡ Quick Reject)</div>";
+  }
+  for (const m of d.matches || []) {
+    html += '<div style="margin-top:6px;padding:6px;background:#1a1a1a;' +
+      'border:1px solid #333;border-radius:5px">' +
+      "<b>" + esc(m.company) + "</b> — " + esc(m.title) +
+      '<div style="color:#888">applied ' + esc((m.applied_at || "?").slice(0, 10)) +
+      " · " + esc(m.status) + "</div>" +
+      (m.company_in_email ? "" :
+        '<div style="color:#e0a000">⚠ company name not found in the email —' +
+        " check this is the right one</div>") +
+      (label
+        ? '<button data-jh-book data-job="' + esc(m.id) + '" data-status="' +
+          esc(d.book_as) + '" style="' + BTN_STYLE + ";color:" + color +
+          ';width:100%;margin-top:4px">' + label + "</button>"
+        : "") +
+      "</div>";
+  }
+  out.innerHTML = html;
+  out.querySelectorAll("button[data-jh-book]").forEach((b) => {
+    b.addEventListener("click", () => bookEmailStatus(b));
+  });
+}
+
+async function bookEmailStatus(b) {
+  b.disabled = true;
+  b.textContent = "booking…";
+  const res = await bg({ type: "email-book",
+                         job_id: b.dataset.job, status: b.dataset.status });
+  if (!res || !res.ok) {
+    b.disabled = false;
+    b.textContent = "failed — retry (" + ((res && res.error) || "?") + ")";
+    return;
+  }
+  const d = res.data;
+  b.outerHTML = '<div style="color:#5fd35f;margin-top:4px">✓ booked ' +
+    esc(d.status) + " — " + esc(d.company) + "</div>";
 }
 
 const CV_LABEL_RE = /resume|\bcv\b|lebenslauf/i;
