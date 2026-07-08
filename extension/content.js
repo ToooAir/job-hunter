@@ -179,13 +179,17 @@ async function findPending() {
     status.innerHTML = red((res && res.error) || "no response") + " — check options.";
     return;
   }
-  MATCH = res.data.find((s) => s.host && hostMatch(pageHost(), s.host));
+  const hostHits = res.data.filter((s) => s.host && hostMatch(pageHost(), s.host));
+  // Aggregator boards (arbeitnow.com) list every job on one host, so a host
+  // hit alone can be another job's draft — and MATCH arms the confirmation
+  // watch, so a wrong bind books the wrong application. Exact page-URL match
+  // first; a lone host hit stays trustworthy; anything else needs the human's
+  // 🎯 focus (which also covers the smartapply.indeed.com redirect, where the
+  // draft's host matches nothing).
+  MATCH = hostHits.find((s) => samePage(s.apply_url)) || null;
+  if (!MATCH && hostHits.length === 1) MATCH = hostHits[0];
   let via = "";
   if (!MATCH) {
-    // Aggregator redirect (a de.indeed.com draft's apply flow lands on
-    // smartapply.indeed.com) defeats host matching — fall back to the
-    // dashboard 🎯 focus. The status names the company + basis, so the human
-    // verifies it is the right application before booking.
     const foc = await bg({ type: "focus" });
     const sid = foc && foc.ok && foc.data && foc.data.snapshot_id;
     if (sid) MATCH = res.data.find((s) => s.snapshot_id === sid) || null;
@@ -195,6 +199,10 @@ async function findPending() {
     $("#jh-submitted").style.display = "block";
     status.textContent = MATCH.company + " · snapshot #" + MATCH.snapshot_id +
       " · " + (MATCH.ats || "?") + " · T" + MATCH.tier + via;
+  } else if (hostHits.length > 1) {
+    $("#jh-submitted").style.display = "none";
+    status.innerHTML = red(hostHits.length + " drafts share this host") +
+      " — press 🎯 on the right one in the dashboard, then come back.";
   } else {
     status.textContent = res.data.length + " pending draft(s), none for this page";
   }
@@ -202,6 +210,24 @@ async function findPending() {
 
 function hostMatch(a, b) {
   return a === b || a.endsWith("." + b) || b.endsWith("." + a);
+}
+
+// True when a draft's apply_url IS the page being viewed (host + path) —
+// the only per-job signal on multi-job hosts. Query string and hash are
+// ignored: boards decorate links with tracking params.
+function samePage(applyUrl) {
+  if (!applyUrl) return false;
+  try {
+    const u = new URL(applyUrl);
+    return hostMatch(pageHost(), u.host.replace(/^www\./, "")) &&
+      normPath(u.pathname) === normPath(location.pathname);
+  } catch (_e) {
+    return false;
+  }
+}
+
+function normPath(p) {
+  return (p || "/").replace(/\/+$/, "").toLowerCase() || "/";
 }
 
 // ── fill facts from the profile on ANY page ───────────────────────────────────
