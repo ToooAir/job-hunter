@@ -122,6 +122,15 @@ fields:
     value: "Not required — I am already based in Germany."
     aliases: [relocation, willing to relocate, umzugsbereitschaft, umzug]
 
+  ai_coding_agents:
+    # Truthful grounding for the increasingly common "do you use AI coding
+    # agents on production code?" survey question — without this fact the
+    # answer LLM may fabricate a denial. Describe YOUR actual usage.
+    value: "TODO"                      # e.g. "Yes — I use Claude Code daily …"
+    aliases: [ai coding agent, ai coding agents, coding agent, coding agents,
+              claude code, cursor, copilot, ai tools, ai assistant,
+              ai pair programming]
+
   how_did_you_hear:
     value: "Job posting"
     aliases: [how did you hear, source, referral source,
