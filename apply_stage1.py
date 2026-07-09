@@ -36,7 +36,9 @@ from urllib.parse import urljoin
 sys.path.insert(0, str(Path(__file__).parent))
 
 from utils.apply_graph import build_graph  # noqa: E402
-from utils.apply_queue import DEFAULT_DB_PATH, build_queue, topup_budget  # noqa: E402
+from utils.apply_queue import (  # noqa: E402
+    DEFAULT_DB_PATH, build_queue, is_addressable, topup_budget,
+)
 from utils.db import init_db  # noqa: E402
 from utils.profile_loader import load_profile  # noqa: E402
 
@@ -81,6 +83,41 @@ def verdict_of(report: dict, tree: dict | None) -> str:
     if report["controls"]["shadow"] > 0 and report["controls"]["light"] == 0:
         return "shadow-only"
     return "no-form"
+
+
+def is_unappliable(verdict: str, job: dict) -> bool:
+    """Verdicts that historically never convert into an application — the
+    2026-07-08 abandoned-draft review: 7/7 heise-own-form and 6/6
+    non-addressable weak-form drafts died in the reviewer's hands. Such jobs
+    get no draft and leave the queue (status='skipped') instead of occupying
+    the review wall. Addressable weak-forms survive: the probe under-extracts
+    structured ATS disguised behind an iframe (the Workato gh_jid lesson)."""
+    if verdict == "heise-own-form":
+        return True
+    return verdict == "weak-form" and not is_addressable(job)
+
+
+def skip_unappliable(conn, states: list[dict], dry_run: bool) -> list[dict]:
+    """Split off un-appliable states; mark their jobs skipped. Returns the
+    states that continue to Pass B."""
+    keep, skipped = [], []
+    for s in states:
+        (skipped if is_unappliable(s["verdict"], s["job"]) else keep).append(s)
+    if skipped and not dry_run:
+        now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        for s in skipped:
+            conn.execute(
+                "UPDATE jobs SET status = 'skipped', "
+                "notes = COALESCE(notes || char(10), '') || ? WHERE id = ?",
+                (f"[{now}] stage1: un-appliable form ({s['verdict']}) — "
+                 "no draft generated; set status='scored' to resurrect",
+                 s["job"]["id"]),
+            )
+        conn.commit()
+    for s in skipped:
+        print(f"  ✗ 表單不可投（{s['verdict']}，{s['job']['company'][:30]}）"
+              f"→ 標 skipped，不生成草稿", flush=True)
+    return keep
 
 
 def _heise_original(page, url: str) -> str | None:
@@ -276,6 +313,7 @@ def main() -> None:
             print(f"  ✗ 職缺已下架（{s['job']['company'][:30]}）→ 標 expired，"
                   f"不生成草稿", flush=True)
         states = [s for s in states if s["verdict"] != "gone"]
+    states = skip_unappliable(conn, states, dry_run=args.dry_run)
     conn.close()
 
     from utils.apply_llm import CALL_STATS
