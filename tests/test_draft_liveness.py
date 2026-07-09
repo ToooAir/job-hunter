@@ -178,6 +178,29 @@ class SweepTest(unittest.TestCase):
         self.assertEqual(row["ss"], "abandoned")
         self.assertEqual(row["js"], "expired")
 
+    def test_soft_gone_body_kills_manual_draft_without_headless(self):
+        # The manual Tier-3 blind spot: the page answers 200 ("page loads" used
+        # to pass as live) but its visible text says the posting is over.
+        closed = "<html><body>This job is no longer accepting applications</body></html>"
+
+        def fake_http(url):  # 3-tuple form: (status, final_url, body)
+            body = closed if url.endswith("/manual") else "<h1>Jetzt bewerben</h1>"
+            return 200, url, body
+
+        verdicts = {"https://x.com/live": "ok", "https://x.com/gone": "gone",
+                    "https://x.com/captcha": "captcha",
+                    "https://x.com/dead404": "ok"}
+        tally = sweep_drafts(
+            self.conn, http_get=fake_http,
+            headless_verdicts=lambda ds: ((d, verdicts[d["apply_url"]]) for d in ds))
+        self.assertEqual(tally["dead"], 2)  # gone (form) + the soft-gone manual
+        row = self.conn.execute(
+            "SELECT s.status ss, s.notes, j.status js FROM application_snapshots s "
+            "JOIN jobs j ON j.id=s.job_id WHERE s.id=?", (self.sid["manual"],)).fetchone()
+        self.assertEqual(row["ss"], "abandoned")
+        self.assertEqual(row["js"], "expired")
+        self.assertIn("soft-gone", row["notes"])
+
     def test_dry_run_writes_nothing(self):
         tally = sweep_drafts(self.conn, http_get=lambda u: (404, u),
                              headless_verdicts=lambda ds: iter(()), dry_run=True)

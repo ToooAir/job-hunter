@@ -2177,15 +2177,15 @@ if __name__ == "__main__":
     # rm2 = config["relocateme"]
     # results["relocateme"] = scrape_relocateme(conn, ...)
 
-    # ── Jobicy ──
-    log.info("scraping jobicy …")
-    jc = config["jobicy"]
-    results["jobicy"] = scrape_jobicy(
-        conn,
-        tags=jc["tags"],
-        count=jc.get("count", 50),
-        exclude_geo=jc.get("exclude_geo", []),
-    )
+    # ── Jobicy (disabled 2026-07-08 — worldwide-remote board: 0 submissions,
+    #    every draft abandoned (geo/role mismatch); abandoned-drafts review) ──
+    # jc = config["jobicy"]
+    # results["jobicy"] = scrape_jobicy(
+    #     conn,
+    #     tags=jc["tags"],
+    #     count=jc.get("count", 50),
+    #     exclude_geo=jc.get("exclude_geo", []),
+    # )
 
     # ── Ashby ──
     log.info("scraping ashby …")
@@ -2213,18 +2213,16 @@ if __name__ == "__main__":
         log.info("workable: no companies configured — skipping")
         results["workable"] = (0, 0)
 
-    # ── We Work Remotely ──
-    log.info("scraping weworkremotely …")
-    wwr = config.get("weworkremotely", {})
-    if wwr.get("feeds"):
-        results["weworkremotely"] = scrape_weworkremotely(
-            conn,
-            feed_urls=wwr["feeds"],
-            keywords=wwr.get("keywords", []),
-        )
-    else:
-        log.info("weworkremotely: not configured — skipping")
-        results["weworkremotely"] = (0, 0)
+    # ── We Work Remotely (disabled 2026-07-08 — worldwide-remote board:
+    #    0 submissions, drafts died at dead/off-target links; user verdict
+    #    "不好用"; abandoned-drafts review) ──
+    # wwr = config.get("weworkremotely", {})
+    # if wwr.get("feeds"):
+    #     results["weworkremotely"] = scrape_weworkremotely(
+    #         conn,
+    #         feed_urls=wwr["feeds"],
+    #         keywords=wwr.get("keywords", []),
+    #     )
 
     # ── Greenhouse ──
     log.info("scraping greenhouse …")
