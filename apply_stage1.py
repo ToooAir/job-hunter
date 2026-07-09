@@ -15,7 +15,9 @@ Two passes (Step 4 design, approved 2026-06-12):
   only feeds the weak-form verdict.)
 
 Accounting invariant: every queue job ends as exactly one of
-  draft saved (tier 1/2/3) | failed (reason recorded). Nothing is dropped.
+  draft saved (tier 1/2/3) | failed (reason recorded) | expired (posting
+  gone) | skipped (un-appliable form). Nothing is dropped, and the final
+  tally names all four.
 
 Usage:
     python apply_stage1.py [--limit N] [--budget N] [--source X]
@@ -342,7 +344,10 @@ def main() -> None:
             print(f"  ✗ 職缺已下架（{s['job']['company'][:30]}）→ 標 expired，"
                   f"不生成草稿", flush=True)
         states = [s for s in states if s["verdict"] != "gone"]
+    n_gone = len(gone)
+    n_before_gate = len(states)
     states = skip_unappliable(conn, states, dry_run=args.dry_run)
+    n_unappliable = n_before_gate - len(states)
     conn.close()
 
     from utils.apply_llm import CALL_STATS
@@ -381,7 +386,7 @@ def main() -> None:
     llm = sum(1 for r in results for a in (r.get("actions") or [])
               if a.get("source") in ("llm", "cover_letter"))
     print(f"\n=== Stage 1 對帳(佇列 {len(jobs)} = 草稿 {len(results)} "
-          f"+ 失敗 {len(failures)})===")
+          f"+ 失敗 {len(failures)} + 下架 {n_gone} + 不可投 {n_unappliable})===")
     for tier in sorted(by_tier):
         print(f"  Tier {tier}: {by_tier[tier]}")
     print(f"  填值 actions:確定性 {det} / LLM+CL {llm};LLM 呼叫 {CALL_STATS['calls']} 次")
@@ -394,6 +399,8 @@ def main() -> None:
         "started": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
         "dry_run": args.dry_run,
         "llm_calls": CALL_STATS["calls"],
+        "expired_gone": n_gone,
+        "skipped_unappliable": n_unappliable,
         "results": [{
             **{k: r["job"].get(k) for k in
                ("id", "source", "company", "title", "ats", "dedup", "rank")},
