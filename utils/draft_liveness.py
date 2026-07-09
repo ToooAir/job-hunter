@@ -12,7 +12,8 @@ Two stages (cost vs reliability, per user decision):
   0. jobs.ats == 'gone' (ats_scan saw the source listing 404) = clear-dead with
      no request at all — catches Tier-3 drafts whose apply_url is a generic
      careers page that always loads (the zombie-draft blind spot).
-  A. cheap HTTP GET — 404/410 or a deep path that redirected to the bare host =
+  A. cheap HTTP GET — 404/410, a deep path that redirected to the bare host,
+     or a 200 whose visible text says the posting is over (soft-gone) =
      clear-dead, no browser needed.
   B. headless confirm (only the rest) — the real liveness signal is whether the
      application FORM is still there, reusing Stage 1's extraction + verdict.
@@ -34,6 +35,7 @@ from urllib.parse import urlparse
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from utils.db import init_db, mark_expired  # noqa: E402
+from utils.gone_text import soft_gone  # noqa: E402
 from utils.snapshot_io import abandon_snapshot  # noqa: E402
 
 DEFAULT_DB_PATH = str(Path(__file__).resolve().parents[1] / "data" / "jobs.db")
@@ -116,14 +118,15 @@ def apply_result(conn, snapshot_id: int, job_id: str, liveness: str,
 
 # ── orchestration ────────────────────────────────────────────────────────────
 def _default_http_get(url: str):
-    """(status, final_url) for a URL, following redirects. Errors -> (None, None)."""
+    """(status, final_url, body) for a URL, following redirects.
+    Errors -> (None, None, None). Test fakes may return bare 2-tuples."""
     import requests
     try:
         r = requests.get(url, timeout=12, allow_redirects=True,
                          headers={"User-Agent": _UA})
-        return r.status_code, r.url
+        return r.status_code, r.url, r.text[:200_000]
     except Exception:
-        return None, None
+        return None, None, None
 
 
 def _headless_verdicts(drafts):
@@ -176,9 +179,17 @@ def sweep_drafts(conn, http_get=None, headless_verdicts=None,
         if not url:
             record(d, "suspicious", "no apply_url")
             continue
-        status, final_url = http_get(url)
+        res = http_get(url)
+        status, final_url = res[0], res[1]
+        body = res[2] if len(res) > 2 else None
+        # A 200 whose visible text says "position filled" is as dead as a 404 —
+        # this was the manual Tier-3 blind spot ("page loads" passed as live
+        # while the reviewer found a closed posting; 2026-07-08 review).
+        gone_phrase = soft_gone(body)
         if classify_http(url, status, final_url) == "dead":
             record(d, "dead", f"http {status}")
+        elif gone_phrase:
+            record(d, "dead", f"soft-gone: {gone_phrase[:60]}")
         elif not _has_actions(d.get("form_payload")):
             # Manual Tier-3 draft: there was never a fillable form to lose, so the
             # page simply loading is liveness enough — don't run headless or flag it.
