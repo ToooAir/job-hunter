@@ -25,6 +25,7 @@ import json
 import re
 import sqlite3
 import sys
+from html import unescape as html_unescape
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -36,6 +37,7 @@ from bs4 import BeautifulSoup
 
 sys.path.insert(0, str(Path(__file__).parent))
 from utils.db import init_db, set_job_ats  # noqa: E402
+from utils.gone_text import soft_gone  # noqa: E402
 
 ROOT = Path(__file__).parent
 DB_PATH = ROOT / "data" / "jobs.db"
@@ -143,6 +145,9 @@ def classify_url(url):
 def scan_text_for_ats(text):
     """Find an ATS URL anywhere in raw HTML (covers JSON blobs like apply_url)."""
     text = text.replace("\\/", "/")  # Nuxt/JSON payloads escape slashes
+    # HTML-entity-encoded JSON (&quot;) hides the quote that ends a URL, so the
+    # match swallowed the config blob after it (idealo/recruitee, draft #100).
+    text = html_unescape(text)
     low = text.lower()
     for ats, pats in ATS_PATTERNS.items():
         for pat in pats:
@@ -231,6 +236,12 @@ def resolve_one(job):
         return result
     if r.status_code in (404, 410):
         result.update(ats="gone", evidence=f"HTTP {r.status_code}")
+        return result
+    # 200 with "position filled"-class wording = gone (soft-gone). Checked
+    # before ATS classification: a closed Greenhouse page still links the ATS.
+    gone_phrase = soft_gone(r.text)
+    if gone_phrase:
+        result.update(ats="gone", evidence=f"soft-gone: {gone_phrase[:80]}")
         return result
 
     # 1. HTTP redirect already landed on a known ATS

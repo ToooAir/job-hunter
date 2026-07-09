@@ -11,7 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 try:  # ats_scan needs requests/bs4 — present in the container, not the host
-    from ats_scan import _evidence_to_apply_url, plausible_apply_url
+    from ats_scan import _evidence_to_apply_url, plausible_apply_url, scan_text_for_ats
     HAS_DEPS = True
 except ModuleNotFoundError:
     HAS_DEPS = False
@@ -66,6 +66,35 @@ class PlausibleApplyUrlTest(unittest.TestCase):
             _evidence_to_apply_url("  https://join.com/companies/x/1-dev  "),
             "https://join.com/companies/x/1-dev")
         self.assertIsNone(_evidence_to_apply_url("native form, 4 schema fields"))
+
+
+@unittest.skipUnless(HAS_DEPS, "ats_scan deps not installed on this host")
+class ScanTextForAtsTest(unittest.TestCase):
+    def test_plain_ats_url_found(self):
+        ats, ev = scan_text_for_ats(
+            '<a href="https://jobs.lever.co/acme/123">Apply</a>')
+        self.assertEqual(ats, "lever")
+        self.assertEqual(ev, "https://jobs.lever.co/acme/123")
+
+    def test_html_entity_json_blob_does_not_poison_the_url(self):
+        # A recruitee page embeds its config as &quot;-encoded JSON; the entity
+        # hid the closing quote, so the matched URL swallowed the whole blob
+        # (idealo draft #100, 2026-07-08). After unescaping, the URL must stop
+        # at the real quote.
+        blob = ('{&quot;careersHost&quot;:&quot;https://careers-acme.recruitee.com'
+                '&quot;,&quot;appEnv&quot;:&quot;production&quot;,&quot;atsHost'
+                '&quot;:&quot;recruitee.com&quot;}')
+        ats, ev = scan_text_for_ats(blob)
+        self.assertEqual(ats, "recruitee")
+        self.assertEqual(ev, "https://careers-acme.recruitee.com")
+        # …and a bare careers host root is not persisted as the apply link
+        self.assertIsNone(_evidence_to_apply_url(ev))
+
+    def test_escaped_slashes_still_handled(self):
+        ats, ev = scan_text_for_ats(
+            '{"apply_url":"https:\\/\\/jobs.personio.de\\/acme\\/job\\/42"}')
+        self.assertEqual(ats, "personio")
+        self.assertIn("jobs.personio.de/acme/job/42", ev)
 
 
 if __name__ == "__main__":
