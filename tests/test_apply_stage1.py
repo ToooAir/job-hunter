@@ -106,21 +106,36 @@ class _FakeLink:
 
 
 class _FakePage:
-    """Minimal Playwright page stand-in for _heise_original."""
+    """Playwright page stand-in for _heise_original. `links_by_page` maps a
+    URL substring → {"originalanzeige": _FakeLink, "jetzt": _FakeLink}; goto()
+    switches self.url, so the wizard's first page can carry different links
+    than the detail page (the shape-2 layout)."""
 
-    def __init__(self, link, current_url):
-        self._link, self.url = link, current_url
+    _NO_LINK = None  # sentinel: locator finds nothing → unattached link
+
+    def __init__(self, links_by_page, current_url):
+        self._by_page, self.url = links_by_page, current_url
 
     def goto(self, url, **kw):
-        return None
+        self.url = url
 
-    def locator(self, *a, **kw):
-        return type("L", (), {"first": self._link})()
+    def locator(self, *a, has_text=None, **kw):
+        table = next((links for key, links in self._by_page.items()
+                      if key in self.url), {})
+        pat = has_text.pattern.lower() if has_text is not None else ""
+        name = "originalanzeige" if "originalanzeige" in pat else "jetzt"
+        link = table.get(name) or _FakeLink(None, attached=False)
+        return type("L", (), {"first": link})()
 
 
 class TestHeiseOriginal(unittest.TestCase):
-    """_heise_original must reach the EXTERNAL link and fail closed otherwise —
-    it must never return a target on heise's own application wizard."""
+    """_heise_original must reach the EXTERNAL link across all three heise
+    apply shapes and fail closed otherwise — it must never return a target on
+    heise's own application wizard."""
+
+    DETAIL = "https://jobs.heise.de/job?id=1"
+    WIZARD = ("https://jobs.heise.de/application?back=%2Fjob%3Fid%3D1"
+              "&documentId=1&useCompanyForm=1")
 
     def setUp(self):
         import utils.browser as b
@@ -132,27 +147,55 @@ class TestHeiseOriginal(unittest.TestCase):
     def tearDown(self):
         self._b.dismiss_cookie_banner, self._b._settle = self._saved
 
-    def _run(self, href, attached=True, page_url="https://jobs.heise.de/job?id=1"):
+    def _run(self, links_by_page):
         from apply_stage1 import _heise_original
-        return _heise_original(_FakePage(_FakeLink(href, attached), page_url), "u")
+        # the initial goto(url) navigates the fake page too, so the job URL
+        # must be the detail URL the link tables are keyed on
+        return _heise_original(_FakePage(links_by_page, self.DETAIL), self.DETAIL)
 
-    def test_external_link_is_returned(self):
+    def test_legacy_detail_page_originalanzeige_is_returned(self):
         url = "https://acme.softgarden.io/applications/x"
-        self.assertEqual(self._run(url), url)
+        self.assertEqual(self._run(
+            {"/job": {"originalanzeige": _FakeLink(url)}}), url)
 
     def test_relative_redirect_endpoint_survives(self):
         # heise often points Originalanzeige at its own /redirect?... endpoint
         # that 302s out — a relative href must resolve, not be rejected.
-        self.assertEqual(self._run("/redirect?to=acme"),
-                         "https://jobs.heise.de/redirect?to=acme")
+        self.assertEqual(self._run(
+            {"/job": {"originalanzeige": _FakeLink("/redirect?to=acme")}}),
+            "https://jobs.heise.de/redirect?to=acme")
 
-    def test_heise_hosted_without_link_returns_none(self):
-        # useCompanyForm job: no Originalanzeige → fail closed, caller skips.
-        self.assertIsNone(self._run(None, attached=False))
+    def test_shape1_external_apply_button_is_returned(self):
+        # 'Jetzt bewerben' href leaves heise directly
+        url = "https://careers.acme.example/apply/42"
+        self.assertEqual(self._run(
+            {"/job": {"jetzt": _FakeLink(url)}}), url)
+
+    def test_shape2_originalanzeige_inside_wizard_page_is_returned(self):
+        # 2026-07-08 layout: the link moved INTO the application page (KHS probe)
+        self.assertEqual(self._run({
+            "/job?": {"jetzt": _FakeLink(self.WIZARD)},
+            "/application": {"originalanzeige": _FakeLink(
+                "https://germantechjobs.de/jobs/KHS-GmbH-Senior")},
+        }), "https://germantechjobs.de/jobs/KHS-GmbH-Senior")
+
+    def test_shape3_wizard_without_originalanzeige_returns_none(self):
+        self.assertIsNone(self._run(
+            {"/job?": {"jetzt": _FakeLink(self.WIZARD)}}))
+
+    def test_heise_hosted_without_any_link_returns_none(self):
+        self.assertIsNone(self._run({}))
 
     def test_loopback_to_heise_wizard_is_rejected(self):
-        self.assertIsNone(
-            self._run("https://jobs.heise.de/application?useCompanyForm=1"))
+        # a detail-page Originalanzeige that loops into the wizard is not external
+        self.assertIsNone(self._run(
+            {"/job": {"originalanzeige": _FakeLink(self.WIZARD)}}))
+
+    def test_wizard_originalanzeige_looping_back_is_rejected(self):
+        self.assertIsNone(self._run({
+            "/job?": {"jetzt": _FakeLink(self.WIZARD)},
+            "/application": {"originalanzeige": _FakeLink(self.WIZARD)},
+        }))
 
 
 class TestUnappliableGate(unittest.TestCase):
