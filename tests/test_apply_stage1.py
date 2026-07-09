@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from apply_stage1 import _has_apply_signature, verdict_of  # noqa: E402
+from apply_stage1 import _has_apply_signature, is_unappliable, verdict_of  # noqa: E402
 from utils.dom_pruner import FormField  # noqa: E402
 
 
@@ -153,6 +153,82 @@ class TestHeiseOriginal(unittest.TestCase):
     def test_loopback_to_heise_wizard_is_rejected(self):
         self.assertIsNone(
             self._run("https://jobs.heise.de/application?useCompanyForm=1"))
+
+
+class TestUnappliableGate(unittest.TestCase):
+    """2026-07-08 abandoned-drafts review: verdicts that never converted get
+    no draft — but addressable weak-forms must survive (Workato gh_jid: the
+    probe under-extracts an iframe'd Greenhouse and calls it weak)."""
+
+    def test_heise_own_form_is_always_gated(self):
+        self.assertTrue(is_unappliable(
+            "heise-own-form", {"ats": "unknown", "apply_url": None}))
+
+    def test_weak_form_on_unknown_board_is_gated(self):
+        # the jobware class: 6/6 such drafts died in the reviewer's hands
+        self.assertTrue(is_unappliable(
+            "weak-form", {"ats": "unknown",
+                          "apply_url": "https://jobware.de/job/123"}))
+
+    def test_weak_form_on_disguised_greenhouse_survives(self):
+        self.assertFalse(is_unappliable(
+            "weak-form", {"ats": "unknown",
+                          "apply_url": "https://www.workato.com/careers?gh_jid=42"}))
+
+    def test_weak_form_on_addressable_ats_survives(self):
+        self.assertFalse(is_unappliable(
+            "weak-form", {"ats": "personio", "apply_url": None}))
+
+    def test_other_verdicts_pass(self):
+        for verdict in ("ok", "captcha", "external-board", "no-form", "account-wall"):
+            with self.subTest(verdict=verdict):
+                self.assertFalse(is_unappliable(
+                    verdict, {"ats": "unknown", "apply_url": None}))
+
+
+class TestSkipUnappliable(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        from utils.db import init_db
+        self.tmp = tempfile.TemporaryDirectory()
+        self.conn = init_db(str(Path(self.tmp.name) / "t.db"))
+        for jid in ("j1", "j2"):
+            self.conn.execute(
+                "INSERT INTO jobs (id, company, title, url, source, raw_jd_text,"
+                " fetched_at, status) VALUES (?,?,?,?,?,?,?, 'scored')",
+                (jid, "Mustermann GmbH", "Eng", f"https://x.com/{jid}", "t", "jd",
+                 "2026-07-01T08:00:00"))
+        self.conn.commit()
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def _states(self):
+        return [
+            {"verdict": "heise-own-form",
+             "job": {"id": "j1", "company": "A", "ats": "unknown", "apply_url": None}},
+            {"verdict": "ok",
+             "job": {"id": "j2", "company": "B", "ats": "unknown", "apply_url": None}},
+        ]
+
+    def test_marks_skipped_and_filters_states(self):
+        from apply_stage1 import skip_unappliable
+        keep = skip_unappliable(self.conn, self._states(), dry_run=False)
+        self.assertEqual([s["job"]["id"] for s in keep], ["j2"])
+        row = self.conn.execute(
+            "SELECT status, notes FROM jobs WHERE id='j1'").fetchone()
+        self.assertEqual(row["status"], "skipped")
+        self.assertIn("un-appliable form (heise-own-form)", row["notes"])
+        self.assertEqual(self.conn.execute(
+            "SELECT status FROM jobs WHERE id='j2'").fetchone()["status"], "scored")
+
+    def test_dry_run_filters_but_writes_nothing(self):
+        from apply_stage1 import skip_unappliable
+        keep = skip_unappliable(self.conn, self._states(), dry_run=True)
+        self.assertEqual(len(keep), 1)
+        self.assertEqual(self.conn.execute(
+            "SELECT status FROM jobs WHERE id='j1'").fetchone()["status"], "scored")
 
 
 if __name__ == "__main__":
