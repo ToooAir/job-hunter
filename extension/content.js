@@ -34,6 +34,10 @@ const ATS_FRAME_RE = /(^|\.)(greenhouse\.io|ashbyhq\.com|jobs\.personio\.de|leve
 const BTN_STYLE =
   "cursor:pointer;border:1px solid #555;background:#1e1e1e;color:#eee;" +
   "border-radius:5px;padding:5px 9px;font:inherit";
+const CLICK_ACTIONS = new WeakMap(); // panel button → click handler (armor)
+let ATTR_GUARD = null;   // MutationObserver reverting site edits to HOST attrs
+let HOSTILE = false;     // this page kills events addressed to our panel
+let PROBE = null;        // pointerdown token awaiting delivery proof at HOST
 
 if (window.top === window.self || ATS_FRAME_RE.test(location.hostname)) {
   injectPanel();
@@ -142,19 +146,227 @@ function injectPanel() {
     "</div>" +
     "</div>";
   document.documentElement.appendChild(HOST);
+  promoteToTopLayer();
+  guardHostAttributes();
+  // Armor probe target: an event that reaches HOST was not killed en route.
+  HOST.addEventListener("pointerdown", markProbeDelivered, true);
   // Works on ANY page, no snapshot needed — fills only profile facts.
-  $("#jh-fill-profile").addEventListener("click", runProfileFill);
-  $("#jh-answer").addEventListener("click", () => runAnswer());
-  $("#jh-salary").addEventListener("click", () => runAnswer(SALARY_QUESTION));
-  $("#jh-cl").addEventListener("click", runCoverLetter);
-  $("#jh-copy").addEventListener("click", copyAnswer);
-  $("#jh-email-match").addEventListener("click", runEmailMatch);
+  // (onClick, not bare addEventListener: hostile-modal armor needs the
+  // handler for direct invocation when the event chain is killed.)
+  onClick($("#jh-fill-profile"), runProfileFill);
+  onClick($("#jh-answer"), () => runAnswer());
+  onClick($("#jh-salary"), () => runAnswer(SALARY_QUESTION));
+  onClick($("#jh-cl"), runCoverLetter);
+  onClick($("#jh-copy"), copyAnswer);
+  onClick($("#jh-email-match"), runEmailMatch);
   // The authoritative bookkeeping signal: the human, who just submitted, says so.
-  $("#jh-submitted").addEventListener("click", () => MATCH && bookSubmitted(MATCH.snapshot_id));
-  $("#jh-close").addEventListener("click", closePanel);
+  onClick($("#jh-submitted"), () => MATCH && bookSubmitted(MATCH.snapshot_id));
+  onClick($("#jh-close"), closePanel);
+}
+
+// Max z-index is not enough: site modals use the same value and paint above
+// (later DOM order wins ties), and <dialog>.showModal() sits in the top layer,
+// above ANY z-index. So the host goes into the top layer too, as a manual
+// popover (no light dismiss, no ESC). Within the top layer the last-shown
+// element paints on top, so when the SITE opens a dialog/popover after us we
+// re-show ours to jump back above it (the capture listener sees non-bubbling
+// `toggle` events from any element; ours is guarded out to avoid a loop).
+function promoteToTopLayer() {
+  if (!HOST || typeof HOST.showPopover !== "function") return; // old Chrome: plain div
+  HOST.setAttribute("popover", "manual");
+  // Neutralize the UA popover box (position:fixed inset:0 margin:auto border
+  // background): the shadow panel does its own fixed positioning.
+  // pointer-events:auto re-opts-in when a site whitelists its modal by
+  // switching everything else off.
+  HOST.style.cssText =
+    "position:fixed;inset:auto;width:0;height:0;border:0;margin:0;" +
+    "padding:0;background:transparent;overflow:visible;pointer-events:auto";
+  try { HOST.showPopover(); } catch (_e) {}
+}
+
+function repromoteOnSiteTopLayer(e) {
+  if (!HOST || !HOST.isConnected || e.target === HOST) return;
+  if (e.newState !== "open") return;
+  try { HOST.hidePopover(); } catch (_e) {}
+  try { HOST.showPopover(); } catch (_e) {}
+}
+document.addEventListener("toggle", repromoteOnSiteTopLayer, true);
+
+// Hide-outside libraries (react-aria style) don't mark the page once — a
+// MutationObserver RE-applies inert/aria-hidden to anything outside their
+// modal, so stripping it in a pointerdown handler lasts one microtask and the
+// click's hit test already misses again (EPAM, 2026-07-09 second retest).
+// Fight observer with observer: attribute changes on HOST are reverted the
+// instant they land — our callback always runs after their mutation, so the
+// last word is ours. (Their observers watch for added nodes, not for
+// attribute removals on known ones, so this settles instead of ping-ponging.)
+function guardHostAttributes() {
+  if (ATTR_GUARD) ATTR_GUARD.disconnect();
+  ATTR_GUARD = new MutationObserver(() => {
+    if (!HOST) return;
+    if (HOST.hasAttribute("inert")) HOST.removeAttribute("inert");
+    if (HOST.hasAttribute("aria-hidden")) HOST.removeAttribute("aria-hidden");
+    if (HOST.style.pointerEvents !== "auto") HOST.style.pointerEvents = "auto";
+  });
+  ATTR_GUARD.observe(HOST, {
+    attributes: true, attributeFilter: ["inert", "aria-hidden", "style"],
+  });
+}
+
+// Paint order is not click order: modal layers make everything OUTSIDE them
+// unclickable even when it paints above — <dialog>.showModal() marks the rest
+// of the page inert (hit testing skips inert nodes), focus-trap libraries kill
+// events outside their overlay at document capture, Radix-style CSS whitelists
+// via body{pointer-events:none}. The panel then looks fine but a click inside
+// it lands on the site's form (EPAM, 2026-07-09). Window-capture runs before
+// any site document listener, so watch pointerdown: a press inside the panel's
+// box whose target is NOT our host means we are blocked — re-parent the host
+// INTO the blocking overlay's top-level container, joining its inert/whitelist
+// scope. Hit testing re-runs per event, so the same click's pointerup/click
+// already reaches the button.
+//
+// The re-parent must NOT give up the top layer (first EPAM retest: the moved
+// panel painted BELOW the overlay, losing on z-index inside its stacking
+// context). Tree position buys clickability, the popover buys paint order —
+// they are independent, so keep both: moving a shown popover auto-hides it,
+// re-promote right after.
+function rescueClickThrough(e) {
+  if (HOST && !HOST.isConnected) {
+    // the overlay we moved into was torn down and took us with it
+    HOST = null;
+    PANEL = null;
+    injectPanel();
+    init();
+    return;
+  }
+  if (!HOST || !PANEL || e.target === HOST) return;
+  const panel = PANEL.firstElementChild;
+  const r = panel && panel.getBoundingClientRect();
+  if (!r || e.clientX < r.left || e.clientX > r.right ||
+      e.clientY < r.top || e.clientY > r.bottom) return;
+  // Field evidence for the next hostile-modal variant: what stole the click
+  // and what state our host was in (the panel's own buttons never get here —
+  // their events target HOST and returned above).
+  console.info("[jh-autofill] click-through rescue:", {
+    blocker: e.target.tagName + "." + (e.target.className || ""),
+    hostInert: HOST.hasAttribute("inert"),
+    hostAriaHidden: HOST.getAttribute("aria-hidden"),
+    hostPointerEvents: getComputedStyle(HOST).pointerEvents,
+    hostParent: HOST.parentElement && HOST.parentElement.tagName,
+    hostPopoverOpen: HOST.matches(":popover-open"),
+    modalDialogOpen: !!document.querySelector("dialog:modal"),
+  });
+  if (HOST.hasAttribute("inert") || HOST.getAttribute("aria-hidden") === "true") {
+    // the site marked US inert (react-aria hide-outside style): strip it and
+    // stay home — the attribute guard keeps it stripped from here on
+    HOST.removeAttribute("inert");
+    HOST.removeAttribute("aria-hidden");
+    promoteToTopLayer();
+    return;
+  }
+  // Native <dialog>.showModal() (EPAM's Modal component — confirmed in their
+  // bundle) makes everything outside the dialog IMPLICITLY inert: no attribute
+  // ever appears on HOST (field log: hostInert:false, popover open, hit test
+  // still lands on the modal), so attribute stripping and the guard both have
+  // nothing to act on. The only exit is to become a descendant of the dialog —
+  // modal inertness spares the dialog's own subtree. Target the dialog
+  // ELEMENT, not its top-level wrapper: a sibling inside the wrapper is still
+  // outside the dialog and stays inert.
+  const dlg = (e.target.closest && e.target.closest("dialog:modal")) ||
+    document.querySelector("dialog:modal");
+  if (dlg && !dlg.contains(HOST)) {
+    dlg.appendChild(HOST); // auto-hides the shown popover…
+    promoteToTopLayer();   // …so re-show it from the new position
+    // A closed dialog usually stays in the DOM as display:none, which stops
+    // rendering its whole subtree — us included. Move back out on close.
+    dlg.addEventListener("close", () => {
+      if (HOST && HOST.isConnected) {
+        document.documentElement.appendChild(HOST);
+        promoteToTopLayer();
+      }
+    }, { once: true });
+    return;
+  }
+  let root = e.target;
+  if (root === document.documentElement || root === document.body) return;
+  while (root.parentElement && root.parentElement !== document.body &&
+         root.parentElement !== document.documentElement) {
+    root = root.parentElement;
+  }
+  root.appendChild(HOST); // auto-hides the shown popover…
+  promoteToTopLayer();    // …so re-show it from the new position
+}
+window.addEventListener("pointerdown", rescueClickThrough, true);
+
+// ── hostile-modal armor: direct dispatch when the site kills our events ─────
+// Third EPAM state (2026-07-09): hit testing reaches the panel (target=HOST,
+// so the rescue above stays silent) but the site's outside-click guard runs
+// at document capture — between window and our shadow — and
+// stopPropagation()s the event, so the button's listener never fires. We
+// can't outrank a document-capture listener from inside the shadow; what we
+// CAN do is run first (window capture precedes document) and deliver the
+// action ourselves. Detection is a probe: a pointerdown targeting HOST that
+// never arrives at HOST's own capture listener was killed mid-path — arm the
+// armor. From then on, events targeting HOST are stopped at window (the
+// site's guard never sees them) and clicks are dispatched by direct handler
+// invocation (CLICK_ACTIONS); text inputs need no listener — native defaults
+// (focus, typing) are not affected by stopPropagation.
+// (CLICK_ACTIONS / HOSTILE / PROBE state lives at the top of the file —
+// injectPanel runs from the boot block before this point is reached.)
+function onClick(el, fn) {
+  el.addEventListener("click", fn);
+  CLICK_ACTIONS.set(el, fn);
+}
+
+function markProbeDelivered() {
+  if (PROBE) PROBE.delivered = true;
+}
+
+function armorPointerdown(e) {
+  if (!HOST || e.target !== HOST) return;
+  if (HOSTILE) {
+    e.stopImmediatePropagation();
+    return;
+  }
+  const probe = { delivered: false };
+  PROBE = probe;
+  setTimeout(() => {
+    if (PROBE === probe) PROBE = null;
+    if (!probe.delivered && HOST && HOST.isConnected) {
+      HOSTILE = true;
+      console.info("[jh-autofill] site kills events outside its modal — " +
+                    "direct dispatch armed (this first click was lost; " +
+                    "click again)");
+    }
+  }, 0);
+}
+window.addEventListener("pointerdown", armorPointerdown, true);
+
+function armorClick(e) {
+  if (!HOSTILE || !HOST || !PANEL || e.target !== HOST) return;
+  e.stopImmediatePropagation();
+  e.preventDefault();
+  const inner = PANEL.elementFromPoint(e.clientX, e.clientY);
+  const btn = inner && inner.closest && inner.closest("button");
+  const fn = btn && CLICK_ACTIONS.get(btn);
+  if (fn && !btn.disabled) fn();
+  else if (inner && /^(TEXTAREA|INPUT|SELECT)$/.test(inner.tagName)) inner.focus();
+}
+window.addEventListener("click", armorClick, true);
+
+// Under armor, shield the rest of the panel's event traffic from the site's
+// guards too (focus containment yanking focus back, key handlers): stopping
+// propagation does not cancel default actions, so typing/paste still work.
+for (const t of ["pointerup", "mousedown", "mouseup", "focusin",
+                 "keydown", "keyup", "keypress", "paste"]) {
+  window.addEventListener(t, (e) => {
+    if (HOSTILE && HOST && e.target === HOST) e.stopImmediatePropagation();
+  }, true);
 }
 
 function closePanel() {
+  if (ATTR_GUARD) ATTR_GUARD.disconnect();
+  ATTR_GUARD = null;
   if (HOST) HOST.remove();
   HOST = null;
   PANEL = null;
@@ -411,7 +623,7 @@ function renderEmailResult(out, d) {
   }
   out.innerHTML = html;
   out.querySelectorAll("button[data-jh-book]").forEach((b) => {
-    b.addEventListener("click", () => bookEmailStatus(b));
+    onClick(b, () => bookEmailStatus(b));
   });
 }
 
@@ -600,7 +812,12 @@ function setFile(input, cv) {
 // submitted" stays as the backstop.
 const CONFIRM_RE = new RegExp([
   "(vielen dank|danke)[^.!?]{0,20}für (ihre|deine) bewerbung",
-  "bewerbung[^.!?]{0,40}(eingegangen|erhalten|erfolgreich (gesendet|übermittelt))",
+  // "wurde/ist gesendet" = past tense, can only be true AFTER submit (indeed's
+  // "Ihre Bewerbung wurde gesendet", 2026-07-09); the infinitive "Bewerbung
+  // senden" (the submit button itself) stays excluded
+  "bewerbung[^.!?]{0,40}(eingegangen|erhalten|" +
+    "(wurde|ist) (gesendet|übermittelt|verschickt|versandt)|" +
+    "erfolgreich (gesendet|übermittelt))",
   "thank you[^.!?]{0,20}for (applying|your application)",
   "your application[^.!?]{0,30}(has been |was )?(received|submitted|sent)",
   "we[^.!?]{0,20}received your application",
