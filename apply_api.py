@@ -121,18 +121,40 @@ class FillPlanRequest(BaseModel):
 # (German), MM/DD/YYYY, YYYY-MM-DD — the separator is reused from the hint.
 _DATE_MASK_RE = re.compile(r"(dd|tt|mm|yyyy|jjjj)([./-])(dd|tt|mm)\2(dd|tt|mm|yyyy|jjjj)")
 
+_DMY_RE = re.compile(r"^\s*(\d{1,2})\.(\d{1,2})\.(\d{4})\s*$")
+
+
+def _coerce_iso(value: str) -> str | None:
+    """ISO form of an ISO or DD.MM.YYYY date string, else None. Profile facts
+    hold concrete dates in German form ("25.09.1997" dob) — a native date
+    input rejects anything but yyyy-MM-dd and stays empty (studysmarter,
+    2026-07-09), so date-shaped values are normalized before formatting."""
+    value = value.strip()
+    try:
+        return date.fromisoformat(value).isoformat()
+    except ValueError:
+        pass
+    m = _DMY_RE.match(value)
+    if not m:
+        return None
+    d, mo, y = (int(g) for g in m.groups())
+    try:
+        return date(y, mo, d).isoformat()
+    except ValueError:
+        return None
+
 
 def _format_fact_date(iso: str, field: FillField) -> str:
     """resolve_date() yields ISO; a native date input needs exactly that, but a
     text input validates against a site-specific mask. Read the mask from the
     placeholder/label hint; hint-less text fields default to DD.MM.YYYY (this
     pool is German job sites — the Personio 'Datumsformat ungültig' case)."""
+    iso_norm = _coerce_iso(iso)
     if field.type == "date":
-        return iso
-    try:
-        d = date.fromisoformat(iso)
-    except ValueError:
+        return iso_norm or iso    # unparseable date_value: as-is, human's call
+    if iso_norm is None:
         return iso            # concrete non-ISO date_value in the profile: as-is
+    d = date.fromisoformat(iso_norm)
     m = _DATE_MASK_RE.search(f"{field.placeholder} {field.label}".lower())
     tokens, sep = (m.group(1, 3, 4), m.group(2)) if m else (("dd", "mm", "yyyy"), ".")
     part = {"dd": f"{d.day:02d}", "tt": f"{d.day:02d}",
@@ -253,8 +275,11 @@ def fill_plan(req: FillPlanRequest):
             unmatched.append(ident)                   # no fact → leave blank
             unmatched_fields.append(f)
             continue
-        iso = match.resolve_date()                    # date facts → concrete date,
-        value = _format_fact_date(iso, f) if iso else match.value  # site's mask
+        # date facts (date_value spec) and date-shaped values (dob) both go
+        # through the formatter: native date inputs need ISO, text inputs the
+        # site's mask
+        iso = match.resolve_date() or _coerce_iso(match.value)
+        value = _format_fact_date(iso, f) if iso else match.value
         needs_review = False
         extra = {}
         if f.type == "select":
