@@ -143,6 +143,8 @@ PROFILE_FIXTURE = {
         "german_level": {"value": "B1", "aliases": ["german level"]},
         "earliest_start": {"value": "Immediately", "date_value": "+30 days",
                            "aliases": ["earliest start date"]},
+        # concrete German-format date VALUE, no date_value spec (the dob shape)
+        "birth_date": {"value": "25.09.1997", "aliases": ["birthdate"]},
     },
     "consents": {"auto_accept_aliases": ["i agree to the terms"]},
     "never_fill": ["date of birth / geburtsdatum", "gender"],
@@ -291,6 +293,22 @@ class FillPlanTest(unittest.TestCase):
         # US order: month first — cross-check against the German rendering
         d_de, d_us = values[0].split("."), values[1].split("/")
         self.assertEqual((d_us[0], d_us[1]), (d_de[1], d_de[0]))
+
+    def test_date_shaped_value_normalized_for_native_date_input(self):
+        # A concrete German-format fact value ("25.09.1997" dob, no date_value
+        # spec) used to go into <input type=date> verbatim — the browser
+        # rejects anything but yyyy-MM-dd and leaves the box empty
+        # (studysmarter, 2026-07-09)
+        plan = self._plan([
+            {"label": "Birthdate", "name": "d", "type": "date"},
+            {"label": "Birthdate", "name": "t", "type": "text"},
+            {"label": "Birthdate", "name": "u", "type": "text",
+             "placeholder": "MM/DD/YYYY"},
+        ])
+        values = [f["value"] for f in plan["fills"]]
+        self.assertEqual(values[0], "1997-09-25")   # native input: ISO only
+        self.assertEqual(values[1], "25.09.1997")   # hint-less text: German mask
+        self.assertEqual(values[2], "09/25/1997")   # site's own mask
 
     def test_empty_fields_empty_plan(self):
         plan = self._plan([])
