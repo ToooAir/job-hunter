@@ -31,12 +31,14 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 from utils.apply_graph import build_graph  # noqa: E402
-from utils.apply_queue import DEFAULT_DB_PATH, build_queue, topup_budget  # noqa: E402
+from utils.apply_queue import (  # noqa: E402
+    DEFAULT_DB_PATH, build_queue, is_addressable, topup_budget,
+)
 from utils.db import init_db  # noqa: E402
 from utils.profile_loader import load_profile  # noqa: E402
 
@@ -83,30 +85,94 @@ def verdict_of(report: dict, tree: dict | None) -> str:
     return "no-form"
 
 
-def _heise_original(page, url: str) -> str | None:
-    """heise detail page → the 'Originalanzeige' link to the EXTERNAL posting.
+def is_unappliable(verdict: str, job: dict) -> bool:
+    """Verdicts that historically never convert into an application — the
+    2026-07-08 abandoned-draft review: 7/7 heise-own-form and 6/6
+    non-addressable weak-form drafts died in the reviewer's hands. Such jobs
+    get no draft and leave the queue (status='skipped') instead of occupying
+    the review wall. Addressable weak-forms survive: the probe under-extracts
+    structured ATS disguised behind an iframe (the Workato gh_jid lesson)."""
+    if verdict == "heise-own-form":
+        return True
+    return verdict == "weak-form" and not is_addressable(job)
 
-    The apply box is hydrated client-side behind heise's consent wall, so a bare
-    goto + immediate locator misses the link — the run then silently fell back to
-    heise's own application wizard, which we never use (user decision). Dismiss
-    consent, let the box hydrate, then read the link. Returns None when the job
-    is heise-hosted (useCompanyForm: no Originalanzeige) or the link never
-    appears; the caller treats None as "skip — do not fill heise's own form".
-    Fail closed: a missed external link costs one manual application, whereas
-    filling heise's wizard submits on a channel we forbid.
+
+def skip_unappliable(conn, states: list[dict], dry_run: bool) -> list[dict]:
+    """Split off un-appliable states; mark their jobs skipped. Returns the
+    states that continue to Pass B."""
+    keep, skipped = [], []
+    for s in states:
+        (skipped if is_unappliable(s["verdict"], s["job"]) else keep).append(s)
+    if skipped and not dry_run:
+        now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        for s in skipped:
+            conn.execute(
+                "UPDATE jobs SET status = 'skipped', "
+                "notes = COALESCE(notes || char(10), '') || ? WHERE id = ?",
+                (f"[{now}] stage1: un-appliable form ({s['verdict']}) — "
+                 "no draft generated; set status='scored' to resurrect",
+                 s["job"]["id"]),
+            )
+        conn.commit()
+    for s in skipped:
+        print(f"  ✗ 表單不可投（{s['verdict']}，{s['job']['company'][:30]}）"
+              f"→ 標 skipped，不生成草稿", flush=True)
+    return keep
+
+
+def _first_link_href(page, pattern: str, timeout_ms: int) -> str | None:
+    """href of the first anchor whose text matches, or None (never raises)."""
+    try:
+        link = page.locator("a", has_text=re.compile(pattern, re.I)).first
+        link.wait_for(state="attached", timeout=timeout_ms)
+        return link.get_attribute("href", timeout=3_000)
+    except Exception:
+        return None
+
+
+def _heise_original(page, url: str) -> str | None:
+    """heise detail page → the EXTERNAL posting's URL, or None.
+
+    heise ships three apply shapes (user field report + live probe 2026-07-08):
+      1. 'Jetzt bewerben' href leaves heise directly        → return it
+      2. it opens jobs.heise.de/application whose FIRST page carries the
+         'Originalanzeige' link (read via one GET, never filled) → return that
+      3. that page has no Originalanzeige: heise-hosted wizard → None
+
+    The Originalanzeige link used to sit on the detail page itself; heise
+    moved it into the application page (probe: 0/8 detail pages still had
+    it), which silently turned every heise job into 'heise-own-form'. The
+    detail-page lookup stays as a cheap first try for the legacy layout.
+    Returns None when only heise's own wizard remains — we never use it
+    (user decision). Fail closed: a missed external link costs one manual
+    application, whereas filling heise's wizard submits on a forbidden channel.
     """
     from utils.browser import _settle, dismiss_cookie_banner
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=20_000)
         dismiss_cookie_banner(page)
         _settle(page)
-        link = page.locator("a", has_text=re.compile("Originalanzeige", re.I)).first
-        link.wait_for(state="attached", timeout=8_000)
-        href = link.get_attribute("href", timeout=3_000)
     except Exception:
-        return None  # heise-hosted / link never hydrated → caller skips
-    if not href:
         return None
+    href = _first_link_href(page, "Originalanzeige", 3_000)  # legacy layout
+    if not href:
+        bew = _first_link_href(page, r"jetzt\s+bewerben", 8_000)
+        if not bew:
+            return None
+        dest = urljoin(page.url, bew)
+        if urlparse(dest).netloc.lower().endswith("heise.de"):
+            # shape 2/3: read (never fill) the wizard's first page — that is
+            # where heise now shows the Originalanzeige when one exists
+            try:
+                page.goto(dest, wait_until="domcontentloaded", timeout=20_000)
+                _settle(page)
+            except Exception:
+                return None
+            href = _first_link_href(page, "Originalanzeige", 8_000)
+            if not href:
+                return None  # shape 3: heise-hosted wizard only
+        else:
+            href = dest  # shape 1: the apply button itself leaves heise
     dest = urljoin(page.url, href)
     # never accept a link that loops back into heise's own application wizard
     if "jobs.heise.de/application" in dest.lower():
@@ -276,6 +342,7 @@ def main() -> None:
             print(f"  ✗ 職缺已下架（{s['job']['company'][:30]}）→ 標 expired，"
                   f"不生成草稿", flush=True)
         states = [s for s in states if s["verdict"] != "gone"]
+    states = skip_unappliable(conn, states, dry_run=args.dry_run)
     conn.close()
 
     from utils.apply_llm import CALL_STATS

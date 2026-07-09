@@ -23,6 +23,9 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeout
 from playwright.sync_api import sync_playwright
 
 from utils.dom_pruner import FormField, extract_fields, prune_html
+# Shared with the HTTP-only modules (ats_scan, draft-liveness sweep), which
+# must not import playwright — hence the standalone home.
+from utils.gone_text import GONE_TEXT_RE as _GONE_TEXT_RE
 
 ROOT = Path(__file__).resolve().parents[1]
 PROFILE_DIR = Path(os.getenv("BROWSER_PROFILE_DIR", str(ROOT / "data" / "browser_profile")))
@@ -294,15 +297,7 @@ _ATS_HREF_JS = """
 """
 
 
-# Wording that means the posting itself is gone (not just form-less).
-_GONE_TEXT_RE = re.compile(
-    r"nicht\s+mehr\s+(?:verfügbar|aktiv|online|vakant)|bereits\s+besetzt|"
-    r"stelle\s+(?:ist|wurde)\s+(?:besetzt|deaktiviert|geschlossen)|"
-    r"(?:anzeige|stellenanzeige)\s+(?:ist\s+)?abgelaufen|"
-    r"no\s+longer\s+(?:available|active|accepting)|"
-    r"position\s+has\s+been\s+filled|job\s+(?:has\s+)?expired|"
-    r"vacancy\s+(?:is\s+)?closed|this\s+job\s+is\s+no\s+longer|"
-    r"page\s+not\s+found|seite\s+nicht\s+gefunden", re.I)
+# The gone-wording regex (_GONE_TEXT_RE) is imported from utils.gone_text.
 
 _LOCALE_SEGMENT_RE = re.compile(r"^[a-z]{2}([_-][a-z]{2})?$", re.I)
 
