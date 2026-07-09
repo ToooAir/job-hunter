@@ -505,6 +505,19 @@ def _draft_card(conn, snap: dict, applied_idx: dict) -> None:
             label_visibility="collapsed", placeholder=T("abandon_reason"))
         if cols[2].button(T("abandon"), key=f"abandon_{snap['id']}"):
             abandon_snapshot(conn, snap["id"], reason)
+            # The reviewer's abandon is a verdict on the JOB, not just this
+            # draft — left 'scored', tomorrow's inventory top-up regenerates
+            # the same draft (the Zenjob ×3 / milia ×2 loop). Skip the job;
+            # resurrect by setting status back to 'scored'.
+            conn.execute(
+                "UPDATE jobs SET status = 'skipped', "
+                "notes = COALESCE(notes || char(10), '') || ? WHERE id = ?",
+                (f"[{datetime.now().strftime('%Y-%m-%dT%H:%M:%S')}] "
+                 f"draft abandoned in review{': ' + reason if reason else ''}"
+                 " — job skipped to stop regeneration",
+                 snap["job_id"]),
+            )
+            conn.commit()
             st.rerun()
 
 
