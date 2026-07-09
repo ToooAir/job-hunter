@@ -43,15 +43,30 @@ class ProfileIncompleteError(ProfileError):
 
 
 def _normalize(text: str) -> str:
-    """Lowercase and strip punctuation so labels like 'E-Mail *:' match aliases."""
+    """Lowercase and strip punctuation so labels like 'E-Mail *:' match aliases.
+
+    Hyphen/underscore/slash become spaces so input `name` attributes
+    ("given-name", "first_name") match multi-word aliases — a label-less
+    input falls back to its name attr, where "given-name" used to hit only
+    the generic "name" alias and fill the FULL name into the first-name box
+    (studysmarter, 2026-07-09). Aliases pass through here too, so both
+    sides stay comparable.
+    """
     text = text.lower()
-    text = re.sub(r"[*:()\[\]{}\"'?!,;.]", " ", text)
+    text = re.sub(r"[*:()\[\]{}\"'?!,;.\-_/]", " ", text)
     return re.sub(r"\s+", " ", text).strip()
 
 
 def _contains_phrase(label_norm: str, alias_norm: str) -> bool:
     """Whole-word phrase match: alias must not sit inside a longer word."""
     return re.search(rf"\b{re.escape(alias_norm)}\b", label_norm) is not None
+
+
+# Sub-inputs whose whole label is one bare word, seen when a platform splits a
+# labelled group into parts (Personio renders "Name*" as two inputs labelled
+# just "First" / "Last" — carbmee, 2026-07-09). Expanded only on exact match:
+# a generic "first" alias would also hit e.g. "first available start date".
+_BARE_LABEL_EXPANSIONS = {"first": "first name", "last": "last name"}
 
 
 @dataclass(frozen=True)
@@ -128,6 +143,7 @@ class CandidateProfile:
         label_norm = _normalize(label)
         if not label_norm:
             return None
+        label_norm = _BARE_LABEL_EXPANSIONS.get(label_norm, label_norm)
         best: ProfileField | None = None
         best_len = 0
         for f in self.fields.values():

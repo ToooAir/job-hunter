@@ -115,6 +115,24 @@ class ExampleTemplateTest(unittest.TestCase):
         self.assertEqual(self.profile.match_field("Expected salary").key, "salary_expectation")
         self.assertEqual(self.profile.match_field("Right to work in Germany?").key, "work_permit")
 
+    def test_bare_first_last_sublabels(self):
+        # Personio splits "Name*" into sub-inputs labelled just "First"/"Last"
+        # (carbmee, 2026-07-09); expansion is exact-match only, so a longer
+        # label containing "first" must NOT become a first-name fill
+        self.assertEqual(self.profile.match_field("First").key, "first_name")
+        self.assertEqual(self.profile.match_field("First *").key, "first_name")
+        self.assertEqual(self.profile.match_field("Last").key, "last_name")
+        self.assertIsNone(self.profile.match_field("first available date"))
+
+    def test_name_attr_fallback_matching(self):
+        # Label-less inputs fall back to their name attr; hyphen/underscore
+        # must read as word gaps or "given-name" hits only the generic "name"
+        # alias and the full name lands in the first-name box (studysmarter,
+        # 2026-07-09)
+        self.assertEqual(self.profile.match_field("given-name").key, "first_name")
+        self.assertEqual(self.profile.match_field("family-name").key, "last_name")
+        self.assertEqual(self.profile.match_field("first_name").key, "first_name")
+
     def test_longest_alias_wins(self):
         # "first name" (first_name) must beat the generic "name" (full_name)
         self.assertEqual(self.profile.match_field("first name").key, "first_name")
