@@ -463,14 +463,14 @@ def _draft_card(conn, snap: dict, applied_idx: dict) -> None:
         field_edits = _fills_section(snap, payload, editable=editable)
         cl_new = _cover_letter_section(snap, editable=editable)
         _qa_section(snap)
-        manual = not (payload.get("actions"))  # Tier 3 copy-paste path
-        # Widget state dies whenever the widget isn't rendered for a run
-        # (page switch, filter change), after which `value=manual` re-opened
-        # the sheet the user had closed. Mirror the choice in a plain session
-        # key — those survive page switches — so a manual close sticks.
+        # Default closed for every tier: the extension + Answer Panel cover the
+        # common path, so the sheet is opt-in even on Tier 3 (open it when
+        # hand-copying). Widget state dies whenever the widget isn't rendered
+        # for a run (page switch, filter change); mirror the choice in a plain
+        # session key — those survive page switches — so the choice sticks.
         pref_key = f"sheet_pref_{snap['id']}"
         show_sheet = st.toggle(T("tab_sheet"), key=f"sheet_{snap['id']}",
-                               value=st.session_state.get(pref_key, manual))
+                               value=st.session_state.get(pref_key, False))
         st.session_state[pref_key] = show_sheet
         if show_sheet:
             _sheet_tab(snap, payload)
