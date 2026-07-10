@@ -452,6 +452,24 @@ class AnswerTest(unittest.TestCase):
         self.assertEqual(body["grounding"]["via"], "host")
         self.assertEqual(body["grounding"]["company"], "Beispiel GmbH")
 
+    def test_multi_tenant_host_never_grounds_by_host(self):
+        # Audatic/KHS (2026-07-10): career5.successfactors.eu serves MANY
+        # employers — a lone draft there must not ground another company's
+        # application page. Focus or nothing.
+        self.conn.execute(
+            "UPDATE jobs SET apply_url = 'https://career5.successfactors.eu"
+            "/sfcareer/jobreqcareer?company=Sonova&jobId=1' WHERE id='pers-1'")
+        self.conn.execute(
+            "UPDATE application_snapshots SET apply_url ="
+            " 'https://career5.successfactors.eu/sfcareer/jobreqcareer"
+            "?company=Sonova&jobId=1' WHERE id=?", (self.sids["pers-1"],))
+        self.conn.commit()
+        self._llm_with(self._json.dumps({"answer": "Generic but honest."}))
+        body = self._ask(page_host="career5.successfactors.eu").json()
+        self.assertEqual(body["grounding"]["kind"], "profile-only")
+        self.assertIsNone(body["grounding"]["via"])
+        self.assertTrue(any("focus" in w for w in body["warnings"]))
+
     def test_focus_page_mismatch_warns_but_grounds_on_focus(self):
         from utils.db import set_focus
         set_focus(self.conn, self.sids["lever-1"], "lever-1")
