@@ -144,17 +144,17 @@ class ReviewPageTest(unittest.TestCase):
         at = self._run()
         self.assertTrue(any("被標記的疑慮" in str(e.value) for e in at.error))
 
-    def test_cl_flag_appears_once_and_opens_the_letter(self):
+    def test_cl_flag_appears_once_and_letter_stays_closed(self):
         # De-dup: a high cover-letter issue renders exactly once — next to the
         # letter, where it can be fixed — not again as a generic blocking
-        # issue. The flagged letter also starts open (a collapsed section must
-        # not swallow the alarm's context).
+        # issue. The alarm lives OUTSIDE the toggle, so the letter itself
+        # stays closed even when flagged (opening is always an explicit act).
         sid = self._draft("job-a", tier=2)
         at = self._run()
         hits = [e for e in at.error if "unsupported claim" in str(e.value)]
         self.assertEqual(len(hits), 1)
         self.assertFalse(any("需處理的阻擋問題" in str(e.value) for e in at.error))
-        self.assertTrue(at.toggle(key=f"cl_show_{sid}").value)
+        self.assertFalse(at.toggle(key=f"cl_show_{sid}").value)
 
     def test_friction_badge_renders_for_mixed_queue(self):
         self._draft("job-a", tier=2)

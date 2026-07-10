@@ -333,13 +333,14 @@ def _cover_letter_section(snap: dict, editable: bool = False) -> str | None:
         st.error(f"⚠️ {T('cl_flagged')}")
         for issue in flags:
             st.error(_issue_line(issue))
-    # Default closed: the extension's 📄 CL button serves this exact stored
-    # text, so on the common path nobody reads it here — open it to edit or
-    # to audit a flagged letter (which starts open so the fix is one click
-    # away). Same session-key mirroring as the answer sheet below.
+    # Default closed even when flagged: the flags above already carry the
+    # alarm, so opening is always an explicit act. (Auto-opening flagged
+    # letters looked like "default open" on a queue full of flags, and every
+    # F5 re-opened what the user had closed — session state dies at refresh.)
+    # Same session-key mirroring as the answer sheet below.
     pref_key = f"cl_pref_{snap['id']}"
     show = st.toggle(T("tab_cl"), key=f"cl_show_{snap['id']}",
-                     value=st.session_state.get(pref_key, bool(flags)))
+                     value=st.session_state.get(pref_key, False))
     st.session_state[pref_key] = show
     if not show:
         return None  # edit_snapshot treats None as "leave the letter alone"
