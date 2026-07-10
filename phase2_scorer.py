@@ -782,6 +782,24 @@ Ground every claim in the candidate background above — no invented facts, numb
 achievements it does not support. State a concrete result ONLY when the background
 contains it; otherwise describe the achievement without a fabricated metric. No
 embellishment, no superlatives the background does not support.
+Skill claims follow the same rule: write "expertise in", "experience with", or "a
+background in" X only when the candidate background shows X. Vocabulary that appears
+only in the job description (a technology, a data scale, a cloud vendor) may describe
+the company or the role — never the candidate. Where the JD demands something the
+background lacks, express interest or name an adjacent strength from the background;
+never assert experience the background does not show. This applies to every paragraph
+— motivation and closing included, not just the achievements.
+Vocabulary scoping, per paragraph:
+- Para 1: name the role, then why the company's domain interests the candidate (JD
+  terms allowed here, describing THEIR work). End with what the candidate brings,
+  drawn ONLY from the background — no JD term in that sentence.
+- Para 2: background material only. No JD vocabulary at all.
+- Para 3: one sentence of company interest (JD terms allowed), one polite close.
+  Do not attach candidate experience to JD terms.
+Final check before answering: scan every sentence containing "my", "I have", "I
+bring", "experience", "expertise", "background", "foundation" — remove any
+technology, scale, or domain word in those sentences that the candidate background
+does not contain.
 Avoid clichés like "I am a passionate developer". Output the letter text only — no subject line, no date."""
 
     user_prompt = f"""## Candidate Background
