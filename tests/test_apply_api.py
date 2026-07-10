@@ -310,6 +310,22 @@ class FillPlanTest(unittest.TestCase):
         self.assertEqual(values[1], "25.09.1997")   # hint-less text: German mask
         self.assertEqual(values[2], "09/25/1997")   # site's own mask
 
+    def test_number_field_gets_bare_number(self):
+        # a native number input rejects prose ("€70,000 gross per year") and
+        # stays empty — the fact is reduced to its bare figure for type=number
+        plan = self._plan([{"label": "Salary expectation", "name": "sal",
+                            "type": "number"}])
+        self.assertEqual(plan["fills"][0]["value"], "70000")
+
+    def test_number_coercion_handles_prose_and_separators(self):
+        from apply_api import _coerce_number
+        self.assertEqual(_coerce_number("€70,000 gross per year(negotiable)"),
+                         "70000")
+        self.assertEqual(_coerce_number("1.234.567"), "1234567")
+        self.assertEqual(_coerce_number("3,5 years"), "3.5")  # decimal comma
+        self.assertEqual(_coerce_number("30 days"), "30")
+        self.assertIsNone(_coerce_number("negotiable"))
+
     def test_empty_fields_empty_plan(self):
         plan = self._plan([])
         self.assertEqual(plan, {"fills": [], "skipped_never_fill": [], "unmatched": []})
@@ -378,7 +394,7 @@ class AnswerTest(unittest.TestCase):
             "fields": {
                 "first_name": {"value": "Max", "aliases": ["vorname"]},
                 "salary_expectation": {
-                    "value": "€70,000 gross per year (negotiable)",
+                    "value": "€70,000",
                     "value_eur_year": 70000,
                     "aliases": ["salary expectation", "expected salary",
                                 "compensation", "gehaltsvorstellung"]},
@@ -517,7 +533,7 @@ class AnswerTest(unittest.TestCase):
         set_focus(self.conn, self.sids["lever-1"], "lever-1")
         self.apply_api._llm = lambda: (FakeClient([]), "m")
         body = self._ask(question="What is your expected compensation?*").json()
-        self.assertEqual(body["answer"], "€82,000 gross per year (negotiable)")
+        self.assertEqual(body["answer"], "€82,000")
         self.assertTrue(any("€82,000" in n for n in body["notes"]))
 
     def test_salary_generates_estimate_on_demand(self):
@@ -532,7 +548,7 @@ class AnswerTest(unittest.TestCase):
                         return_value="- **Suggested figure**: €85,000") as gen:
             body = self._ask(question="What is your expected compensation?").json()
         gen.assert_called_once_with("lever-1", mock.ANY)
-        self.assertEqual(body["answer"], "€85,000 gross per year (negotiable)")
+        self.assertEqual(body["answer"], "€85,000")
         self.assertTrue(any("generated now" in n for n in body["notes"]))
 
     def test_salary_never_undersells_below_profile_floor(self):
@@ -545,7 +561,7 @@ class AnswerTest(unittest.TestCase):
         set_focus(self.conn, self.sids["lever-1"], "lever-1")
         self.apply_api._llm = lambda: (FakeClient([]), "m")
         body = self._ask(question="Gehaltsvorstellung?").json()
-        self.assertEqual(body["answer"], "€70,000 gross per year (negotiable)")
+        self.assertEqual(body["answer"], "€70,000")
         self.assertTrue(any("floor kept" in n for n in body["notes"]))
 
     def test_long_question_mentioning_a_fact_stays_on_llm_path(self):

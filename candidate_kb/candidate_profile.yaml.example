@@ -92,7 +92,7 @@ fields:
     aliases: [notice period, kündigungsfrist]
 
   salary_expectation:
-    value: "TODO"                      # e.g. "€65,000 gross per year (negotiable)"
+    value: "TODO"                      # e.g. "€65,000" — bare figure; gross/year is the default reading
     value_eur_year: 0                  # TODO: bare number for numeric-only fields, e.g. 65000
     aliases: [salary expectation, salary expectations, expected salary, desired salary,
               compensation, gehaltsvorstellung, gehaltsvorstellungen, gehaltswunsch,
