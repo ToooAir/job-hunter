@@ -162,6 +162,19 @@ def _format_fact_date(iso: str, field: FillField) -> str:
     return sep.join(part[t] for t in tokens)
 
 
+def _coerce_number(value: str) -> str | None:
+    """Bare numeric form of a fact value for a native number input, else None.
+    Facts carry prose ("€70,000 gross per year (negotiable)") — a number input
+    rejects the whole string and stays empty ("cannot be parsed, or is out of
+    range", 2026-07-10). Thousands separators are dropped; a decimal comma
+    becomes a dot."""
+    m = re.search(r"\d[\d.,]*", value)
+    if not m:
+        return None
+    num = re.sub(r"[.,](?=\d{3}(?:\D|$))", "", m.group(0))
+    return num.replace(",", ".")
+
+
 def _resolve_option(value: str, options: list[str] | None,
                     synonyms: tuple[str, ...] = ()) -> tuple[str, bool]:
     """Map a profile value onto a <select>'s real option text. `synonyms`
@@ -288,6 +301,10 @@ def fill_plan(req: FillPlanRequest):
             action = "select_option"
         else:
             action = "fill"
+            if f.type == "number":
+                # no digits in the fact → keep the value; the input rejects it
+                # and stays blank for the human, same as before
+                value = _coerce_number(value) or value
             if f.type == "radio" and match.option_aliases:
                 # the option label may say the value another way ("Male" for
                 # value "Männlich") — same synonym set the selects use
@@ -410,7 +427,10 @@ def _fact_answer(match, job: dict | None, notes: list[str]) -> str:
         ask = max(fig, floor)
         notes.append(f"salary_estimator form figure €{fig:,} · profile floor "
                      f"€{floor:,}" + (" — floor kept" if fig < floor else ""))
-        return f"€{ask:,} gross per year (negotiable)"
+        # bare figure: gross/year is every form's default reading, and
+        # "(negotiable)" carries no weight on a form — some fields are
+        # numeric-only anyway (user call, 2026-07-10)
+        return f"€{ask:,}"
     if (job or {}).get("salary_estimate"):
         notes.append("job has a salary estimate but no parseable form figure"
                      " — see the dashboard salary section")

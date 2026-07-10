@@ -75,7 +75,22 @@ function $(sel) {
 }
 
 function bg(msg) {
-  return new Promise((resolve) => chrome.runtime.sendMessage(msg, resolve));
+  // An orphaned script (extension reloaded, tab not) throws "Extension
+  // context invalidated" from sendMessage — degrade to the {ok:false} shape
+  // every caller already renders instead of an uncaught rejection.
+  return new Promise((resolve) => {
+    try {
+      chrome.runtime.sendMessage(msg, (res) => {
+        if (chrome.runtime.lastError) {
+          resolve({ ok: false, error: chrome.runtime.lastError.message });
+        } else {
+          resolve(res);
+        }
+      });
+    } catch (_e) {
+      resolve({ ok: false, error: "extension reloaded — refresh this page" });
+    }
+  });
 }
 
 function pageHost() {
