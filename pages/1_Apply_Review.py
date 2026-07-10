@@ -172,7 +172,12 @@ def _verifier_block(report: dict | None) -> None:
         st.success(T("verifier_cleared") if report.get("llm_checked")
                    else T("verifier_pass"))
         return
-    highs = [i for i in issues if i.get("severity") == "high"]
+    # Cover-letter flags render next to the letter itself (_cover_letter_
+    # section); listing them here too made the same sentence read as two
+    # separate concerns — same de-dup rule as the salary line in the fills.
+    cl_flags = _cl_flags(report)
+    highs = [i for i in issues
+             if i.get("severity") == "high" and i not in cl_flags]
     lows = [i for i in issues if i.get("severity") != "high"]
     if highs:
         st.error(f"⛔ {T('verifier_blocking')} ({len(highs)})")
@@ -320,13 +325,25 @@ def _cover_letter_section(snap: dict, editable: bool = False) -> str | None:
     can persist it on approve; read-only mode returns None."""
     if not snap.get("cover_letter"):
         return None
-    st.markdown(f"**{T('tab_cl')}**")
     flags = _cl_flags(snap.get("verifier_report"))
+    # Flags stay OUTSIDE the toggle: a collapsed section must never swallow
+    # the alarm. This is also each flag's only appearance — the verifier
+    # block above excludes them (de-dup).
     if flags:
         st.error(f"⚠️ {T('cl_flagged')}")
         for issue in flags:
             st.error(_issue_line(issue))
-    elif _cl_endorsed(snap.get("verifier_report")):
+    # Default closed: the extension's 📄 CL button serves this exact stored
+    # text, so on the common path nobody reads it here — open it to edit or
+    # to audit a flagged letter (which starts open so the fix is one click
+    # away). Same session-key mirroring as the answer sheet below.
+    pref_key = f"cl_pref_{snap['id']}"
+    show = st.toggle(T("tab_cl"), key=f"cl_show_{snap['id']}",
+                     value=st.session_state.get(pref_key, bool(flags)))
+    st.session_state[pref_key] = show
+    if not show:
+        return None  # edit_snapshot treats None as "leave the letter alone"
+    if not flags and _cl_endorsed(snap.get("verifier_report")):
         st.success(T("cl_endorsed"))
     if editable:
         return st.text_area(T("tab_cl"), value=snap["cover_letter"], height=260,

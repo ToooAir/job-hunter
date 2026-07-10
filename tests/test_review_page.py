@@ -77,12 +77,15 @@ class ReviewPageTest(unittest.TestCase):
 
     def test_renders_drafts_with_verifier_issues_and_metrics(self):
         self._draft("job-a", tier=2)
-        self._draft("job-b", tier=3, verifier_report={})
+        sid_b = self._draft("job-b", tier=3, verifier_report={})
         at = self._run()
         self.assertEqual(at.metric[0].value, "2")  # drafts metric
         self.assertTrue(any("unsupported claim" in str(e.value) for e in at.error))
-        # generated content (cover letter, Q&A) is shown by default for copying;
-        # deterministic profile fills collapse behind the auto-fill / sheet toggles.
+        # an unflagged letter collapses by default (the extension's 📄 button
+        # serves the same stored text); the toggle opens it for hand-copying
+        body = "".join(str(c.value) for c in at.code)
+        self.assertNotIn("Dear team", body)
+        at.toggle(key=f"cl_show_{sid_b}").set_value(True).run()
         body = "".join(str(c.value) for c in at.code)
         self.assertIn("Dear team", body)
 
@@ -140,6 +143,18 @@ class ReviewPageTest(unittest.TestCase):
                         "severity": "high"}]})
         at = self._run()
         self.assertTrue(any("被標記的疑慮" in str(e.value) for e in at.error))
+
+    def test_cl_flag_appears_once_and_opens_the_letter(self):
+        # De-dup: a high cover-letter issue renders exactly once — next to the
+        # letter, where it can be fixed — not again as a generic blocking
+        # issue. The flagged letter also starts open (a collapsed section must
+        # not swallow the alarm's context).
+        sid = self._draft("job-a", tier=2)
+        at = self._run()
+        hits = [e for e in at.error if "unsupported claim" in str(e.value)]
+        self.assertEqual(len(hits), 1)
+        self.assertFalse(any("需處理的阻擋問題" in str(e.value) for e in at.error))
+        self.assertTrue(at.toggle(key=f"cl_show_{sid}").value)
 
     def test_friction_badge_renders_for_mixed_queue(self):
         self._draft("job-a", tier=2)
