@@ -61,6 +61,20 @@ label given above may be a parent/holding company while the posting names the
 operating subsidiary, or differ only by a legal-entity suffix. NEVER flag a
 company / employer name difference — a posting-consistent employer name is
 correct, not a fabrication.
+A fabrication must be a claim the draft attributes to the CANDIDATE ("I
+built", "my experience with", "expertise in"). Sentences that describe the
+employer, the role, or its technology ("your streaming platform", "Company's
+focus on X", "the opportunity to work on Y") and expressions of interest or
+motivation are NOT candidate claims — never flag them, even when their
+vocabulary appears nowhere in the background. Before flagging a sentence,
+extract what it says the candidate HAS DONE or HAS; flag only that part.
+Worked example — background contains backend/API work but no streaming:
+- "The opportunity to build your streaming platform resonates with my
+  experience in backend systems." → the only candidate claim is "experience
+  in backend systems" (supported → no flag); "streaming platform" is the
+  role's work, not the candidate's.
+- "I bring hands-on experience building streaming platforms." → candidate
+  claim of streaming experience → fabrication.
 Respond with JSON only:
 {"pass": <bool>, "issues": [{"where": "<cover_letter|question|field label>",
                              "kind": "fabrication|misattribution|salary|visa|language|oversharing",
