@@ -379,6 +379,15 @@ def _hosts_match(a: str, b: str) -> bool:
     return bool(a and b) and (a == b or a.endswith("." + b) or b.endswith("." + a))
 
 
+# One host, many employers (SuccessFactors regional instances, Workday,
+# path-routed ATS boards): a lone draft on such a host proves nothing — the
+# Audatic draft would have grounded a KHS answer on career5.successfactors.eu
+# (2026-07-10). Keep in sync with MULTI_TENANT_RE in extension/content.js.
+_MULTI_TENANT_RE = re.compile(
+    r"successfactors|myworkdayjobs|greenhouse\.io|ashbyhq\.com|lever\.co"
+    r"|workable\.com|join\.com|softgarden|icims\.com|taleo", re.IGNORECASE)
+
+
 def _truncate_words(text: str, limit: int) -> str:
     words = text.split()
     return text if len(words) <= limit else " ".join(words[:limit]) + "…"
@@ -465,6 +474,11 @@ def _resolve_answer_job(conn, req: "AnswerRequest"):
         return focus["job_id"], focus.get("snapshot_id"), "focus", warnings
 
     if req.page_host:
+        if _MULTI_TENANT_RE.search(req.page_host):
+            warnings.append(
+                f"{req.page_host} hosts many employers — set the focus in"
+                " the dashboard (🎯) to ground the answer")
+            return None, None, None, warnings
         rows = conn.execute(
             "SELECT id, job_id, apply_url FROM application_snapshots"
             " WHERE status = 'draft'").fetchall()

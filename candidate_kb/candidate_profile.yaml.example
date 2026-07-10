@@ -39,7 +39,7 @@ fields:
 
   phone:
     value: "TODO"                      # international format, e.g. "+49 151 2345678"
-    aliases: [phone, telephone, mobile, telefon, telefonnummer, handy, mobilnummer]
+    aliases: [phone, telephone, mobile, telefon, telefonnummer, handy, mobilnummer, mobil]
 
   street_address:
     value: "TODO"                      # e.g. "Musterstraße 12"

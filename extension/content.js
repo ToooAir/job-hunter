@@ -28,6 +28,13 @@ let PANEL = null; // the shadow root — the UI lives here, isolated from page C
 // silent; in the top frame the panel always runs.
 const ATS_FRAME_RE = /(^|\.)(greenhouse\.io|ashbyhq\.com|jobs\.personio\.de|lever\.co|workable\.com)$/i;
 
+// One host, many employers (SuccessFactors regional instances, Workday,
+// path-routed ATS boards): a lone host hit proves nothing there — the Audatic
+// draft bound a KHS application page on career5.successfactors.eu
+// (2026-07-10). On these hosts binding needs an exact page match or 🎯 focus.
+const MULTI_TENANT_RE =
+  /successfactors|myworkdayjobs|greenhouse\.io|ashbyhq\.com|lever\.co|workable\.com|join\.com|softgarden|icims\.com|taleo/i;
+
 // Declared BEFORE the boot block below: injectPanel() runs immediately, and a
 // `const` referenced across that call must already be initialized (TDZ) —
 // 0.7.0 had it after the block, which killed the whole script on injection.
@@ -414,7 +421,9 @@ async function findPending() {
   // 🎯 focus (which also covers the smartapply.indeed.com redirect, where the
   // draft's host matches nothing).
   MATCH = hostHits.find((s) => samePage(s.apply_url)) || null;
-  if (!MATCH && hostHits.length === 1) MATCH = hostHits[0];
+  if (!MATCH && hostHits.length === 1 && !MULTI_TENANT_RE.test(pageHost())) {
+    MATCH = hostHits[0]; // company-specific host: the lone draft IS this page's
+  }
   let via = "";
   if (!MATCH) {
     const foc = await bg({ type: "focus" });
@@ -426,9 +435,10 @@ async function findPending() {
     $("#jh-submitted").style.display = "block";
     status.textContent = MATCH.company + " · snapshot #" + MATCH.snapshot_id +
       " · " + (MATCH.ats || "?") + " · T" + MATCH.tier + via;
-  } else if (hostHits.length > 1) {
+  } else if (hostHits.length) {
+    // >1 drafts, or a lone draft on a multi-tenant host (not bindable)
     $("#jh-submitted").style.display = "none";
-    status.innerHTML = red(hostHits.length + " drafts share this host") +
+    status.innerHTML = red(hostHits.length + " draft(s) share this host") +
       " — press 🎯 on the right one in the dashboard, then come back.";
   } else {
     status.textContent = res.data.length + " pending draft(s), none for this page";
@@ -441,13 +451,22 @@ function hostMatch(a, b) {
 
 // True when a draft's apply_url IS the page being viewed (host + path) —
 // the only per-job signal on multi-job hosts. Query string and hash are
-// ignored: boards decorate links with tracking params.
+// mostly tracking noise and ignored — EXCEPT the identifying params of
+// query-routed ATS (successfactors: ?company=X&jobId=N shares one path
+// across every employer): those the draft URL carries must match the page.
+const IDENTITY_PARAMS = ["company", "jobId", "gh_jid", "job", "id"];
+
 function samePage(applyUrl) {
   if (!applyUrl) return false;
   try {
     const u = new URL(applyUrl);
-    return hostMatch(pageHost(), u.host.replace(/^www\./, "")) &&
-      normPath(u.pathname) === normPath(location.pathname);
+    if (!hostMatch(pageHost(), u.host.replace(/^www\./, "")) ||
+        normPath(u.pathname) !== normPath(location.pathname)) return false;
+    const here = new URLSearchParams(location.search);
+    return IDENTITY_PARAMS.every((k) => {
+      const want = u.searchParams.get(k);
+      return !want || here.get(k) === want;
+    });
   } catch (_e) {
     return false;
   }
@@ -985,6 +1004,18 @@ function fieldLabel(el) {
   if (labelledby) {
     const ref = document.getElementById(labelledby);
     if (ref && ref.textContent.trim()) return ref.textContent;
+  }
+  // for-less sibling label (team-beverage, 2026-07-10: <label>Vorname</label>
+  // next to <input name='1-78'> in one .form-group): climb while the wrapper
+  // holds ONLY this control — a wrapper spanning other fields is too far, its
+  // label would be someone else's. Ranked above placeholder: required-field
+  // placeholders there say "Pflichtfeld"/"Mandatory", noise not a question.
+  let node = el.parentElement;
+  for (let depth = 0; node && depth < 4 && node.tagName !== "FORM"; depth++) {
+    if (node.querySelectorAll("input, select, textarea").length > 1) break;
+    const lab = node.querySelector("label");
+    if (lab && lab.textContent.trim()) return lab.textContent;
+    node = node.parentElement;
   }
   if (el.placeholder) return el.placeholder;
   return el.name || "";
