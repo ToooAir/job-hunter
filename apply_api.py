@@ -229,10 +229,22 @@ def focus():
     """The dashboard 🎯 focus (TTL-guarded), or {} when unset/stale. Lets the
     extension bind the 'I submitted it' button when host matching fails —
     aggregator apply flows leave the draft's host (a de.indeed.com draft
-    redirects to smartapply.indeed.com, which matches nothing)."""
+    redirects to smartapply.indeed.com, which matches nothing).
+
+    Enriched with the focused job's company/title so the panel can show WHICH
+    job is focused even when it has no draft snapshot (a plain 'I'm applying to
+    this scored job' — the answer panel still grounds on it, there is just no
+    snapshot to track submission)."""
     conn = _conn()
     try:
-        return get_focus(conn) or {}
+        foc = get_focus(conn)
+        if not foc:
+            return {}
+        job = _job_row(conn, foc["job_id"])
+        if job:
+            foc["company"] = job.get("company")
+            foc["title"] = job.get("title")
+        return foc
     finally:
         conn.close()
 
