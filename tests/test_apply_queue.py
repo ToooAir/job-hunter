@@ -39,17 +39,18 @@ def _iso(dt: datetime) -> str:
 
 def make_job(conn, job_id, *, company="Acme", grade="A", score=80, status="scored",
              location="Hamburg, Germany", ats="unknown", checked_days_ago=1,
-             fetched_days_ago=1, jd_hash=None, source="heise", apply_url=None):
+             fetched_days_ago=1, jd_hash=None, source="heise", apply_url=None,
+             applied_at=None):
     conn.execute(
         "INSERT INTO jobs (id, company, title, url, source, raw_jd_text, fetched_at, "
-        "  location, fit_grade, match_score, status, ats, ats_checked_at, jd_hash, apply_url) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "  location, fit_grade, match_score, status, ats, ats_checked_at, jd_hash, apply_url, applied_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             job_id, company, f"Title {job_id}", f"https://example.com/{job_id}", source,
             "x" * 600, _iso(NOW - timedelta(days=fetched_days_ago)),
             location, grade, score, status, ats,
             _iso(NOW - timedelta(days=checked_days_ago)) if checked_days_ago is not None else None,
-            jd_hash, apply_url,
+            jd_hash, apply_url, applied_at,
         ),
     )
     conn.commit()
@@ -132,12 +133,13 @@ class EligibilityTest(QueueTestBase):
         self.assertEqual(self.queue_ids(result), ["j0"])
 
     def test_grade_threshold(self):
+        # MIN_B_SCORE gate: A always; B at/above 65 (the LLM's borderline bucket)
         make_job(self.conn, "a", company="C1", grade="A", score=60)
-        make_job(self.conn, "b-high", company="C2", grade="B", score=70)
-        make_job(self.conn, "b-low", company="C3", grade="B", score=69)
+        make_job(self.conn, "b-at", company="C2", grade="B", score=65)
+        make_job(self.conn, "b-below", company="C3", grade="B", score=64)
         make_job(self.conn, "c", company="C4", grade="C", score=95)
         result = build_queue(self.conn, now=NOW)
-        self.assertEqual(set(self.queue_ids(result)), {"a", "b-high"})
+        self.assertEqual(set(self.queue_ids(result)), {"a", "b-at"})
 
     def test_germany_only(self):
         make_job(self.conn, "de", company="C1", location="Berlin, Germany")
@@ -145,6 +147,15 @@ class EligibilityTest(QueueTestBase):
         make_job(self.conn, "remote", company="C3", location="Remote")
         result = build_queue(self.conn, now=NOW)
         self.assertEqual(self.queue_ids(result), ["de"])
+
+    def test_remote_eu_admitted_other_remote_excluded(self):
+        # Chancenkarte → EU-remote is workable; the other triage labels are not.
+        make_job(self.conn, "eu", company="C1", location="Remote — EU")
+        make_job(self.conn, "non-eu", company="C2", location="Remote — non-EU")
+        make_job(self.conn, "bare", company="C3", location="Remote")
+        make_job(self.conn, "unclear", company="C4", location="Remote — unclear")
+        result = build_queue(self.conn, now=NOW)
+        self.assertEqual(self.queue_ids(result), ["eu"])
 
     def test_dead_ats_excluded(self):
         make_job(self.conn, "alive", company="C1", ats="ashby")
@@ -220,6 +231,30 @@ class DedupGateTest(QueueTestBase):
         self.assertEqual(self.queue_ids(result), [])
         self.assertEqual(result["blocked"][0]["id"], "new")
         self.assertIn("pipeline", result["blocked"][0]["dedup_reason"])
+
+    def test_ghosted_company_within_cooldown_still_blocks(self):
+        make_job(self.conn, "ghost", company="GhostCo", status="ghosted",
+                 applied_at=_iso(NOW - timedelta(days=30)))
+        make_job(self.conn, "new", company="GhostCo")
+        result = build_queue(self.conn, now=NOW)
+        self.assertEqual(self.queue_ids(result), [])
+        self.assertEqual(result["blocked"][0]["id"], "new")
+
+    def test_ghosted_company_past_cooldown_released(self):
+        make_job(self.conn, "ghost", company="GhostCo", status="ghosted",
+                 applied_at=_iso(NOW - timedelta(days=90)))
+        make_job(self.conn, "new", company="GhostCo")
+        result = build_queue(self.conn, now=NOW)
+        self.assertEqual(self.queue_ids(result), ["new"])
+
+    def test_ghosted_past_cooldown_but_rejected_keeps_block(self):
+        # a stronger terminal status on the same company wins over the cooled ghost
+        make_job(self.conn, "ghost", company="GhostCo", status="ghosted",
+                 applied_at=_iso(NOW - timedelta(days=90)))
+        make_job(self.conn, "rej", company="GhostCo GmbH", status="rejected")
+        make_job(self.conn, "new", company="GhostCo")
+        result = build_queue(self.conn, now=NOW)
+        self.assertEqual(self.queue_ids(result), [])
 
     def test_block_company_with_in_flight_snapshot(self):
         make_job(self.conn, "drafted", company="Beispiel UG (haftungsbeschränkt)")
