@@ -80,7 +80,7 @@ auto-deduped      remote locations     translation     check         human revie
 
 **Phase 1** pulls from 16 sources and deduplicates by JD content hash (chars 50–550, skipping platform boilerplate). **Geo triage** relabels bare `Remote` listings by Germany-hiring eligibility and normalises German locations the keyword filters would miss (`"Dresden (DE)"`, `"54595 Prüm"`, second-tier cities) — outright-foreign listings are excluded from LLM scoring entirely, cutting scoring spend roughly in half. **Phase 2** detects German JDs, translates them, scores against your candidate knowledge base via RAG, and grades A/B/C. **ats_scan** classifies which ATS each queue candidate runs on (Greenhouse / Lever / Ashby / Workable / Personio / …) and whether the posting is still live. **Stage 1** builds a ranked apply queue (company-level dedup, daily budget) and generates grounded application drafts.
 
-**Phase 3** is a Streamlit dashboard for reviewing, editing, applying, and tracking your full interview pipeline. A companion browser extension autofills ATS forms from your profile and answers open questions via copy-paste — **you always review and click Submit yourself; nothing is ever auto-submitted.**
+**Phase 3** is a Streamlit dashboard for reviewing, editing, applying, and tracking your full interview pipeline. A companion browser extension autofills ATS forms from your profile and answers open questions via copy-paste — **you always review and click Submit yourself; nothing is ever auto-submitted.** See [`extension/README.md`](extension/README.md) for its install and usage guide.
 
 ---
 
