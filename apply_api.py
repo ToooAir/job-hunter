@@ -38,9 +38,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from utils.apply_llm import _chat_json, _sanitize, build_profile_facts
-from utils.db import get_focus, init_db
+from utils.db import (_now_local_iso, clear_focus, get_focus, init_db,
+                      update_status)
 from utils.profile_loader import load_profile
-from utils.snapshot_io import append_custom_qa, get_snapshot, mark_submitted
+from utils.snapshot_io import (append_custom_qa, get_snapshot, mark_submitted,
+                               reconcile_applied_job)
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -906,3 +908,36 @@ def submitted(snapshot_id: int):
     finally:
         conn.close()
     return {"ok": True, "snapshot_id": snapshot_id, "abandoned_siblings": abandoned}
+
+
+@app.post("/focus/submitted", dependencies=[Depends(require_token)])
+def focus_submitted():
+    """Book the currently-focused job applied — the extension counterpart of
+    the dashboard's job-level '✅ applied' button, for a 🎯 on a plain scored
+    job with no draft snapshot to advance. The human who just applied is the
+    same authority the dashboard button trusts; mirror mark_submitted at the
+    job level (status→applied, same-company drafts abandoned, focus spent).
+    409 when there is no live focus to book (stale/unset → use the dashboard)."""
+    conn = _conn()
+    try:
+        foc = get_focus(conn)
+        if not foc:
+            raise HTTPException(
+                status_code=409,
+                detail="no live 🎯 focus to book — use the dashboard")
+        job_id = foc["job_id"]
+        # Defensive: a focus that DOES carry a draft goes through the snapshot
+        # lifecycle (this endpoint is only wired for the draft-less panel).
+        if foc.get("snapshot_id") is not None:
+            try:
+                abandoned = mark_submitted(
+                    conn, foc["snapshot_id"], note="submitted via extension")
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail=str(exc))
+            return {"ok": True, "job_id": job_id, "abandoned_siblings": abandoned}
+        update_status(conn, job_id, "applied", applied_at=_now_local_iso())
+        abandoned = reconcile_applied_job(conn, job_id)  # same-company drafts
+        clear_focus(conn)  # the focus is spent once its application is booked
+        return {"ok": True, "job_id": job_id, "abandoned_siblings": abandoned}
+    finally:
+        conn.close()
