@@ -552,9 +552,15 @@ def set_job_ats(
     apply_url: str | None = None,
     checked_at: str | None = None,
 ) -> bool:
-    """Record the ATS resolution for a job. Returns True if the row existed."""
+    """Record the ATS resolution for a job. Returns True if the row existed.
+
+    A scan that finds no better link (apply_url is None) must not erase an
+    apply_url a source already supplied (e.g. wearedevelopers' detail API):
+    COALESCE keeps the known-good link while still refreshing the ats verdict.
+    """
     cur = conn.execute(
-        "UPDATE jobs SET ats = ?, apply_url = ?, ats_checked_at = ? WHERE id = ?",
+        "UPDATE jobs SET ats = ?, apply_url = COALESCE(?, apply_url), "
+        "ats_checked_at = ? WHERE id = ?",
         (ats, apply_url, checked_at or _now_local_iso(), job_id),
     )
     conn.commit()
