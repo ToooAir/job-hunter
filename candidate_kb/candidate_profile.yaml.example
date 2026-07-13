@@ -31,7 +31,9 @@ fields:
 
   full_name:
     value: "TODO"                      # e.g. "Max Mustermann"
-    aliases: [full name, name, vollständiger name]
+    # no bare "name" alias: it matched "Name des Mitarbeiters" (referral) —
+    # exact "Name" labels still work via the loader's bare-label expansion
+    aliases: [full name, vollständiger name]
 
   email:
     value: "TODO"                      # e.g. "max.mustermann@example.com"
