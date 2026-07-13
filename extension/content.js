@@ -19,6 +19,8 @@
 "use strict";
 
 let MATCH = null; // the pending snapshot for this page, if any
+let FOCUS_JOB = null; // draft-less 🎯 focus (job_id/company) — no snapshot to
+//                       bind, booked applied at the job level instead
 let HOST = null;  // light-DOM host element carrying the panel's shadow root
 let PANEL = null; // the shadow root — the UI lives here, isolated from page CSS
 
@@ -181,8 +183,13 @@ function injectPanel() {
   onClick($("#jh-cl"), runCoverLetter);
   onClick($("#jh-copy"), copyAnswer);
   onClick($("#jh-email-match"), runEmailMatch);
-  // The authoritative bookkeeping signal: the human, who just submitted, says so.
-  onClick($("#jh-submitted"), () => MATCH && bookSubmitted(MATCH.snapshot_id));
+  // The authoritative bookkeeping signal: the human, who just submitted, says
+  // so. A matched snapshot advances its lifecycle; a draft-less 🎯 focus books
+  // the job applied directly (same as the dashboard's ✅ button).
+  onClick($("#jh-submitted"), () => {
+    if (MATCH) bookSubmitted(MATCH.snapshot_id);
+    else if (FOCUS_JOB) bookFocusSubmitted();
+  });
   onClick($("#jh-close"), closePanel);
 }
 
@@ -425,6 +432,7 @@ async function findPending() {
     MATCH = hostHits[0]; // company-specific host: the lone draft IS this page's
   }
   let via = "";
+  FOCUS_JOB = null;
   let focusInfo = null;
   if (!MATCH) {
     const foc = await bg({ type: "focus" });
@@ -433,7 +441,7 @@ async function findPending() {
       // A focus with a draft snapshot binds the submit tracking (the
       // smartapply redirect case). A focus on a plain scored job carries no
       // snapshot_id — the answer panel (💰/📄) still grounds on it server-
-      // side, there is just nothing to mark submitted here.
+      // side, and "I submitted it" books it applied at the job level.
       if (focusInfo.snapshot_id)
         MATCH = res.data.find((s) => s.snapshot_id === focusInfo.snapshot_id) || null;
       if (MATCH) via = " · via 🎯 focus";
@@ -445,11 +453,13 @@ async function findPending() {
       " · " + (MATCH.ats || "?") + " · T" + MATCH.tier + via;
   } else if (focusInfo) {
     // 🎯 set on a draft-less job: make the linkage visible (the panel used to
-    // fall through to "none for this page" and look disconnected), and say
-    // plainly that submission is not tracked here (no snapshot to advance).
-    $("#jh-submitted").style.display = "none";
+    // fall through to "none for this page" and look disconnected) and arm the
+    // job-level booking, mirroring the dashboard's ✅ button (no snapshot to
+    // advance, but the human's click is the same authority).
+    FOCUS_JOB = focusInfo;
+    $("#jh-submitted").style.display = "block";
     status.textContent = "🎯 " + (focusInfo.company || "focused job") +
-      " — answers grounded; no draft, so mark submitted in the dashboard";
+      " · no draft — press ✓ when submitted to book it applied";
   } else if (hostHits.length) {
     // >1 drafts, or a lone draft on a multi-tenant host (not bindable)
     $("#jh-submitted").style.display = "none";
@@ -921,6 +931,29 @@ function onBooked(id, already) {
   }
   const sub = $("#jh-submitted");
   if (sub) sub.style.display = "none";
+}
+
+// Job-level booking for a draft-less 🎯 focus: the server books the focused
+// job applied (no snapshot to advance). Mirrors bookSubmitted's UX; the
+// dashboard stays the fallback on failure.
+async function bookFocusSubmitted() {
+  const res = await bg({ type: "focus-submitted" });
+  const s = $("#jh-status");
+  if (res && res.ok) {
+    window.__jhBooked = true;
+    if (s) {
+      s.innerHTML = '<span style="color:#5fd35f">✓ marked applied — ' +
+        ((FOCUS_JOB && FOCUS_JOB.company) || "focused job") + "</span>";
+    }
+    const sub = $("#jh-submitted");
+    if (sub) sub.style.display = "none";
+    FOCUS_JOB = null;
+    return;
+  }
+  if (s) {
+    s.innerHTML = red("book failed: " + ((res && res.error) || "?") +
+                      " — try the dashboard button");
+  }
 }
 
 // Best-effort only: a correct confirmation saves the human even the one button

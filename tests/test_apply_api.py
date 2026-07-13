@@ -442,6 +442,54 @@ class AnswerTest(unittest.TestCase):
                 "/focus", headers={"Authorization": f"Bearer {TOKEN}"}).json(),
             {})
 
+    def _focus_submit(self):
+        return self.client.post(
+            "/focus/submitted", headers={"Authorization": f"Bearer {TOKEN}"})
+
+    def test_focus_submitted_books_draftless_job_applied(self):
+        # a 🎯 on a plain scored job (snapshot_id None) → job booked applied,
+        # focus spent — the extension counterpart of the dashboard ✅ button
+        from utils.db import set_focus
+        set_focus(self.conn, None, "pers-1")
+        r = self._focus_submit()
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["job_id"], "pers-1")
+        row = self.conn.execute(
+            "SELECT status, applied_at FROM jobs WHERE id='pers-1'").fetchone()
+        self.assertEqual(row["status"], "applied")
+        self.assertIsNotNone(row["applied_at"])
+        # focus is cleared, so a second call has nothing to book
+        self.assertEqual(self._focus_submit().status_code, 409)
+
+    def test_focus_submitted_abandons_same_company_drafts(self):
+        # booking a draft-less job applied must clean sibling drafts for the
+        # same company (reconcile_applied_job), like the dashboard path
+        from utils.db import set_focus
+        # focus a draft-less same-company job; lever-1/lever-2 are Mustermann AI
+        self.conn.execute(
+            "INSERT INTO jobs (id, company, title, url, source, raw_jd_text,"
+            " fetched_at, status) VALUES"
+            " ('lever-3','Mustermann AI','Staff Eng','https://x/9',"
+            " 'test','We build backends.','2026-07-01T08:00:00','scored')")
+        self.conn.commit()
+        set_focus(self.conn, None, "lever-3")
+        abandoned = self._focus_submit().json()["abandoned_siblings"]
+        self.assertCountEqual(abandoned, [self.sids["lever-1"], self.sids["lever-2"]])
+
+    def test_focus_submitted_409_when_no_focus(self):
+        self.assertEqual(self._focus_submit().status_code, 409)
+
+    def test_focus_submitted_uses_snapshot_lifecycle_when_draft_present(self):
+        # defensive: a focus that DOES carry a draft advances the snapshot
+        from utils.db import set_focus
+        set_focus(self.conn, self.sids["lever-1"], "lever-1")
+        r = self._focus_submit()
+        self.assertEqual(r.status_code, 200)
+        snap = self.conn.execute(
+            "SELECT status FROM application_snapshots WHERE id=?",
+            (self.sids["lever-1"],)).fetchone()
+        self.assertEqual(snap["status"], "submitted")
+
     def test_focus_wins_and_writes_trail(self):
         from utils.db import set_focus
         set_focus(self.conn, self.sids["lever-1"], "lever-1")
