@@ -138,6 +138,20 @@ class ExampleTemplateTest(unittest.TestCase):
         self.assertEqual(self.profile.match_field("first name").key, "first_name")
         self.assertEqual(self.profile.match_field("Name").key, "full_name")
 
+    def test_someone_elses_name_stays_blank(self):
+        # "Falls Sie von einem Mitarbeiter geworben wurden: Name des
+        # Mitarbeiters" got the candidate's own name (2026-07-10): the bare
+        # "name" alias matched any label containing the word. It is now an
+        # exact-label expansion — a third party's name field must not match,
+        # while a label that IS "name" still fills.
+        self.assertIsNone(self.profile.match_field(
+            "Falls Sie von einem Mitarbeiter geworben wurden:"
+            " Name des Mitarbeiters:"))
+        self.assertIsNone(self.profile.match_field("Name of previous employer"))
+        self.assertEqual(self.profile.match_field("Name *").key, "full_name")
+        self.assertEqual(self.profile.match_field("Your Name").key, "full_name")
+        self.assertEqual(self.profile.match_field("Ihr Name").key, "full_name")
+
     def test_email_address_label_is_email_not_street(self):
         # "Email Address" contains both "email" (5) and "address" (7); the
         # longer "email address" alias must keep street_address from winning

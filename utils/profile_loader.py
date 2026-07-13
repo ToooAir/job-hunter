@@ -66,7 +66,14 @@ def _contains_phrase(label_norm: str, alias_norm: str) -> bool:
 # labelled group into parts (Personio renders "Name*" as two inputs labelled
 # just "First" / "Last" — carbmee, 2026-07-09). Expanded only on exact match:
 # a generic "first" alias would also hit e.g. "first available start date".
-_BARE_LABEL_EXPANSIONS = {"first": "first name", "last": "last name"}
+# "name" lives here too, NOT in the full_name aliases: as an alias it matched
+# any label containing the word — "Name des Mitarbeiters" (employee-referral
+# name) got the candidate's own name (2026-07-10). Someone else's name field
+# must stay blank; only a label that IS "name" means the candidate's.
+_BARE_LABEL_EXPANSIONS = {
+    "first": "first name", "last": "last name",
+    "name": "full name", "your name": "full name", "ihr name": "full name",
+}
 
 
 @dataclass(frozen=True)
