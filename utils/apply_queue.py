@@ -4,8 +4,8 @@ Pure Python over the jobs/application_snapshots tables; no LLM, no network.
 
 Eligibility (all must hold):
   * status = 'scored'  (pipeline/skipped/expired/error are therefore out)
-  * located in Germany
-  * fit_grade A, or B with match_score >= 70
+  * located in Germany, or a Germany-eligible remote label (Remote — EU)
+  * fit_grade A, or B with match_score >= MIN_B_SCORE (65)
   * no in-flight snapshot for the job itself (draft/approved/submitted)
   * liveness: ats_checked_at <= LIVENESS_MAX_AGE_DAYS and ats not in DEAD_ATS;
     stale/unchecked candidates land in `needs_recheck` — they re-enter after a
@@ -27,8 +27,9 @@ interview rate with utils.resume_stats:
   APPLY_ADDRESSABLE_ONLY=1 keep only extension-fillable ATS (is_addressable)
 
 Dedup gate (per candidate, on normalized company name):
-  block — company already has a pipeline record, or another job of the same
-          company has an in-flight snapshot
+  block — company already has a pipeline record (a ghosted one expires after
+          APPLY_GHOST_COOLDOWN_DAYS), or another job of the same company has an
+          in-flight snapshot
   warn  — same jd_hash already applied under another job (recruiter repost),
           or second job of the same company within this batch
 
@@ -55,6 +56,25 @@ DEFAULT_BUDGET = 25
 LIVENESS_MAX_AGE_DAYS = 7
 FRESH_BUCKET_DAYS = 3
 DEAD_ATS = ("gone", "fetch-error")
+
+# Apply-effort score gate for grade B — intentionally distinct from the scorer's
+# grade boundary (B = score 60–74). The grade is a display/triage band; the queue
+# spends LLM draft-generation + human review on each job, so it takes only B at or
+# above this bar. Single source of truth: ats_scan imports it so the scan pool and
+# the queue pool can never diverge. Lowered 70 → 65 (2026-07-13): the LLM quantizes
+# scores into ~55/65/72+ buckets, so 65 admits its genuine "borderline-pass" tier
+# (verified not a source-bonus artifact) to feed the supply-starved queue.
+MIN_B_SCORE = 65
+
+# Geo-triage remote labels we can actually apply to (Chancenkarte → EU-remote is
+# workable). "Remote — Germany" already matches GERMANY_KEYWORDS via "German";
+# "Remote — non-EU" / "Remote — unclear" are deliberately excluded.
+REMOTE_ELIGIBLE_LOCATIONS = ("Remote — EU",)
+
+# A ghosted company never actually rejected us — after this cooldown a *new* role
+# there is fair game again. applied/interview/offer/rejected stay permanently
+# blocked. Env override: APPLY_GHOST_COOLDOWN_DAYS.
+GHOST_COOLDOWN_DAYS = 60
 
 # ATS the browser extension can actually auto-fill (native inputs, no custom-JS
 # widget/dropzone/captcha wall). join/indeed/softgarden are deliberately absent —
@@ -155,15 +175,24 @@ class DedupContext:
         self.batch_companies: dict[str, str] = {}         # norm company -> job_id (this batch)
 
     @classmethod
-    def from_db(cls, conn):
+    def from_db(cls, conn, now: datetime | None = None):
+        now = now or datetime.now()
         placeholders = ",".join("?" for _ in PIPELINE_STATUSES)
-        pipeline = {
-            normalize_company(r["company"]): r["status"]
-            for r in conn.execute(
-                f"SELECT company, status FROM jobs WHERE status IN ({placeholders})",
-                PIPELINE_STATUSES,
-            )
-        }
+        cooldown_days = int(os.getenv("APPLY_GHOST_COOLDOWN_DAYS", str(GHOST_COOLDOWN_DAYS)))
+        ghost_cutoff = now - timedelta(days=cooldown_days)
+        pipeline: dict[str, str] = {}
+        for r in conn.execute(
+            f"SELECT company, status, applied_at FROM jobs WHERE status IN ({placeholders})",
+            PIPELINE_STATUSES,
+        ):
+            # A company we ghosted before the cooldown never rejected us — release
+            # it so a new role there can be applied to. Unknown applied_at (should
+            # not happen for ghosted) fails closed: keep blocking.
+            if r["status"] == "ghosted":
+                applied = _parse_dt(r["applied_at"])
+                if applied is not None and applied < ghost_cutoff:
+                    continue
+            pipeline[normalize_company(r["company"])] = r["status"]
         snap_placeholders = ",".join("?" for _ in IN_FLIGHT_SNAPSHOT_STATUSES)
         in_flight = {
             normalize_company(r["company"]): r["job_id"]
@@ -209,13 +238,15 @@ def dedup_gate(job: dict, ctx: DedupContext) -> tuple[str, str]:
 
 def fetch_candidates(conn) -> list[dict]:
     """Grade/score/location/status-eligible jobs, before liveness and dedup."""
-    loc_clause = " OR ".join(f"location LIKE '%{kw}%'" for kw in GERMANY_KEYWORDS)
+    loc_terms = [f"location LIKE '%{kw}%'" for kw in GERMANY_KEYWORDS]
+    loc_terms += [f"location = '{loc}'" for loc in REMOTE_ELIGIBLE_LOCATIONS]
+    loc_clause = " OR ".join(loc_terms)
     rows = conn.execute(
         "SELECT id, source, company, title, url, location, fit_grade, match_score, "
         "       fetched_at, jd_hash, ats, apply_url, ats_checked_at "
         "FROM jobs "
         "WHERE status = 'scored' "
-        "  AND (fit_grade = 'A' OR (fit_grade = 'B' AND match_score >= 70)) "
+        f"  AND (fit_grade = 'A' OR (fit_grade = 'B' AND match_score >= {MIN_B_SCORE})) "
         f" AND ({loc_clause})"
     )
     return [dict(r) for r in rows]
@@ -282,7 +313,7 @@ def build_queue(conn, budget: int | None = None, now: datetime | None = None,
     eligible.sort(key=lambda j: sort_key(j, now, prefer_addressable))
 
     queue, blocked = [], []
-    ctx = DedupContext.from_db(conn)
+    ctx = DedupContext.from_db(conn, now=now)
     for job in eligible:
         verdict, reason = dedup_gate(job, ctx)
         job = {**job, "age_days": job_age_days(job["fetched_at"], now),

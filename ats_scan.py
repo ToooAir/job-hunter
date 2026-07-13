@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """ats_scan.py — resolve job URLs to the ATS that hosts the apply form.
 
-Scans the queue-eligible pool (Germany, grade A or B>=70, status='scored'),
+Scans the queue-eligible pool (Germany + Remote — EU, grade A or B>=65, status='scored'),
 follows each job URL plus one level of apply links, and detects which ATS
 the application actually lives on. WTTJ jobs are resolved via the public
 WTTJ API, which also yields liveness (status/archived_at) and apply_url.
@@ -36,6 +36,7 @@ import requests
 from bs4 import BeautifulSoup
 
 sys.path.insert(0, str(Path(__file__).parent))
+from utils.apply_queue import MIN_B_SCORE, REMOTE_ELIGIBLE_LOCATIONS  # noqa: E402
 from utils.db import init_db, set_job_ats  # noqa: E402
 from utils.gone_text import soft_gone  # noqa: E402
 
@@ -115,14 +116,17 @@ WTTJ_API = "https://api.welcometothejungle.com/api/v1/organizations/{org}/jobs/{
 
 
 def fetch_jobs(limit=None):
-    """Queue-eligible pool: Germany, grade A or B with score >= 70."""
+    """Queue-eligible pool: Germany (+ Remote — EU), grade A or B >= MIN_B_SCORE.
+    Must mirror utils.apply_queue.fetch_candidates so scan pool == queue pool."""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    loc_clause = " OR ".join(f"location LIKE '%{kw}%'" for kw in GERMANY_LIKE)
+    loc_terms = [f"location LIKE '%{kw}%'" for kw in GERMANY_LIKE]
+    loc_terms += [f"location = '{loc}'" for loc in REMOTE_ELIGIBLE_LOCATIONS]
+    loc_clause = " OR ".join(loc_terms)
     sql = (
         "SELECT id, source, company, title, url, fit_grade, match_score FROM jobs "
         "WHERE status='scored' "
-        "AND (fit_grade='A' OR (fit_grade='B' AND match_score >= 70)) "
+        f"AND (fit_grade='A' OR (fit_grade='B' AND match_score >= {MIN_B_SCORE})) "
         f"AND ({loc_clause}) "
         "ORDER BY match_score DESC"
     )
