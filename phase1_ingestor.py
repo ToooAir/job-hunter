@@ -775,8 +775,14 @@ def _wad_safe_get(path: str, params: dict) -> dict | None:
         return None
 
 
-def _wad_jd(job_id: int, slug: str, external: bool) -> str:
-    """Fetch full JD from detail endpoint. Returns combined HTML-stripped text.
+def _wad_jd(job_id: int, slug: str, external: bool) -> tuple[str, str]:
+    """Fetch the full JD and real apply URL from the detail endpoint.
+
+    Returns (jd_text, apply_url). For external ("job-listing") jobs the WAD
+    /jobs/ext/… page is only a landing page that links out to the true host
+    (e.g. workingnomads.com); the detail API exposes that target as
+    `apply_url`, so we store it and skip the extra manual hop. apply_url is
+    "" when the API gives none (native WAD-hosted jobs apply on WAD itself).
 
     Native jobs (external=False): first call returns HTTP 301 with body
     {"company_id": N, "company_slug": "..."} — use those to make a second call.
@@ -801,7 +807,7 @@ def _wad_jd(job_id: int, slug: str, external: bool) -> str:
             company_id = redirect_info.get("company_id")
             company_slug = redirect_info.get("company_slug")
             if not company_id or not company_slug:
-                return ""
+                return "", ""
             resp = requests.get(
                 WAD_API + "/v2/jobs/details",
                 params={**params, "company_id": company_id, "company_slug": company_slug},
@@ -812,18 +818,19 @@ def _wad_jd(job_id: int, slug: str, external: bool) -> str:
             time.sleep(0.8)
 
         if resp.status_code != 200:
-            return ""
+            return "", ""
         data = resp.json()
     except Exception as exc:
         log.warning("WAD JD fetch failed job_id=%s — %s", job_id, exc)
-        return ""
+        return "", ""
 
     parts = [
         data.get("description") or "",
         data.get("candidate_description") or "",
         data.get("conditions_description") or "",
     ]
-    return clean_html("\n".join(p for p in parts if p))
+    apply_url = str(data.get("apply_url") or "").strip()
+    return clean_html("\n".join(p for p in parts if p)), apply_url
 
 
 def scrape_wearedevelopers(
@@ -896,8 +903,9 @@ def scrape_wearedevelopers(
                         skipped += 1
                         continue
 
-                    # Fetch full JD — native jobs use two-step 301 flow in _wad_jd
-                    raw_jd = _wad_jd(job_id, slug, external=external)
+                    # Fetch full JD + real apply URL — native jobs use the
+                    # two-step 301 flow in _wad_jd
+                    raw_jd, apply_url = _wad_jd(job_id, slug, external=external)
                     if not raw_jd:
                         # Fallback: combine skills list as minimal context
                         skills = job.get("skills", [])
@@ -918,6 +926,10 @@ def scrape_wearedevelopers(
                         "expires_at":  expiry(45),
                         "status":      "un-scored",
                     }
+                    # url stays the WAD canonical page (stable dedup key); the
+                    # external target is where the apply flow should actually go
+                    if apply_url and apply_url != job_url:
+                        record["apply_url"] = apply_url
 
                     _warn_empty_jd(record)
                     if upsert_job(conn, record):
