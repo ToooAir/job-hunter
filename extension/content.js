@@ -425,16 +425,31 @@ async function findPending() {
     MATCH = hostHits[0]; // company-specific host: the lone draft IS this page's
   }
   let via = "";
+  let focusInfo = null;
   if (!MATCH) {
     const foc = await bg({ type: "focus" });
-    const sid = foc && foc.ok && foc.data && foc.data.snapshot_id;
-    if (sid) MATCH = res.data.find((s) => s.snapshot_id === sid) || null;
-    if (MATCH) via = " · via 🎯 focus";
+    if (foc && foc.ok && foc.data && foc.data.job_id) {
+      focusInfo = foc.data;
+      // A focus with a draft snapshot binds the submit tracking (the
+      // smartapply redirect case). A focus on a plain scored job carries no
+      // snapshot_id — the answer panel (💰/📄) still grounds on it server-
+      // side, there is just nothing to mark submitted here.
+      if (focusInfo.snapshot_id)
+        MATCH = res.data.find((s) => s.snapshot_id === focusInfo.snapshot_id) || null;
+      if (MATCH) via = " · via 🎯 focus";
+    }
   }
   if (MATCH) {
     $("#jh-submitted").style.display = "block";
     status.textContent = MATCH.company + " · snapshot #" + MATCH.snapshot_id +
       " · " + (MATCH.ats || "?") + " · T" + MATCH.tier + via;
+  } else if (focusInfo) {
+    // 🎯 set on a draft-less job: make the linkage visible (the panel used to
+    // fall through to "none for this page" and look disconnected), and say
+    // plainly that submission is not tracked here (no snapshot to advance).
+    $("#jh-submitted").style.display = "none";
+    status.textContent = "🎯 " + (focusInfo.company || "focused job") +
+      " — answers grounded; no draft, so mark submitted in the dashboard";
   } else if (hostHits.length) {
     // >1 drafts, or a lone draft on a multi-tenant host (not bindable)
     $("#jh-submitted").style.display = "none";

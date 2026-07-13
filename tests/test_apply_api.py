@@ -423,6 +423,25 @@ class AnswerTest(unittest.TestCase):
         self.assertEqual(
             self.client.post("/answer", json={"question": "x"}).status_code, 401)
 
+    def test_focus_endpoint_enriches_draftless_focus_with_company(self):
+        # A 🎯 on a plain scored job carries no snapshot_id; the panel still
+        # needs to show WHICH job so it does not look disconnected.
+        from utils.db import set_focus
+        set_focus(self.conn, None, "lever-1")
+        r = self.client.get("/focus", headers={"Authorization": f"Bearer {TOKEN}"})
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["job_id"], "lever-1")
+        self.assertIsNone(body["snapshot_id"])
+        self.assertEqual(body["company"], "Mustermann AI")
+        self.assertEqual(body["title"], "Applied Lead")
+
+    def test_focus_endpoint_empty_when_unset(self):
+        self.assertEqual(
+            self.client.get(
+                "/focus", headers={"Authorization": f"Bearer {TOKEN}"}).json(),
+            {})
+
     def test_focus_wins_and_writes_trail(self):
         from utils.db import set_focus
         set_focus(self.conn, self.sids["lever-1"], "lever-1")
