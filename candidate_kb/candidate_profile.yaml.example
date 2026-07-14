@@ -145,7 +145,7 @@ fields:
   # never_fill below) to be asked per-form instead.
   date_of_birth:
     value: "TODO"                      # German forms usually want DD.MM.YYYY
-    aliases: [date of birth, birth date, geburtsdatum, geburtstag]
+    aliases: [date of birth, birth date, birthday, geburtsdatum, geburtstag]
 
   gender:
     value: "TODO"                      # e.g. "Männlich" / "Weiblich" / "Divers"
