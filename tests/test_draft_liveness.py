@@ -160,9 +160,12 @@ class SweepTest(unittest.TestCase):
         self.assertEqual(status("manual")["lv"], "live")     # live without headless
         self.assertEqual(status("captcha")["lv"], "suspicious")
 
-    def test_ats_gone_kills_draft_even_when_page_loads(self):
-        # Tier-3 zombie: apply_url is a generic careers page (always 200), but
-        # ats_scan already saw the source listing 404 — must die without HTTP.
+    def test_ats_gone_flags_suspicious_keeps_draft(self):
+        # A source-listing 'gone' from ats_scan is a warning, not a death
+        # sentence: job boards expire independently of the role, a captcha wall
+        # reads as 404-grade, and a background sweep must never abandon a draft
+        # the human may be mid-application on (abandoned can't be marked
+        # submitted). Flag suspicious, keep the draft — the human decides.
         self.conn.execute("UPDATE jobs SET ats='gone' WHERE id='manual'")
         self.conn.commit()
         verdicts = {"https://x.com/live": "ok", "https://x.com/gone": "gone",
@@ -170,13 +173,14 @@ class SweepTest(unittest.TestCase):
         tally = sweep_drafts(
             self.conn, http_get=lambda u: (200, u) if not u.endswith("/dead404") else (404, u),
             headless_verdicts=lambda ds: ((d, verdicts[d["apply_url"]]) for d in ds))
-        self.assertEqual(tally["dead"], 3)   # dead404 + gone + the ats-gone manual
-        self.assertEqual(tally["live"], 1)   # only the live form draft
+        self.assertEqual(tally["dead"], 2)        # dead404 + gone form only
+        self.assertEqual(tally["suspicious"], 2)  # captcha + the ats-gone manual
         row = self.conn.execute(
-            "SELECT s.status ss, j.status js FROM application_snapshots s "
+            "SELECT s.status ss, s.liveness lv, j.status js FROM application_snapshots s "
             "JOIN jobs j ON j.id=s.job_id WHERE s.id=?", (self.sid["manual"],)).fetchone()
-        self.assertEqual(row["ss"], "abandoned")
-        self.assertEqual(row["js"], "expired")
+        self.assertEqual(row["ss"], "draft")       # kept, not abandoned
+        self.assertEqual(row["lv"], "suspicious")  # but flagged for the human
+        self.assertEqual(row["js"], "scored")      # job not expired
 
     def test_soft_gone_body_kills_manual_draft_without_headless(self):
         # The manual Tier-3 blind spot: the page answers 200 ("page loads" used

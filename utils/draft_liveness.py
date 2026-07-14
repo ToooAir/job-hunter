@@ -169,11 +169,16 @@ def sweep_drafts(conn, http_get=None, headless_verdicts=None,
             apply_result(conn, d["sid"], d["job_id"], liveness, now, note)
 
     for d in drafts:
-        # ats_scan checks the SOURCE listing; 'gone' there is 404-grade evidence
-        # the posting is dead even when apply_url is a generic careers page that
-        # always loads (the Tier-3 zombie-draft blind spot).
+        # ats_scan checks the SOURCE listing. A 'gone' there is evidence the
+        # posting is dead, BUT job boards (heise, krankenhaus-stellen) expire
+        # their listing on their own schedule while the role — and the apply
+        # page — stay open, and a captcha/anti-bot wall reads as 404-grade too.
+        # A background sweep must never silently abandon a draft the human may
+        # be mid-application on (once abandoned it can't even be marked
+        # submitted). So flag it suspicious — a loud warning in the review
+        # queue — and keep the draft; the human decides whether to apply.
         if d.get("ats") == "gone":
-            record(d, "dead", "ats_scan: source listing gone")
+            record(d, "suspicious", "ats_scan: source listing gone")
             continue
         url = d.get("apply_url")
         if not url:
