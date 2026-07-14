@@ -52,6 +52,7 @@ _STRINGS = {
         "tab_cl": "Cover Letter", "tab_qa": "自訂問答",
         "tab_sheet": "小抄(點右上複製)",
         "cl_flagged": "這封 cover letter 被標記的疑慮(送出前請確認)",
+        "cl_download_pdf": "⬇️ 下載 PDF(表單要上傳檔案時用)",
         "no_actions": "無自動填值(Tier 3 頁面)",
         "notes": "備註",
         "save_edits": "存檔(供複製)", "mark_submitted": "標記已投遞",
@@ -94,6 +95,7 @@ _STRINGS = {
         "tab_cl": "Cover Letter", "tab_qa": "Custom Q&A",
         "tab_sheet": "Answer sheet (copy top-right)",
         "cl_flagged": "Flags on this cover letter (confirm before submitting)",
+        "cl_download_pdf": "⬇️ Download PDF (for forms that require a file upload)",
         "no_actions": "No automatic fills (Tier 3 page)",
         "notes": "Notes",
         "save_edits": "Save (for copying)", "mark_submitted": "Mark submitted",
@@ -347,10 +349,33 @@ def _cover_letter_section(snap: dict, editable: bool = False) -> str | None:
     if not flags and _cl_endorsed(snap.get("verifier_report")):
         st.success(T("cl_endorsed"))
     if editable:
-        return st.text_area(T("tab_cl"), value=snap["cover_letter"], height=260,
-                            key=f"cl_{snap['id']}", label_visibility="collapsed")
+        edited = st.text_area(T("tab_cl"), value=snap["cover_letter"], height=260,
+                              key=f"cl_{snap['id']}", label_visibility="collapsed")
+        _cl_download_button(snap, edited)
+        return edited
     st.code(snap["cover_letter"], language=None)
+    _cl_download_button(snap, snap["cover_letter"])
     return None
+
+
+def _cl_download_button(snap: dict, text: str) -> None:
+    """Offer the letter as a .pdf. Some forms take the cover letter only as a
+    file upload (no paste-able textarea), where the Copy button is useless —
+    download the current text and upload it. Built from the shown text, so an
+    unsaved edit still exports what's on screen."""
+    if not text or not text.strip():
+        return
+    from utils.cover_letter_doc import build_pdf, file_stem
+    job = snap.get("job") or {}
+    company, title = job.get("company", ""), job.get("title", "")
+    st.download_button(
+        T("cl_download_pdf"),
+        data=build_pdf(text, title, company),
+        file_name=f"{file_stem(company, title)}.pdf",
+        mime="application/pdf",
+        key=f"cl_dl_{snap['id']}",
+        use_container_width=True,
+    )
 
 
 def _qa_section(snap: dict) -> None:
