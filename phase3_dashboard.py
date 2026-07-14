@@ -1751,49 +1751,16 @@ with right:
                     st.rerun()
 
             if edited_cl.strip():
-                import io
-                from docx import Document as DocxDocument
-                from reportlab.lib.pagesizes import A4
-                from reportlab.lib.styles import getSampleStyleSheet
-                from reportlab.lib.units import cm
-                from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+                from utils.cover_letter_doc import build_docx, build_pdf, file_stem
 
-                _file_stem = f"cover_letter_{job['company']}_{job['title']}".replace(" ", "_")
-
-                # ── Build .docx ──────────────────────────────────────────────
-                _doc = DocxDocument()
-                _doc.add_heading(f"{job['title']} @ {job['company']}", level=1)
-                for para in edited_cl.strip().split("\n"):
-                    _doc.add_paragraph(para)
-                _docx_buf = io.BytesIO()
-                _doc.save(_docx_buf)
-
-                # ── Build .pdf ───────────────────────────────────────────────
-                _pdf_buf = io.BytesIO()
-                _pdf_doc = SimpleDocTemplate(
-                    _pdf_buf, pagesize=A4,
-                    leftMargin=2.5 * cm, rightMargin=2.5 * cm,
-                    topMargin=2.5 * cm, bottomMargin=2.5 * cm,
-                )
-                _styles = getSampleStyleSheet()
-                _story = [
-                    Paragraph(f"{job['title']} @ {job['company']}", _styles["Heading1"]),
-                    Spacer(1, 12),
-                ]
-                for para in edited_cl.strip().split("\n"):
-                    if para.strip():
-                        _story.append(Paragraph(para, _styles["Normal"]))
-                        _story.append(Spacer(1, 6))
-                    else:
-                        _story.append(Spacer(1, 10))
-                _pdf_doc.build(_story)
+                _file_stem = file_stem(job["company"], job["title"])
 
                 # ── Download buttons (side by side) ──────────────────────────
                 _dl_col1, _dl_col2 = st.columns(2)
                 with _dl_col1:
                     st.download_button(
                         label=T("download_docx"),
-                        data=_docx_buf.getvalue(),
+                        data=build_docx(edited_cl, job["title"], job["company"]),
                         file_name=f"{_file_stem}.docx",
                         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                         key=f"dl_docx_{job['id']}",
@@ -1802,7 +1769,7 @@ with right:
                 with _dl_col2:
                     st.download_button(
                         label=T("download_pdf"),
-                        data=_pdf_buf.getvalue(),
+                        data=build_pdf(edited_cl, job["title"], job["company"]),
                         file_name=f"{_file_stem}.pdf",
                         mime="application/pdf",
                         key=f"dl_pdf_{job['id']}",
