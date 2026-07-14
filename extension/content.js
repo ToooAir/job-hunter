@@ -1089,10 +1089,22 @@ function setNativeValue(el, value) {
       ? window.HTMLSelectElement.prototype
       : window.HTMLInputElement.prototype;
   const desc = Object.getOwnPropertyDescriptor(proto, "value");
+  // Bracket the write with a full focus→edit→blur lifecycle. Validation-on-blur
+  // forms (Ashby, react-hook-form, Formik, Personio) keep flagging a filled
+  // field as empty until a *real* focus-out — which is why a manual click-in/
+  // click-out "fixes" it. Some also ignore an orphan blur that had no matching
+  // focus, so we open with focus/focusin too. Synthetic events don't move
+  // keyboard focus or scroll, so bracketing every field is safe.
+  // React delegates onFocus/onBlur off bubbling focusin/focusout; Vue/native
+  // @focus/@blur listen on the element itself.
+  el.dispatchEvent(new Event("focus"));
+  el.dispatchEvent(new Event("focusin", { bubbles: true }));
   if (desc && desc.set) desc.set.call(el, value);
   else el.value = value;
   el.dispatchEvent(new Event("input", { bubbles: true }));
   el.dispatchEvent(new Event("change", { bubbles: true }));
+  el.dispatchEvent(new Event("blur"));
+  el.dispatchEvent(new Event("focusout", { bubbles: true }));
 }
 
 function setNativeChecked(el, checked) {
