@@ -258,6 +258,20 @@ class FillPlanTest(unittest.TestCase):
         self.assertEqual(fill["value"], "Deutschland")
         self.assertFalse(fill["needs_review"])
 
+    def test_select_short_iso_alias_never_substring_matches(self):
+        # "DE" (a country option_alias) is a substring of "Bangladesch",
+        # "Schweden", etc.; a naive containment match picks the first such
+        # country ("Land/Region des Wohnorts" was landing on Bangladesch).
+        # Germany's option is decorated so it can only resolve via the longer
+        # alias — proving the 2-char code never substring-matches.
+        plan = self._plan([{"label": "Land/Region des Wohnorts", "name": "c",
+                            "type": "select",
+                            "options": ["Bitte wählen", "Bangladesch", "Schweden",
+                                        "Deutschland (Germany)", "Österreich"]}])
+        fill = plan["fills"][0]
+        self.assertEqual(fill["value"], "Deutschland (Germany)")
+        self.assertFalse(fill["needs_review"])
+
     def test_select_no_matching_option_flags_review(self):
         plan = self._plan([{"label": "German level", "name": "de", "type": "select",
                             "options": ["Bitte wählen", "Fließend"]}])
