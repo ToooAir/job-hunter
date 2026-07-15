@@ -28,14 +28,14 @@ let PANEL = null; // the shadow root — the UI lives here, isolated from page C
 // of these is the disguised-embed case (gh_jid iframe on a company careers
 // page) — the form lives there, so the panel must too. Other subframes stay
 // silent; in the top frame the panel always runs.
-const ATS_FRAME_RE = /(^|\.)(greenhouse\.io|ashbyhq\.com|jobs\.personio\.de|lever\.co|workable\.com)$/i;
+const ATS_FRAME_RE = /(^|\.)(greenhouse\.io|ashbyhq\.com|jobs\.personio\.de|lever\.co|workable\.com|smartrecruiters\.com)$/i;
 
 // One host, many employers (SuccessFactors regional instances, Workday,
 // path-routed ATS boards): a lone host hit proves nothing there — the Audatic
 // draft bound a KHS application page on career5.successfactors.eu
 // (2026-07-10). On these hosts binding needs an exact page match or 🎯 focus.
 const MULTI_TENANT_RE =
-  /successfactors|myworkdayjobs|greenhouse\.io|ashbyhq\.com|lever\.co|workable\.com|join\.com|softgarden|icims\.com|taleo/i;
+  /successfactors|myworkdayjobs|greenhouse\.io|ashbyhq\.com|lever\.co|workable\.com|smartrecruiters\.com|join\.com|softgarden|icims\.com|taleo/i;
 
 // Declared BEFORE the boot block below: injectPanel() runs immediately, and a
 // `const` referenced across that call must already be initialized (TDZ) —
@@ -978,8 +978,20 @@ function startConfirmWatch(id) {
 }
 
 // ── live field extraction ─────────────────────────────────────────────────────
+// Pierce open shadow roots: SmartRecruiters OneClick is an Angular ShadowDom app
+// (<oc-oneclick-form-root> et al.), so its inputs live inside custom-element
+// shadow trees a light-DOM querySelectorAll can't see. Angular always attaches
+// OPEN roots; closed ones stay opaque (nothing we can do — reads as no-form).
+function queryAllDeep(selector, root = document) {
+  const out = [...root.querySelectorAll(selector)];
+  for (const host of root.querySelectorAll("*")) {
+    if (host.shadowRoot) out.push(...queryAllDeep(selector, host.shadowRoot));
+  }
+  return out;
+}
+
 function fillableFields() {
-  return [...document.querySelectorAll("input, select, textarea")].filter((el) => {
+  return queryAllDeep("input, select, textarea").filter((el) => {
     const t = (el.type || "").toLowerCase();
     if (["hidden", "submit", "button", "reset", "image"].includes(t)) return false;
     if (isVisible(el)) return true;
@@ -1040,8 +1052,11 @@ function radioGroupLabel(el) {
 }
 
 function fieldLabel(el) {
+  // Resolve within the element's own root (its shadow tree, or the document) so
+  // for-labels and labelledby refs work for shadow-DOM forms (SmartRecruiters).
+  const root = el.getRootNode();
   if (el.id) {
-    const lab = document.querySelector('label[for="' + cssEscape(el.id) + '"]');
+    const lab = root.querySelector('label[for="' + cssEscape(el.id) + '"]');
     if (lab && lab.textContent.trim()) return lab.textContent;
   }
   const wrap = el.closest("label");
@@ -1050,7 +1065,7 @@ function fieldLabel(el) {
   if (aria) return aria;
   const labelledby = el.getAttribute("aria-labelledby");
   if (labelledby) {
-    const ref = document.getElementById(labelledby);
+    const ref = root.getElementById ? root.getElementById(labelledby) : document.getElementById(labelledby);
     if (ref && ref.textContent.trim()) return ref.textContent;
   }
   // for-less sibling label (team-beverage, 2026-07-10: <label>Vorname</label>

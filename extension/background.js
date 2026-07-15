@@ -118,7 +118,7 @@ function filenameFrom(r) {
 // click) and structured-ATS subframes (host_permissions cover those). Keep in
 // sync with content.js ATS_FRAME_RE / the manifest matches.
 const ATS_URL_RE =
-  /^https:\/\/([^/]+\.)?(greenhouse\.io|ashbyhq\.com|jobs\.personio\.de|lever\.co|workable\.com)\//i;
+  /^https:\/\/([^/]+\.)?(greenhouse\.io|ashbyhq\.com|jobs\.personio\.de|lever\.co|workable\.com|smartrecruiters\.com)\//i;
 
 // Toolbar icon → toggle the in-page panel (re-summon it if dismissed/clobbered).
 // Injection is explicit per frame, not declarative-only: manifest all_frames
