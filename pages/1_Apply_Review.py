@@ -53,6 +53,7 @@ _STRINGS = {
         "tab_sheet": "小抄(點右上複製)",
         "cl_flagged": "這封 cover letter 被標記的疑慮(送出前請確認)",
         "cl_download_pdf": "⬇️ 下載 PDF(表單要上傳檔案時用)",
+        "cl_from_scoring": "此 CL 取自評分階段草稿(未經 apply verifier 查核,送出前請自審)",
         "no_actions": "無自動填值(Tier 3 頁面)",
         "notes": "備註",
         "save_edits": "存檔(供複製)", "mark_submitted": "標記已投遞",
@@ -96,6 +97,7 @@ _STRINGS = {
         "tab_sheet": "Answer sheet (copy top-right)",
         "cl_flagged": "Flags on this cover letter (confirm before submitting)",
         "cl_download_pdf": "⬇️ Download PDF (for forms that require a file upload)",
+        "cl_from_scoring": "This letter is the scoring-stage draft (not apply-verifier checked — review before sending)",
         "no_actions": "No automatic fills (Tier 3 page)",
         "notes": "Notes",
         "save_edits": "Save (for copying)", "mark_submitted": "Mark submitted",
@@ -324,8 +326,18 @@ def _fills_section(snap: dict, payload: dict, editable: bool = False) -> dict:
 def _cover_letter_section(snap: dict, editable: bool = False) -> str | None:
     """Render the cover letter with its verifier endorsement / flags. When
     editable, returns the (possibly edited) text from a text area so the caller
-    can persist it on approve; read-only mode returns None."""
-    if not snap.get("cover_letter"):
+    can persist it on approve; read-only mode returns None.
+
+    Tier 3 (external-board / no-form) snapshots carry no cover_letter — the
+    pipeline skips the carry-over on pages it can't fill — but the letter was
+    already written at scoring time and lives on the job. Fall back to that
+    draft so the manual applicant still has a letter to review and download."""
+    text = snap.get("cover_letter")
+    from_scoring = False
+    if not text:
+        text = (snap.get("job") or {}).get("cover_letter_draft") or ""
+        from_scoring = bool(text)
+    if not text:
         return None
     flags = _cl_flags(snap.get("verifier_report"))
     # Flags stay OUTSIDE the toggle: a collapsed section must never swallow
@@ -346,15 +358,17 @@ def _cover_letter_section(snap: dict, editable: bool = False) -> str | None:
     st.session_state[pref_key] = show
     if not show:
         return None  # edit_snapshot treats None as "leave the letter alone"
-    if not flags and _cl_endorsed(snap.get("verifier_report")):
+    if from_scoring:
+        st.caption(T("cl_from_scoring"))
+    elif not flags and _cl_endorsed(snap.get("verifier_report")):
         st.success(T("cl_endorsed"))
     if editable:
-        edited = st.text_area(T("tab_cl"), value=snap["cover_letter"], height=260,
+        edited = st.text_area(T("tab_cl"), value=text, height=260,
                               key=f"cl_{snap['id']}", label_visibility="collapsed")
         _cl_download_button(snap, edited)
         return edited
-    st.code(snap["cover_letter"], language=None)
-    _cl_download_button(snap, snap["cover_letter"])
+    st.code(text, language=None)
+    _cl_download_button(snap, text)
     return None
 
 
