@@ -189,9 +189,17 @@ def _resolve_option(value: str, options: list[str] | None,
     for opt in options:                       # exact first (value, then synonyms)
         if opt.strip().lower() in wants:
             return opt, False
+    # Containment pass for decorated options ("Deutschland (Germany)"). The
+    # forward direction matches on a WORD BOUNDARY, not a raw substring: a 2-char
+    # ISO code like "de" must not match inside "banglaDEsch"/"schweDEn" (country
+    # lists are ordered so the wrong one wins), while a real token like "b1"
+    # still matches "B1 - intermediate".
     for opt in options:                       # then containment either way
         olow = opt.strip().lower()
-        if olow and any(w in olow or olow in w for w in wants if w):
+        if not olow:
+            continue
+        if any(re.search(rf"\b{re.escape(w)}\b", olow) or olow in w
+               for w in wants if w):
             return opt, False
     return value, True                        # nothing fit → human decides
 
