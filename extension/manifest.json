@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "job-hunter autofill",
-  "version": "0.7.18",
+  "version": "0.7.20",
   "description": "Fills profile facts into any application form and answers its open questions from the candidate's background (copy-paste, human-reviewed), backed by the local apply_api sidecar.",
   "permissions": ["storage", "activeTab", "scripting", "webNavigation", "clipboardWrite"],
   "host_permissions": [
@@ -10,7 +10,8 @@
     "https://jobs.ashbyhq.com/*",
     "https://*.jobs.personio.de/*",
     "https://*.lever.co/*",
-    "https://*.workable.com/*"
+    "https://*.workable.com/*",
+    "https://*.smartrecruiters.com/*"
   ],
   "background": { "service_worker": "background.js" },
   "icons": {
@@ -35,7 +36,8 @@
         "https://jobs.ashbyhq.com/*",
         "https://*.jobs.personio.de/*",
         "https://*.lever.co/*",
-        "https://*.workable.com/*"
+        "https://*.workable.com/*",
+        "https://*.smartrecruiters.com/*"
       ],
       "all_frames": true,
       "run_at": "document_idle",
