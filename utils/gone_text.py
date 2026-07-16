@@ -15,6 +15,7 @@ i18n bundles that contain every one of these phrases as translation strings.
 """
 
 import re
+from urllib.parse import urlparse
 
 # Wording that means the posting itself is gone (not just form-less).
 GONE_TEXT_RE = re.compile(
@@ -32,6 +33,27 @@ GONE_TEXT_RE = re.compile(
 _SCRIPT_STYLE_RE = re.compile(
     r"<(script|style)\b[^>]*>.*?</\1\s*>|<!--.*?-->", re.I | re.S)
 _TAG_RE = re.compile(r"<[^>]+>")
+
+
+def redirect_off_posting(orig_url: str, final_url: str | None) -> bool:
+    """Same-host redirect that dropped the posting's slug entirely — e.g.
+    germantechjobs sends dead postings to the /jobs/<category>/all listing,
+    which a redirect-to-root check never sees. Slugs under 8 chars are
+    ignored: query-id sites ("/job?id=123") end in a generic segment, and
+    short segments collide too easily. Cross-host redirects don't count
+    either — a board handing off to the company's ATS is the healthy path,
+    not a takedown. Shared by the draft-liveness sweep (flags the draft
+    suspicious) and ats_scan (marks the job gone before a draft exists)."""
+    if not final_url:
+        return False
+    o, f = urlparse(orig_url), urlparse(final_url)
+    if o.netloc.lower().removeprefix("www.") != f.netloc.lower().removeprefix("www."):
+        return False
+    slug = o.path.rstrip("/").rsplit("/", 1)[-1]
+    if len(slug) < 8:
+        return False
+    return (o.path.rstrip("/") != f.path.rstrip("/")
+            and slug.lower() not in final_url.lower())
 
 
 def soft_gone(html: str | None) -> str | None:

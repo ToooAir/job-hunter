@@ -38,7 +38,7 @@ from bs4 import BeautifulSoup
 sys.path.insert(0, str(Path(__file__).parent))
 from utils.apply_queue import MIN_B_SCORE, REMOTE_ELIGIBLE_LOCATIONS  # noqa: E402
 from utils.db import init_db, set_job_ats  # noqa: E402
-from utils.gone_text import soft_gone  # noqa: E402
+from utils.gone_text import redirect_off_posting, soft_gone  # noqa: E402
 
 ROOT = Path(__file__).parent
 DB_PATH = ROOT / "data" / "jobs.db"
@@ -252,6 +252,15 @@ def resolve_one(job):
     ats = classify_url(r.url)
     if ats:
         result.update(ats=ats, evidence=r.url)
+        return result
+
+    # Same-board redirect that dropped the posting's slug = the listing was
+    # taken down (germantechjobs bounces dead jobs to /jobs/<category>/all).
+    # After the known-ATS check — a recognizable ATS landing always wins —
+    # and before the page-content scans, which would otherwise run on some
+    # other listing's HTML.
+    if redirect_off_posting(url, r.url):
+        result.update(ats="gone", evidence=f"redirected off the posting: {r.url[:120]}")
         return result
 
     # 2. ATS URL embedded anywhere in the page (hrefs, JSON apply_url, ...)

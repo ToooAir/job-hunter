@@ -6,7 +6,38 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from utils.gone_text import GONE_TEXT_RE, soft_gone  # noqa: E402
+from utils.gone_text import GONE_TEXT_RE, redirect_off_posting, soft_gone  # noqa: E402
+
+
+class RedirectOffPostingTest(unittest.TestCase):
+    def test_listing_redirect_fires(self):
+        # germantechjobs sends dead postings to a category listing, not the
+        # root — the reviewer found these dead by hand (drafts 132/220/245)
+        self.assertTrue(redirect_off_posting(
+            "https://germantechjobs.de/jobs/ilexius-GmbH-Software-Developer--Data-Scientist-mfd",
+            "https://germantechjobs.de/jobs/Data/all"))
+
+    def test_redirect_keeping_slug_or_host_change_is_fine(self):
+        # locale/canonical redirects keep the slug — alive
+        self.assertFalse(redirect_off_posting(
+            "https://x.com/jobs/senior-backend-engineer",
+            "https://x.com/en/jobs/senior-backend-engineer"))
+        # login redirect carries the slug in the query — not a takedown
+        self.assertFalse(redirect_off_posting(
+            "https://x.com/jobs/senior-backend-engineer",
+            "https://x.com/login?next=/jobs/senior-backend-engineer"))
+        # board handing off to the company ATS is the healthy path
+        self.assertFalse(redirect_off_posting(
+            "https://board.com/jobs/senior-backend-engineer",
+            "https://company.greenhouse.io/apply/123"))
+        # short/generic last segments ("/job?id=123") never fire
+        self.assertFalse(redirect_off_posting(
+            "https://jobs.heise.de/job?id=981144808",
+            "https://jobs.heise.de/search"))
+        self.assertFalse(redirect_off_posting(
+            "https://x.com/jobs/abc", "https://x.com/jobs"))
+        self.assertFalse(redirect_off_posting(
+            "https://x.com/jobs/senior-backend-engineer", None))
 
 
 class SoftGoneTest(unittest.TestCase):

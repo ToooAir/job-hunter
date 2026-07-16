@@ -11,7 +11,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 try:  # ats_scan needs requests/bs4 — present in the container, not the host
-    from ats_scan import _evidence_to_apply_url, plausible_apply_url, scan_text_for_ats
+    from ats_scan import (
+        _evidence_to_apply_url,
+        plausible_apply_url,
+        resolve_one,
+        scan_text_for_ats,
+    )
     HAS_DEPS = True
 except ModuleNotFoundError:
     HAS_DEPS = False
@@ -95,6 +100,37 @@ class ScanTextForAtsTest(unittest.TestCase):
             '{"apply_url":"https:\\/\\/jobs.personio.de\\/acme\\/job\\/42"}')
         self.assertEqual(ats, "personio")
         self.assertIn("jobs.personio.de/acme/job/42", ev)
+
+
+@unittest.skipUnless(HAS_DEPS, "ats_scan deps not installed on this host")
+class ResolveOneRedirectTest(unittest.TestCase):
+    """A same-board redirect that drops the posting slug = listing taken down
+    (germantechjobs bounces dead jobs to /jobs/<category>/all with HTTP 200 —
+    reviewers were finding these dead by hand)."""
+
+    JOB = {"id": "j1", "source": "germantechjobs", "company": "Acme", "title": "T",
+           "fit_grade": "A", "match_score": 80,
+           "url": "https://germantechjobs.de/jobs/Acme-GmbH-Software-Engineer-mfd"}
+
+    def _resolve(self, final_url, text="<html>some other listing</html>"):
+        from unittest import mock
+        fake = mock.Mock(status_code=200, url=final_url, text=text)
+        with mock.patch("ats_scan.requests.get", return_value=fake):
+            return resolve_one(dict(self.JOB))
+
+    def test_listing_redirect_marks_gone(self):
+        res = self._resolve("https://germantechjobs.de/jobs/Data/all")
+        self.assertEqual(res["ats"], "gone")
+        self.assertIn("redirected off the posting", res["evidence"])
+
+    def test_known_ats_landing_wins_over_slug_check(self):
+        # cross-host handoff to a recognizable ATS is the healthy path
+        res = self._resolve("https://boards.greenhouse.io/acme/jobs/123")
+        self.assertEqual(res["ats"], "greenhouse")
+
+    def test_same_url_stays_unknown(self):
+        res = self._resolve(self.JOB["url"])
+        self.assertNotEqual(res["ats"], "gone")
 
 
 if __name__ == "__main__":
