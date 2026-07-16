@@ -71,6 +71,22 @@ MIN_B_SCORE = 65
 # "Remote — non-EU" / "Remote — unclear" are deliberately excluded.
 REMOTE_ELIGIBLE_LOCATIONS = ("Remote — EU",)
 
+# Student/intern roles can never be applied to (experienced-hire search) — the
+# scorer let a "Internship/Master Thesis" posting through to a Tier-3 draft
+# (snapshot 159, abandoned 2026-07-10). \b keeps "intern" from matching
+# "international". phase2_scorer shares this as a pre-flight, so unscored
+# student roles also skip the LLM spend.
+TITLE_EXCLUDE_RE = re.compile(
+    r"\b(intern|interns|internship|praktikum|praktikant(?:in)?|"
+    r"werkstudent(?:in)?|working\s+student|thesis|masterarbeit|"
+    r"bachelorarbeit|abschlussarbeit|ausbildung|azubi|apprentice(?:ship)?|"
+    r"duales?\s+studium)\b", re.I)
+
+
+def title_excluded(title: str | None) -> bool:
+    """True when the job title marks a student/intern role we never apply to."""
+    return bool(TITLE_EXCLUDE_RE.search(title or ""))
+
 # A ghosted company never actually rejected us — after this cooldown a *new* role
 # there is fair game again. applied/interview/offer/rejected stay permanently
 # blocked. Env override: APPLY_GHOST_COOLDOWN_DAYS.
@@ -249,7 +265,7 @@ def fetch_candidates(conn) -> list[dict]:
         f"  AND (fit_grade = 'A' OR (fit_grade = 'B' AND match_score >= {MIN_B_SCORE})) "
         f" AND ({loc_clause})"
     )
-    return [dict(r) for r in rows]
+    return [dict(r) for r in rows if not title_excluded(r["title"])]
 
 
 def topup_budget(live_count: int, target: int) -> int:

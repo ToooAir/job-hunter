@@ -205,6 +205,38 @@ class SweepTest(unittest.TestCase):
         self.assertEqual(row["js"], "expired")
         self.assertIn("soft-gone", row["notes"])
 
+    def test_listing_redirect_flags_manual_draft_suspicious(self):
+        # a manual Tier-3 draft whose URL 200-redirects onto a listing page
+        # used to record "live — page loads (manual)"
+        self.conn.execute(
+            "INSERT INTO jobs (id, company, title, url, source, raw_jd_text,"
+            " fetched_at, status) VALUES (?,?,?,?,?,?,?, 'scored')",
+            ("gtj", "Thorit GmbH", "Eng",
+             "https://germantechjobs.de/jobs/Thorit-GmbH-Software-Engineer", "t",
+             "jd", "2026-06-10T08:00:00"))
+        sid = create_application_snapshot(
+            self.conn, "gtj", status="draft", tier=3,
+            apply_url="https://germantechjobs.de/jobs/Thorit-GmbH-Software-Engineer",
+            form_payload={"actions": []})
+        self.conn.commit()
+
+        def fake_http(url):
+            if "germantechjobs" in url:
+                return 200, "https://germantechjobs.de/jobs/Data/all"
+            return 200, url
+
+        verdicts = {"https://x.com/live": "ok", "https://x.com/gone": "gone",
+                    "https://x.com/captcha": "captcha",
+                    "https://x.com/dead404": "ok"}
+        sweep_drafts(self.conn, http_get=fake_http,
+                     headless_verdicts=lambda ds: ((d, verdicts[d["apply_url"]]) for d in ds))
+        row = self.conn.execute(
+            "SELECT s.status ss, s.liveness lv, j.status js FROM application_snapshots s "
+            "JOIN jobs j ON j.id=s.job_id WHERE s.id=?", (sid,)).fetchone()
+        self.assertEqual(row["ss"], "draft")       # kept — redirect ≠ takedown notice
+        self.assertEqual(row["lv"], "suspicious")  # but loudly flagged
+        self.assertEqual(row["js"], "scored")
+
     def test_dry_run_writes_nothing(self):
         tally = sweep_drafts(self.conn, http_get=lambda u: (404, u),
                              headless_verdicts=lambda ds: iter(()), dry_run=True)

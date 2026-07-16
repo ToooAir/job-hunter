@@ -34,6 +34,7 @@ DB_PATH     = os.getenv("DB_PATH", "./data/jobs.db")
 QDRANT_PATH = os.getenv("QDRANT_PATH", "./qdrant_data")
 
 from utils.llm import make_client, chat_model, emb_model, LLM_PROVIDER, NO_STRUCTURED_OUTPUT_PROVIDERS, rate_limit  # noqa: E402
+from utils.apply_queue import title_excluded  # noqa: E402
 from utils.geo_de import has_non_de_marker  # noqa: E402
 
 logging.basicConfig(
@@ -503,6 +504,7 @@ def score_jobs(
     expired_ids, valid_jobs = [], []
     short_jobs: list[tuple[str, int]] = []   # (job_id, jd_len)
     n_foreign = 0
+    n_student = 0
     for job in jobs:
         exp = job.get("expires_at")
         if exp and exp < now_str:
@@ -514,6 +516,10 @@ def score_jobs(
             # spend. Stays un-scored (no DB write): re-filtered each run for
             # pennies of CPU until auto_expire's TTL removes it.
             n_foreign += 1
+            continue
+        if title_excluded(job.get("title")):
+            # student/intern roles never enter the queue either — same treatment
+            n_student += 1
             continue
         jd_len = len(job.get("raw_jd_text") or "")
         if jd_len < MIN_JD_CHARS:
@@ -536,8 +542,9 @@ def score_jobs(
         conn.close()
         return []
 
-    log.info("開始評分 %d 筆職缺（已過濾 %d 過期、%d JD 過短、%d 明確境外不評分）",
-             len(jobs), len(expired_ids), len(short_jobs), n_foreign)
+    log.info("開始評分 %d 筆職缺（已過濾 %d 過期、%d JD 過短、%d 明確境外、"
+             "%d 學生/實習職不評分）",
+             len(jobs), len(expired_ids), len(short_jobs), n_foreign, n_student)
 
     kb_ready = check_kb_ready(qdrant_path)
     if kb_ready:

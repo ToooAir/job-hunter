@@ -20,6 +20,7 @@ from utils.apply_queue import (  # noqa: E402
     dedup_gate,
     is_addressable,
     normalize_company,
+    title_excluded,
     topup_budget,
 )
 from utils.db import (  # noqa: E402
@@ -40,13 +41,13 @@ def _iso(dt: datetime) -> str:
 def make_job(conn, job_id, *, company="Acme", grade="A", score=80, status="scored",
              location="Hamburg, Germany", ats="unknown", checked_days_ago=1,
              fetched_days_ago=1, jd_hash=None, source="heise", apply_url=None,
-             applied_at=None):
+             applied_at=None, title=None):
     conn.execute(
         "INSERT INTO jobs (id, company, title, url, source, raw_jd_text, fetched_at, "
         "  location, fit_grade, match_score, status, ats, ats_checked_at, jd_hash, apply_url, applied_at) "
         "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
-            job_id, company, f"Title {job_id}", f"https://example.com/{job_id}", source,
+            job_id, company, title or f"Title {job_id}", f"https://example.com/{job_id}", source,
             "x" * 600, _iso(NOW - timedelta(days=fetched_days_ago)),
             location, grade, score, status, ats,
             _iso(NOW - timedelta(days=checked_days_ago)) if checked_days_ago is not None else None,
@@ -123,7 +124,31 @@ class QueueTestBase(unittest.TestCase):
         return [j["id"] for j in result["queue"]]
 
 
+class TitleExcludedTest(unittest.TestCase):
+    def test_student_roles_excluded(self):
+        # snapshot 159 (DLR) reached a Tier-3 draft before this veto existed
+        self.assertTrue(title_excluded(
+            "Internship/Master Thesis (f/m/x) - Multimodal Models"))
+        self.assertTrue(title_excluded("Werkstudent Softwareentwicklung"))
+        self.assertTrue(title_excluded("Praktikant (m/w/d) Data Science"))
+        self.assertTrue(title_excluded("Working Student Backend"))
+        self.assertTrue(title_excluded("Ausbildung Fachinformatiker"))
+
+    def test_intern_does_not_match_international(self):
+        self.assertFalse(title_excluded("International Sales Engineer"))
+        self.assertFalse(title_excluded("Senior Software Engineer (Internal Tools)"))
+        self.assertFalse(title_excluded("Software Engineer"))
+        self.assertFalse(title_excluded(None))
+
+
 class EligibilityTest(QueueTestBase):
+    def test_student_title_excluded_from_queue(self):
+        make_job(self.conn, "eng", company="C1")
+        make_job(self.conn, "intern", company="C2",
+                 title="Internship/Master Thesis (f/m/x)")
+        result = build_queue(self.conn, now=NOW)
+        self.assertEqual(self.queue_ids(result), ["eng"])
+
     def test_only_scored_status(self):
         for i, status in enumerate(
             ["scored", "applied", "skipped", "expired", "un-scored", "error"]
