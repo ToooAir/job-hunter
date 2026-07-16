@@ -89,6 +89,7 @@ APPLICATION_SNAPSHOT_COLUMNS = [
     ("screenshot_path", "TEXT"),
     ("notes",           "TEXT"),
     ("liveness",        "TEXT"),  # liveness sweep verdict: live|suspicious (dead → abandoned)
+    ("liveness_note",   "TEXT"),  # latest sweep evidence ("redirected off the posting: …")
 ]
 
 SNAPSHOT_STATUSES = ("draft", "submitted", "abandoned")

@@ -231,10 +231,12 @@ class SweepTest(unittest.TestCase):
         sweep_drafts(self.conn, http_get=fake_http,
                      headless_verdicts=lambda ds: ((d, verdicts[d["apply_url"]]) for d in ds))
         row = self.conn.execute(
-            "SELECT s.status ss, s.liveness lv, j.status js FROM application_snapshots s "
+            "SELECT s.status ss, s.liveness lv, s.liveness_note ln, j.status js "
+            "FROM application_snapshots s "
             "JOIN jobs j ON j.id=s.job_id WHERE s.id=?", (sid,)).fetchone()
         self.assertEqual(row["ss"], "draft")       # kept — redirect ≠ takedown notice
         self.assertEqual(row["lv"], "suspicious")  # but loudly flagged
+        self.assertIn("redirected off the posting", row["ln"])  # evidence for the reviewer
         self.assertEqual(row["js"], "scored")
 
     def test_dry_run_writes_nothing(self):
