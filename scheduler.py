@@ -1,12 +1,20 @@
 """
 Catch-up pipeline scheduler — runs inside Docker container.
 
-Interval-based instead of clock-based: the pipeline runs as soon as BOTH hold
-  * the last finished run (success or failed) ended >= MIN_INTERVAL_HOURS ago
+Anchor + interval dual trigger (2026-07-16; was pure interval): a run is due
+once BOTH hold
+  * the last finished run (success or failed) ended BEFORE the most recent
+    daily anchor (PIPELINE_ANCHOR_HOUR, default 07:00 container-local =
+    Europe/Berlin), and at least PIPELINE_ANCHOR_GAP_HOURS (default 6) ago
   * the machine is online (HTTPS probe)
-so a laptop that is asleep at any fixed hour still catches up the next time it
-is awake. Progress is tracked per stage in the pipeline_runs table: a run
-interrupted by sleep/offline/crash resumes from the first unfinished stage.
+On an always-on machine the run fires at the anchor and is finished before
+the user sits down (~09:00); pure-interval used to drift ~20 h later each
+day into working hours. A laptop asleep at the anchor still catches up the
+moment it wakes — the anchor condition is already true by then. Setting
+PIPELINE_ANCHOR_HOUR=-1 restores the legacy pure-interval trigger
+(PIPELINE_MIN_INTERVAL_HOURS). Progress is tracked per stage in the
+pipeline_runs table: a run interrupted by sleep/offline/crash resumes from
+the first unfinished stage.
 
 A stage exiting with code 75 (EX_TEMPFAIL, see phase2_scorer.EXIT_TRANSIENT)
 signals a transient network failure: the run stays open and is retried with
@@ -53,6 +61,11 @@ log = logging.getLogger(__name__)
 
 DB_PATH            = os.getenv("DB_PATH", "./data/jobs.db")
 MIN_INTERVAL_HOURS = float(os.getenv("PIPELINE_MIN_INTERVAL_HOURS", "20"))
+# Daily anchor (container-local hour, TZ=Europe/Berlin in compose): the run
+# fires at 07:00 so it is done before the user starts (~09:00). -1 = legacy
+# pure-interval trigger.
+ANCHOR_HOUR        = int(os.getenv("PIPELINE_ANCHOR_HOUR", "7"))
+ANCHOR_GAP_HOURS   = float(os.getenv("PIPELINE_ANCHOR_GAP_HOURS", "6"))
 TICK_SECONDS       = int(os.getenv("PIPELINE_TICK_SECONDS", "60"))
 PROBE_URL          = os.getenv("PIPELINE_PROBE_URL", "https://api.mistral.ai/")
 STALE_RUN_HOURS    = 48   # an open run older than this is abandoned, not resumed
@@ -147,15 +160,32 @@ def is_online(url: str = PROBE_URL, timeout: float = 5.0) -> bool:
         return False
 
 
-def run_is_due(last_completed_at: str | None, now: datetime, min_interval_hours: float) -> bool:
-    """True when enough time has passed since the last finished run."""
+def run_is_due(last_completed_at: str | None, now: datetime,
+               min_interval_hours: float, anchor_hour: int | None = None,
+               anchor_gap_hours: float = 6.0) -> bool:
+    """True when the next daily run should start.
+
+    With an anchor (default): due once `now` has passed the most recent daily
+    anchor occurrence AND the last run finished before that anchor — so an
+    always-on machine runs at the anchor, and a machine asleep at the anchor
+    catches up on wake. `anchor_gap_hours` is the floor between runs (a run
+    that finished just before the anchor doesn't fire again minutes later).
+
+    Without an anchor (anchor_hour=None): legacy pure interval.
+    """
     if last_completed_at is None:
         return True
     try:
         last = datetime.fromisoformat(last_completed_at)
     except ValueError:
         return True
-    return (now - last) >= timedelta(hours=min_interval_hours)
+    since = now - last
+    if anchor_hour is None:
+        return since >= timedelta(hours=min_interval_hours)
+    anchor = now.replace(hour=anchor_hour, minute=0, second=0, microsecond=0)
+    if anchor > now:
+        anchor -= timedelta(days=1)  # most recent occurrence of the anchor
+    return last < anchor and since >= timedelta(hours=anchor_gap_hours)
 
 
 def _housekeeping(conn) -> None:
@@ -208,7 +238,10 @@ class Scheduler:
                     run = None
 
             if run is None:
-                if not run_is_due(get_last_pipeline_completed_at(conn), now, MIN_INTERVAL_HOURS):
+                if not run_is_due(get_last_pipeline_completed_at(conn), now,
+                                  MIN_INTERVAL_HOURS,
+                                  ANCHOR_HOUR if ANCHOR_HOUR >= 0 else None,
+                                  ANCHOR_GAP_HOURS):
                     return
                 if not self._check_online():
                     return
