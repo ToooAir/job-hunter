@@ -85,6 +85,18 @@ _NON_DE_RE = re.compile(
     r"australia|new zealand|israel|egypt|ägypten|south africa|"
     r"vienna|wien|zurich|zürich|geneva|genève|basel|graz|innsbruck|"
     r"salzburg|linz|san francisco|new york|london|"
+    # major EU cities that appear without a country name — a Spanish/French/…
+    # 5-digit zip ("28046 Madrid") would otherwise pass as a German postal hit
+    r"madrid|barcelona|valencia|sevilla|seville|"
+    r"paris|lyon|marseille|toulouse|"
+    r"rome|roma|milan|milano|turin|torino|"
+    r"amsterdam|rotterdam|utrecht|eindhoven|"
+    r"brussels|bruxelles|antwerp|antwerpen|"
+    r"warsaw|warszawa|krakow|kraków|wroclaw|wrocław|gdansk|gdańsk|"
+    r"prague|praha|brno|bratislava|budapest|bucharest|sofia|athens|"
+    r"dublin|cork|stockholm|gothenburg|göteborg|malmö|malmo|"
+    r"copenhagen|københavn|oslo|helsinki|tallinn|riga|vilnius|"
+    r"porto|zagreb|belgrade|kyiv|kiev|istanbul|"
     # "Lisbonne" contains the pattern "bonn" — veto Lisbon spellings explicitly
     r"lisbon|lisbonne|lissabon)\b",
     re.I,
