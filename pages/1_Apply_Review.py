@@ -58,6 +58,11 @@ _STRINGS = {
         "notes": "備註",
         "save_edits": "存檔(供複製)", "mark_submitted": "標記已投遞",
         "abandon": "放棄", "abandon_reason": "放棄原因(選填)",
+        "abandon_reason_detail": "補充說明(選填)",
+        "reason_expired": "過期/已下架", "reason_wrong-location": "地點不符",
+        "reason_not-qualified": "資格不符", "reason_broken-link": "連結壞/無法投遞",
+        "reason_heavy-form": "表單太重/特殊形式", "reason_duplicate": "重複投遞",
+        "reason_other": "其他",
         "required_mark": "必填",
         "docs_needed": "此表單需你手動附上文件",
         "doc_cl_hint": "(求職信,下方已有文字可貼/另存 PDF)",
@@ -102,6 +107,11 @@ _STRINGS = {
         "notes": "Notes",
         "save_edits": "Save (for copying)", "mark_submitted": "Mark submitted",
         "abandon": "Abandon", "abandon_reason": "Reason (optional)",
+        "abandon_reason_detail": "detail (optional)",
+        "reason_expired": "expired / delisted", "reason_wrong-location": "wrong location",
+        "reason_not-qualified": "not qualified", "reason_broken-link": "broken link / can't apply",
+        "reason_heavy-form": "heavy form / special process", "reason_duplicate": "duplicate",
+        "reason_other": "other",
         "required_mark": "required",
         "docs_needed": "This form needs you to attach",
         "doc_cl_hint": " (cover letter — text is ready below to paste / save as PDF)",
@@ -121,6 +131,13 @@ _STRINGS = {
 def T(key: str) -> str:  # noqa: N802 — same convention as phase3_dashboard
     lang = st.session_state.get("lang", "zh")
     return _STRINGS[lang].get(key, _STRINGS["en"].get(key, key))
+
+
+# Abandon-reason slugs stored verbatim in snapshot notes / job notes, so a
+# later analysis can bucket them without free-text parsing; "" = not chosen
+# (labels come from the reason_* translation keys above).
+_ABANDON_REASONS = ["", "expired", "wrong-location", "not-qualified",
+                    "broken-link", "heavy-form", "duplicate", "other"]
 
 
 def get_conn():
@@ -438,7 +455,11 @@ def _liveness_caption(snap: dict) -> None:
             age = None
     if snap.get("liveness") == "suspicious":
         suffix = f" ({T('verified_ago').format(age)})" if age is not None else ""
-        st.warning(f"⚠️ {T('liveness_suspect')}{suffix}")
+        # lead with the sweep's concrete evidence ("redirected off the
+        # posting: …") so the reviewer can triage without opening the link
+        note = snap.get("liveness_note")
+        prefix = f"`{note}` — " if note else ""
+        st.warning(f"⚠️ {prefix}{T('liveness_suspect')}{suffix}")
     elif age is not None:
         st.caption("✓ " + (T("verified_today") if age <= 0 else T("verified_ago").format(age)))
     elif checked is None:
@@ -557,9 +578,16 @@ def _draft_card(conn, snap: dict, applied_idx: dict) -> None:
                               action_values=field_edits)
             mark_submitted(conn, snap["id"], note="marked submitted in review")
             st.rerun()
-        reason = cols[3].text_input(
-            T("abandon_reason"), key=f"reason_{snap['id']}",
-            label_visibility="collapsed", placeholder=T("abandon_reason"))
+        # Structured reason first (stable slug, machine-bucketable — 26 of 136
+        # past abandons had no reason at all), free text as optional detail.
+        preset = cols[3].selectbox(
+            T("abandon_reason"), _ABANDON_REASONS, key=f"reason_sel_{snap['id']}",
+            format_func=lambda s: T(f"reason_{s}") if s else f"— {T('abandon_reason')}",
+            label_visibility="collapsed")
+        detail = cols[3].text_input(
+            T("abandon_reason_detail"), key=f"reason_{snap['id']}",
+            label_visibility="collapsed", placeholder=T("abandon_reason_detail"))
+        reason = f"{preset}: {detail}" if preset and detail else (preset or detail)
         if cols[2].button(T("abandon"), key=f"abandon_{snap['id']}"):
             abandon_snapshot(conn, snap["id"], reason)
             # The reviewer's abandon is a verdict on the JOB, not just this

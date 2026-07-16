@@ -112,8 +112,10 @@ def apply_result(conn, snapshot_id: int, job_id: str, liveness: str,
         mark_expired(conn, [job_id])
         return "dead"
     conn.execute("UPDATE jobs SET ats_checked_at = ? WHERE id = ?", (now, job_id))
-    conn.execute("UPDATE application_snapshots SET liveness = ? WHERE id = ?",
-                 (liveness, snapshot_id))
+    # the note is the reviewer-facing evidence ("redirected off the posting:
+    # …") — overwritten each sweep so it always reflects the latest verdict
+    conn.execute("UPDATE application_snapshots SET liveness = ?, liveness_note = ?"
+                 " WHERE id = ?", (liveness, note or None, snapshot_id))
     conn.commit()
     return liveness
 
