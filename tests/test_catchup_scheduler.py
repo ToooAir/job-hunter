@@ -115,6 +115,44 @@ class RunIsDueTest(unittest.TestCase):
         self.assertTrue(scheduler.run_is_due("not-a-date", datetime.now(), 20))
 
 
+class AnchorRunIsDueTest(unittest.TestCase):
+    """Anchor + interval dual trigger: fire at the daily anchor on always-on
+    machines (pure interval drifted ~20h later each day into working hours),
+    catch up on wake when asleep at the anchor."""
+
+    def due(self, last, now):
+        return scheduler.run_is_due(
+            last.strftime("%Y-%m-%dT%H:%M:%S") if last else None,
+            now, 20, anchor_hour=7, anchor_gap_hours=6)
+
+    def test_always_on_fires_at_anchor_not_20h_later(self):
+        # yesterday's run at 13:00 — pure interval would wait until 09:00+,
+        # the anchor fires at 07:00 so the run is done before the user is up
+        last = datetime(2026, 7, 15, 13, 0)
+        self.assertFalse(self.due(last, datetime(2026, 7, 16, 6, 59)))
+        self.assertTrue(self.due(last, datetime(2026, 7, 16, 7, 1)))
+
+    def test_ran_after_anchor_not_due_again_today(self):
+        last = datetime(2026, 7, 16, 8, 0)
+        self.assertFalse(self.due(last, datetime(2026, 7, 16, 22, 0)))
+        self.assertTrue(self.due(last, datetime(2026, 7, 17, 7, 1)))
+
+    def test_asleep_at_anchor_catches_up_on_wake(self):
+        # machine slept through 07:00 and woke at 11:30 — due immediately
+        last = datetime(2026, 7, 15, 11, 0)
+        self.assertTrue(self.due(last, datetime(2026, 7, 16, 11, 30)))
+
+    def test_gap_floor_blocks_double_fire(self):
+        # a catch-up run finished just before the anchor — 07:00 must not
+        # trigger a second run minutes later
+        last = datetime(2026, 7, 16, 6, 30)
+        self.assertFalse(self.due(last, datetime(2026, 7, 16, 7, 1)))
+        self.assertTrue(self.due(last, datetime(2026, 7, 17, 7, 1)))
+
+    def test_never_run_is_due(self):
+        self.assertTrue(self.due(None, datetime(2026, 7, 16, 3, 0)))
+
+
 class IsOnlineTest(unittest.TestCase):
     def test_unreachable_host_is_offline(self):
         self.assertFalse(scheduler.is_online("https://127.0.0.1:1/", timeout=1))
