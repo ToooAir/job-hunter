@@ -861,6 +861,32 @@ auto_expire_stale_jobs(conn)
 auto_ghost_stale_applications(conn)
 config = load_config()
 
+
+# The extension books submissions + status changes through apply_api, outside
+# this page's reruns — poll a cheap signature (the 🎯 focus + pipeline-status
+# counts) and pull the whole page forward when it changes, so a job just booked
+# via the extension updates without a manual F5. Mirrors Apply Review's
+# _queue_watch; fetch_jobs is uncached, so the rerun alone shows fresh data.
+@st.fragment(run_every="3s")
+def _booking_watch():
+    c = get_conn()  # own connection: fragment reruns run outside the page's thread
+    try:
+        foc = get_focus(c)
+        applied = c.execute(
+            "SELECT COUNT(*) FROM jobs WHERE status IN "
+            "('applied','interview_1','interview_2','offer','rejected','ghosted')"
+        ).fetchone()[0]
+    finally:
+        c.close()
+    sig = (foc.get("job_id") if foc else None, applied)
+    prev = st.session_state.get("dash_sig")
+    st.session_state["dash_sig"] = sig
+    if prev is not None and prev != sig:
+        st.rerun(scope="app")
+
+
+_booking_watch()
+
 # current answer-panel focus — visible so a stale 🎯 can't misground quietly
 _focus = get_focus(conn)
 if _focus:
