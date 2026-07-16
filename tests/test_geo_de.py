@@ -60,6 +60,16 @@ class TestIsGermanyLocation(unittest.TestCase):
         self.assertFalse(is_germany_location("Innsbruck (Österreich)"))
         self.assertFalse(is_germany_location("Zürich, Switzerland"))
 
+    def test_foreign_zip_without_country_name(self):
+        # Spanish/French zips are 5-digit too — the city must veto the postal
+        # hit even when no country is named ("28046 Madrid" was relabeled
+        # "28046 Madrid, Germany" and drafted before the city veto existed)
+        self.assertFalse(is_germany_location("28046 Madrid"))
+        self.assertFalse(is_germany_location("08018 Barcelona"))
+        self.assertFalse(is_germany_location("75008 Paris"))
+        # and the poisoned appended form stays vetoed (mixed string)
+        self.assertFalse(is_germany_location("28046 Madrid, Germany"))
+
     def test_lisbonne_contains_bonn(self):
         self.assertFalse(is_germany_location("Remote / Lisbonne"))
 

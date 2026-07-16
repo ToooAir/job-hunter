@@ -31,6 +31,31 @@ class TestClassifyRules(unittest.TestCase):
         self.assertEqual(
             classify_rules("We hire from anywhere in the world."), "germany")
 
+    def test_marketing_worldwide_is_not_a_hiring_signal(self):
+        # real mislabels (07-09..15 review queue): "organizations worldwide" /
+        # "millions of people worldwide" in US-only JDs → Remote — Germany
+        self.assertEqual(
+            classify_rules("Impact the security infrastructure of major "
+                           "organizations worldwide. US Pay Range $160,000."),
+            "unclear")
+        self.assertEqual(
+            classify_rules("our mission is to build a worldwide community "
+                           "connected by healthy habits"),
+            "unclear")
+
+    def test_hiring_context_worldwide_still_counts(self):
+        self.assertEqual(
+            classify_rules("We are remote-first and hire worldwide."), "germany")
+        self.assertEqual(
+            classify_rules("This role is remote worldwide."), "germany")
+
+    def test_from_anywhere_with_region_qualifier_is_a_restriction(self):
+        # real mislabel: Taxgpt "Work from anywhere across US, Canada or Mexico"
+        self.assertEqual(
+            classify_rules("Remote-first: Work from anywhere across US, "
+                           "Canada or Mexico."),
+            "unclear")
+
     def test_europe_wide(self):
         self.assertEqual(
             classify_rules("Remote role open across Europe (CET overlap required)."),
