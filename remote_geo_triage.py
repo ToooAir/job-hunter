@@ -83,9 +83,17 @@ WORLDWIDE_LOCATIONS = {
 GERMANY_RE = re.compile(
     r"\b(germany|deutschland|german entity|hamburg|berlin|munich|münchen|"
     r"cologne|köln|frankfurt|stuttgart|düsseldorf|leipzig|hannover)\b", re.I)
+# Hiring-context phrases only. A bare "worldwide" is NOT one: marketing copy
+# ("customers worldwide", "millions of people worldwide") sits in almost every
+# JD and mislabeled US-only jobs as Germany-eligible. "from anywhere" is only
+# trusted when no region qualifier follows ("work from anywhere across US,
+# Canada or Mexico" is a residency restriction, not hire-from-anywhere).
 WORLDWIDE_RE = re.compile(
-    r"\b(work from anywhere|anywhere in the world|from anywhere|worldwide"
-    r"|globally distributed|any country|any location)\b", re.I)
+    r"\b(anywhere in the world"
+    r"|from anywhere(?!\s+(?:across|in|within)\b)"
+    r"|(?:hire|hiring|work|working|remote)\s+worldwide"
+    r"|globally distributed team"
+    r"|any country|any location)\b", re.I)
 EU_RE = re.compile(
     r"\b(europe|european union|eu-based|based in the eu|within the eu|eea|"
     r"cet|cest|central european time)\b", re.I)
