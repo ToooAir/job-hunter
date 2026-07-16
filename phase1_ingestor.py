@@ -82,9 +82,12 @@ def make_id(url: str) -> str:
 
 
 def _url_in_db(conn, url: str) -> bool:
-    """Return True if a job with this URL is already in the DB (cheap pre-fetch check)."""
+    """Return True if a job with this URL is already in the DB (cheap pre-fetch check).
+    Checked by hash-id AND by the url column: the gtj slug resync re-points a
+    row's url while keeping its original id, so the hash alone no longer
+    proves absence."""
     return conn.execute(
-        "SELECT 1 FROM jobs WHERE id = ?", (make_id(url),)
+        "SELECT 1 FROM jobs WHERE id = ? OR url = ?", (make_id(url), url)
     ).fetchone() is not None
 
 
@@ -348,6 +351,92 @@ def _gtj_fetch_listing() -> list[dict] | None:
         return None
 
 
+# City suffix a multi-city posting carries in its slug ("...-mwd---Stuttgart")
+# and title ("... (m/w/d) - Stuttgart"). Stripping it recovers the base form.
+_GTJ_SLUG_CITY_RE = re.compile(r"---[A-Za-z]+$")
+_GTJ_TITLE_CITY_RE = re.compile(r"\s+[-–]\s+[\w\säöüÄÖÜß.-]+$")
+
+
+def _gtj_resync_urls(conn, jobs_all: list[dict]) -> int:
+    """Re-point stored germantechjobs URLs at the posting's current slug.
+
+    The site rotates slugs while the posting lives on: multi-city variants
+    ("...-mwd---Stuttgart") collapse into the base slug, and a company rename
+    re-slugs the whole URL. The stale slug 200-redirects onto a category
+    listing, so downstream liveness checks read a live job as gone (2026-07-16:
+    157 of 210 scored rows redirected; spot checks showed the posting alive
+    under the current slug). Match order: exact slug (untouched) → base slug
+    with the city suffix stripped → normalized title + company prefix, with
+    cityCategory as tie-break. No match = genuinely delisted; left for
+    ats_scan. A repair keeps the row id (snapshots reference it) and resets
+    the ats fields so the new URL gets a fresh scan.
+    """
+    api_slugs = {j["jobUrl"] for j in jobs_all if j.get("jobUrl")}
+
+    def norm(s: str | None) -> str:
+        return re.sub(r"\s+", " ", (s or "").strip().lower())
+
+    def strip_city_title(title: str | None) -> str:
+        stripped = _GTJ_TITLE_CITY_RE.sub("", title or "")
+        return norm(stripped if stripped else title)
+
+    by_title: dict[str, list[dict]] = {}
+    for j in jobs_all:
+        if j.get("jobUrl"):
+            by_title.setdefault(strip_city_title(j.get("name")), []).append(j)
+
+    rows = conn.execute(
+        "SELECT id, url, title, company, location FROM jobs "
+        "WHERE source = 'germantechjobs' AND status IN ('un-scored', 'scored')"
+    ).fetchall()
+
+    updates: list[tuple[str, str]] = []  # (new_url, job_id)
+    claimed: set[str] = set()
+    for r in rows:
+        slug = r["url"].rsplit("/jobs/", 1)[-1]
+        if slug in api_slugs:
+            continue
+        base = _GTJ_SLUG_CITY_RE.sub("", slug)
+        new_slug = base if base != slug and base in api_slugs else None
+        if new_slug is None:
+            cands = [
+                j for j in by_title.get(strip_city_title(r["title"]), [])
+                if norm(j.get("company")).startswith(norm(r["company"])[:12])
+                or norm(r["company"]).startswith(norm(j.get("company"))[:12])
+            ]
+            if len(cands) > 1:
+                cands = [j for j in cands
+                         if (j.get("cityCategory") or "") == (r["location"] or "")]
+            if len(cands) == 1:
+                cand = cands[0]
+                # a candidate that still carries a city suffix is that city's
+                # posting — never re-point a Munich variant at the Bielefeld
+                # one; an unsuffixed base slug covers multiple cities and may
+                # differ in cityCategory
+                if (_GTJ_SLUG_CITY_RE.search(cand["jobUrl"])
+                        and (cand.get("cityCategory") or "") != (r["location"] or "")):
+                    cand = None
+                if cand is not None:
+                    new_slug = cand["jobUrl"]
+        if not new_slug:
+            continue
+        new_url = f"{GTJ_BASE}/jobs/{new_slug}"
+        if new_url in claimed or _url_in_db(conn, new_url):
+            continue  # the canonical row already exists — this variant is a dup
+        claimed.add(new_url)
+        updates.append((new_url, r["id"]))
+
+    for new_url, jid in updates:
+        conn.execute(
+            "UPDATE jobs SET url = ?, apply_url = NULL, ats = NULL, "
+            "ats_checked_at = NULL WHERE id = ?", (new_url, jid))
+    conn.commit()
+    if updates:
+        log.info("germantechjobs: resynced %d stale slugs to current API URLs",
+                 len(updates))
+    return len(updates)
+
+
 def _gtj_fetch_jd_playwright(job_urls: list[str]) -> dict[str, str]:
     """Batch-fetch JDs via Playwright. Returns {jobUrl: jd_text}, or {} if unavailable."""
     try:
@@ -420,6 +509,10 @@ def scrape_germantechjobs(
         return 0, 0
 
     log.info("germantechjobs: %d total listings", len(jobs_all))
+
+    # Re-point rows whose slug the site rotated away before anything
+    # downstream (ats_scan, sweep, reviewer) checks the stale URL.
+    _gtj_resync_urls(conn, jobs_all)
 
     # ── Step 2: filter ────────────────────────────────────────────────────────
     matched = []
