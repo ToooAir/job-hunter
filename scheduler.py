@@ -308,9 +308,11 @@ if __name__ == "__main__":
             "clock arguments %s are deprecated — schedule is interval-based now "
             "(PIPELINE_MIN_INTERVAL_HOURS=%.0fh)", sys.argv[1:], MIN_INTERVAL_HOURS,
         )
+    trigger = (f"daily anchor {ANCHOR_HOUR:02d}:00 (gap floor {ANCHOR_GAP_HOURS:.0f}h)"
+               if ANCHOR_HOUR >= 0 else f"pure interval {MIN_INTERVAL_HOURS:.0f}h")
     log.info(
-        "Catch-up scheduler ready — min interval %.0fh, tick %ds, probe %s",
-        MIN_INTERVAL_HOURS, TICK_SECONDS, PROBE_URL,
+        "Catch-up scheduler ready — %s, tick %ds, probe %s",
+        trigger, TICK_SECONDS, PROBE_URL,
     )
     log.info("Container time: %s", datetime.now().isoformat())
 
