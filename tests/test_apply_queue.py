@@ -249,6 +249,26 @@ class RankingTest(QueueTestBase):
 
 
 class DedupGateTest(QueueTestBase):
+    def test_same_title_variant_in_batch_blocked(self):
+        # multi-city variants of one posting (Breuninger ×3): one draft only,
+        # the other variants blocked — not merely warned — within the batch
+        make_job(self.conn, "v1", company="Breuninger GmbH", score=90,
+                 title="AI Engineer (m/w/d)")
+        make_job(self.conn, "v2", company="Breuninger", score=85,
+                 title="AI Engineer  (m/w/d)")   # whitespace variant
+        result = build_queue(self.conn, now=NOW)
+        self.assertEqual(self.queue_ids(result), ["v1"])
+        self.assertEqual(result["blocked"][0]["id"], "v2")
+        self.assertIn("same-title variant", result["blocked"][0]["dedup_reason"])
+
+    def test_different_role_same_company_still_warns(self):
+        make_job(self.conn, "r1", company="Acme", score=90, title="Backend Engineer")
+        make_job(self.conn, "r2", company="Acme", score=85, title="Data Engineer")
+        result = build_queue(self.conn, now=NOW)
+        self.assertEqual(self.queue_ids(result), ["r1", "r2"])
+        second = next(j for j in result["queue"] if j["id"] == "r2")
+        self.assertEqual(second["dedup"], "warn")
+
     def test_block_company_in_pipeline(self):
         make_job(self.conn, "applied", company="Acme GmbH", status="applied")
         make_job(self.conn, "new", company="Acme")  # suffix differs, must still match

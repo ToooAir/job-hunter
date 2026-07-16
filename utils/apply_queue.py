@@ -189,6 +189,10 @@ class DedupContext:
         self.in_flight = in_flight                        # norm company -> job_id
         self.applied_jd_hashes = applied_jd_hashes        # jd_hash -> job_id
         self.batch_companies: dict[str, str] = {}         # norm company -> job_id (this batch)
+        # (norm company, norm title) -> job_id — multi-city variants of one
+        # posting (Breuninger ×3, heise/gtj city-suffixed reposts) collapse to
+        # one draft per batch instead of one per city
+        self.batch_titles: dict[tuple[str, str], str] = {}
 
     @classmethod
     def from_db(cls, conn, now: datetime | None = None):
@@ -243,12 +247,23 @@ def dedup_gate(job: dict, ctx: DedupContext) -> tuple[str, str]:
     if company in ctx.in_flight:
         return "block", f"company has in-flight snapshot (job {ctx.in_flight[company]})"
 
+    title = re.sub(r"\s+", " ", (job.get("title") or "").strip().lower())
+    if title and (company, title) in ctx.batch_titles:
+        # same company AND same title in one batch = a multi-city variant of
+        # one posting — a second draft is pure generation + review noise (the
+        # sibling's submit auto-revokes it anyway). A genuinely different role
+        # at the same company stays a warn below, not a block.
+        return "block", (f"same-title variant in batch "
+                         f"(job {ctx.batch_titles[(company, title)]})")
+
     verdict, reason = "ok", ""
     if job.get("jd_hash") and job["jd_hash"] in ctx.applied_jd_hashes:
         verdict, reason = "warn", f"same JD applied as job {ctx.applied_jd_hashes[job['jd_hash']]}"
     elif company in ctx.batch_companies:
         verdict, reason = "warn", f"2nd job of company in batch (job {ctx.batch_companies[company]})"
     ctx.batch_companies.setdefault(company, job["id"])
+    if title:
+        ctx.batch_titles.setdefault((company, title), job["id"])
     return verdict, reason
 
 
