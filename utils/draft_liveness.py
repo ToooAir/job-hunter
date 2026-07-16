@@ -14,7 +14,9 @@ Two stages (cost vs reliability, per user decision):
      careers page that always loads (the zombie-draft blind spot).
   A. cheap HTTP GET — 404/410, a deep path that redirected to the bare host,
      or a 200 whose visible text says the posting is over (soft-gone) =
-     clear-dead, no browser needed.
+     clear-dead, no browser needed. A same-board redirect onto a listing
+     page (slug dropped) is flagged suspicious instead — almost surely taken
+     down, but a redirect is not a takedown notice.
   B. headless confirm (only the rest) — the real liveness signal is whether the
      application FORM is still there, reusing Stage 1's extraction + verdict.
 
@@ -35,7 +37,7 @@ from urllib.parse import urlparse
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from utils.db import init_db, mark_expired  # noqa: E402
-from utils.gone_text import soft_gone  # noqa: E402
+from utils.gone_text import redirect_off_posting, soft_gone  # noqa: E402
 from utils.snapshot_io import abandon_snapshot  # noqa: E402
 
 DEFAULT_DB_PATH = str(Path(__file__).resolve().parents[1] / "data" / "jobs.db")
@@ -195,6 +197,10 @@ def sweep_drafts(conn, http_get=None, headless_verdicts=None,
             record(d, "dead", f"http {status}")
         elif gone_phrase:
             record(d, "dead", f"soft-gone: {gone_phrase[:60]}")
+        elif redirect_off_posting(url, final_url):
+            # landed on a listing/other page of the same board — almost surely
+            # taken down, but a redirect is not a takedown notice: flag, keep
+            record(d, "suspicious", f"redirected off the posting: {final_url}")
         elif not _has_actions(d.get("form_payload")):
             # Manual Tier-3 draft: there was never a fillable form to lose, so the
             # page simply loading is liveness enough — don't run headless or flag it.
