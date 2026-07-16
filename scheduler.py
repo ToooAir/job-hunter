@@ -68,13 +68,18 @@ STAGES = ("phase1_ingestor.py", "remote_geo_triage.py", "phase2_scorer.py",
 BEST_EFFORT_STAGES = frozenset({"remote_geo_triage.py", "ats_scan.py", "apply_stage1.py"})
 # Extra CLI args per stage. remote_geo_triage runs BEFORE phase2_scorer: its
 # rule verdicts are free, and a "Remote — non-EU" label lets the scorer skip
-# the job before any LLM spend (rules-only here; the --llm pass stays manual).
-# It thereby also precedes ats_scan, whose GERMANY_LIKE filter only sees the
-# Germany-eligible ones after relabeling. ats_scan must run before
-# apply_stage1: it backfills jobs.ats, and under APPLY_ADDRESSABLE_ONLY a
-# NULL-ats job is dropped before the needs_recheck branch, so Pass A alone
-# would never classify it.
-STAGE_ARGS = {"remote_geo_triage.py": ("--write-db",), "ats_scan.py": ("--write-db",)}
+# the job before any LLM spend. --llm (added 2026-07-16, was manual: 107
+# scored-80+ bare-Remote jobs had piled up unclassified — the queue's best
+# untapped supply) is self-limiting: every verdict incl. "Remote — unclear"
+# is persisted and leaves the fetch pool, so a daily run only bills the
+# handful of newly scored 80+ jobs; jobs scored later the same run get their
+# LLM verdict on the next day's run. remote_geo_triage also precedes
+# ats_scan, whose GERMANY_LIKE filter only sees the Germany-eligible ones
+# after relabeling. ats_scan must run before apply_stage1: it backfills
+# jobs.ats, and under APPLY_ADDRESSABLE_ONLY a NULL-ats job is dropped
+# before the needs_recheck branch, so Pass A alone would never classify it.
+STAGE_ARGS = {"remote_geo_triage.py": ("--write-db", "--llm"),
+              "ats_scan.py": ("--write-db",)}
 
 LOG_FILE = Path(__file__).parent / "logs" / "pipeline.log"
 
