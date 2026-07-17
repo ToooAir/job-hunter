@@ -133,11 +133,12 @@ def T(key: str) -> str:  # noqa: N802 — same convention as phase3_dashboard
     return _STRINGS[lang].get(key, _STRINGS["en"].get(key, key))
 
 
-# Abandon-reason slugs stored verbatim in snapshot notes / job notes, so a
-# later analysis can bucket them without free-text parsing; "" = not chosen
-# (labels come from the reason_* translation keys above).
-_ABANDON_REASONS = ["", "expired", "wrong-location", "not-qualified",
-                    "broken-link", "heavy-form", "duplicate", "other"]
+# Abandon-reason slugs stored verbatim in snapshot notes / job notes;
+# "" = not chosen (labels come from the reason_* translation keys above).
+# Source of truth lives next to the tally that buckets them.
+from utils.snapshot_io import ABANDON_REASON_SLUGS  # noqa: E402
+
+_ABANDON_REASONS = ["", *ABANDON_REASON_SLUGS]
 
 
 def get_conn():
