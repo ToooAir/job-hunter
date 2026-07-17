@@ -148,21 +148,31 @@ GERMANY_KEYWORDS = [
 _LEGAL_SUFFIX_RE = re.compile(
     r"\s*(?:"
     r"gmbh\s*&\s*co\.?\s*kg|se\s*&\s*co\.?\s*kg|&\s*co\.?\s*kg|co\.?\s*kg"
-    r"|gmbh|ag|se|kg|inc\.?|ltd\.?|llc|ug(?:\s*\(haftungsbeschränkt\))?"
+    r"|gmbh|ag|se|kgaa|kg|inc\.?|ltd\.?|limited|llc|plc"
+    r"|ug(?:\s*\(haftungsbeschränkt\))?"
     r")\s*$",
     re.IGNORECASE,
 )
 
 
 def normalize_company(name: str) -> str:
-    """Lowercased company name with legal suffixes stripped, for dedup matching."""
+    """Squashed company key for dedup matching: lowercase, legal suffixes
+    stripped, then every non-alphanumeric character dropped.
+
+    The squash step exists because real double-applies slipped through on
+    pure cosmetic variants: '1KOMMA5˚' vs '1KOMMA5°' (unicode confusable),
+    'Klimarechenzentrum' vs 'Klima rechenzentrum' (source-mangled spacing),
+    'AlephAlpha' vs 'Aleph Alpha'. Distinct companies differing only in
+    punctuation are practically nonexistent; same-company punctuation
+    variants demonstrably are.
+    """
     norm = re.sub(r"\s+", " ", (name or "").strip().lower())
     while True:
         stripped = _LEGAL_SUFFIX_RE.sub("", norm).rstrip(" ,.-")
         if stripped == norm or not stripped:
             break
         norm = stripped
-    return norm
+    return "".join(c for c in norm if c.isalnum())
 
 
 def _norm_title(title: str | None) -> str:
