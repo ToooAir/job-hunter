@@ -35,7 +35,7 @@ Dedup gate (per candidate, on normalized company name):
           second job of the same company within this batch, or a different
           role at a company whose rejection cooled off
 
-Budget: env APPLY_DAILY_BUDGET (default 25) caps the queue; the rest is
+Budget: env APPLY_DAILY_BUDGET (default 35) caps the queue; the rest is
 reported as over_budget.
 
 Dry run (zero writes):
@@ -54,7 +54,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from utils.db import IN_FLIGHT_SNAPSHOT_STATUSES, init_db  # noqa: E402
 
 DEFAULT_DB_PATH = str(Path(__file__).resolve().parents[1] / "data" / "jobs.db")
-DEFAULT_BUDGET = 25
+DEFAULT_BUDGET = 35
 LIVENESS_MAX_AGE_DAYS = 7
 FRESH_BUCKET_DAYS = 3
 DEAD_ATS = ("gone", "fetch-error")
