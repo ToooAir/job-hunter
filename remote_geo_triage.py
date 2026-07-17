@@ -32,6 +32,7 @@ out, which is the current (implicit) behaviour made explicit.
 
 Pass 1 is regex rules over the JD text (free, runs on the whole bucket).
 Pass 2 (--llm) sends still-unclear jobs with match_score >= --llm-min-score
+(default: apply_queue.MIN_B_SCORE, so every queue-grade job gets classified)
 to the LLM via the shared apply_llm plumbing. Un-scored jobs have no
 match_score yet, so the LLM gate naturally skips them — they are picked up
 by a later --llm run once scored. German-language JDs may miss the English
@@ -41,7 +42,7 @@ and get a second rule pass (with translation) on the next daily run.
 Usage:
     python remote_geo_triage.py                  # dry run, rules only
     python remote_geo_triage.py --write-db       # rules, write labels
-    python remote_geo_triage.py --write-db --llm # + LLM pass on unclear 80+
+    python remote_geo_triage.py --write-db --llm # + LLM pass on unclear B65+
 """
 
 import argparse
@@ -54,7 +55,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from utils.apply_queue import GERMANY_KEYWORDS  # noqa: E402 — pure stdlib
+from utils.apply_queue import GERMANY_KEYWORDS, MIN_B_SCORE  # noqa: E402 — pure stdlib
 from utils.geo_de import is_germany_location  # noqa: E402
 
 ROOT = Path(__file__).parent
@@ -205,7 +206,10 @@ def main():
                         help="write the new location labels back to the jobs table")
     parser.add_argument("--llm", action="store_true",
                         help="LLM pass on rule-unclear jobs (score gate below)")
-    parser.add_argument("--llm-min-score", type=int, default=80)
+    # Aligned with the queue's B floor: any job good enough to draft is worth
+    # one cheap classify call. 80 (until 2026-07-17) left B65-79 bare-Remote
+    # jobs permanently queue-ineligible.
+    parser.add_argument("--llm-min-score", type=int, default=MIN_B_SCORE)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--db", default=str(DB_PATH))
     args = parser.parse_args()
