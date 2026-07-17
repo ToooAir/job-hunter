@@ -285,12 +285,23 @@ class DedupGateTest(QueueTestBase):
         self.assertEqual(self.queue_ids(result), [])
         self.assertEqual(result["blocked"][0]["id"], "new")
 
-    def test_ghosted_company_past_cooldown_released(self):
+    def test_ghosted_company_past_cooldown_released_with_warn(self):
+        # released into the queue, but visibly: the reviewer must see "we
+        # applied here before" (DKRZ case — silent release hid a re-apply)
         make_job(self.conn, "ghost", company="GhostCo", status="ghosted",
                  applied_at=_iso(NOW - timedelta(days=90)))
         make_job(self.conn, "new", company="GhostCo")
         result = build_queue(self.conn, now=NOW)
         self.assertEqual(self.queue_ids(result), ["new"])
+        self.assertEqual(result["queue"][0]["dedup"], "warn")
+        self.assertIn("no reply", result["queue"][0]["dedup_reason"])
+
+    def test_ghosted_missing_applied_at_fails_closed(self):
+        make_job(self.conn, "ghost", company="GhostCo", status="ghosted")  # no applied_at
+        make_job(self.conn, "new", company="GhostCo")
+        result = build_queue(self.conn, now=NOW)
+        self.assertEqual(self.queue_ids(result), [])
+        self.assertIn("pipeline", result["blocked"][0]["dedup_reason"])
 
     def test_ghosted_past_cooldown_but_rejected_keeps_block(self):
         # a stronger terminal status on the same company wins over the cooled ghost
