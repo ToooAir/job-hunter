@@ -369,6 +369,11 @@ def main() -> None:
     n_before_gate = len(states)
     states = skip_unappliable(conn, states, dry_run=args.dry_run)
     n_unappliable = n_before_gate - len(states)
+    # Guardian dial: 7-day abandon-reason tally, printed with the final
+    # accounting. A bucket suddenly getting fat = run a /guardian pass.
+    from utils.snapshot_io import abandon_tally
+    tally = abandon_tally(conn)
+    tally_line = ", ".join(f"{k} {v}" for k, v in tally.most_common()) or "none"
     conn.close()
 
     from utils.apply_llm import CALL_STATS
@@ -411,6 +416,7 @@ def main() -> None:
     for tier in sorted(by_tier):
         print(f"  Tier {tier}: {by_tier[tier]}")
     print(f"  填值 actions:確定性 {det} / LLM+CL {llm};LLM 呼叫 {CALL_STATS['calls']} 次")
+    print(f"  放棄近7天:{tally_line}")
     if failures:
         for f in failures:
             print(f"  FAILED {f['job']['company']}: {f['error']}")

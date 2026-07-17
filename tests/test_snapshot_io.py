@@ -18,6 +18,7 @@ from utils.db import (  # noqa: E402
 )
 from utils.snapshot_io import (  # noqa: E402
     abandon_snapshot,
+    abandon_tally,
     edit_snapshot,
     fetch_work,
     mark_submitted,
@@ -212,6 +213,65 @@ class SnapshotIOTest(unittest.TestCase):
         mark_submitted(self.conn, sid)
         with self.assertRaises(ValueError):
             edit_snapshot(self.conn, sid, cover_letter="too late")
+
+
+class AbandonTallyTest(unittest.TestCase):
+    """Guardian dial: bucketed abandon reasons over a sliding window."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.conn = init_db(str(Path(self.tmp.name) / "t.db"))
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def _abandoned(self, jid, note_ts, reason):
+        self.conn.execute(
+            "INSERT INTO jobs (id, company, title, url, source, raw_jd_text,"
+            " fetched_at, status) VALUES (?, 'Acme', 'Eng', ?, 't', 'jd',"
+            " '2026-07-01T08:00:00', 'scored')", (jid, f"https://x.com/{jid}"))
+        sid = create_application_snapshot(self.conn, jid, status="draft")
+        self.conn.execute(
+            "UPDATE application_snapshots SET status='abandoned', notes=?"
+            " WHERE id=?", (f"pass-a: ok\n[{note_ts}] abandoned: {reason}", sid))
+        self.conn.commit()
+
+    def test_buckets_slugs_auto_reasons_and_free_text(self):
+        from datetime import datetime
+        now = datetime(2026, 7, 17, 12, 0, 0)
+        self._abandoned("j1", "2026-07-16T10:00:00", "expired")
+        self._abandoned("j2", "2026-07-16T10:00:00", "wrong-location: US remote")
+        self._abandoned("j3", "2026-07-15T09:00:00", "liveness sweep: http 410")
+        self._abandoned("j4", "2026-07-15T09:00:00",
+                        "company already applied via snapshot #7")
+        self._abandoned("j5", "2026-07-14T09:00:00", "Werkstudent & 德文缺")
+        t = abandon_tally(self.conn, days=7, now=now)
+        self.assertEqual(t, {"expired": 1, "wrong-location": 1,
+                             "liveness-sweep": 1, "variant-revoked": 1,
+                             "free-text": 1})
+
+    def test_window_excludes_old_abandons(self):
+        from datetime import datetime
+        now = datetime(2026, 7, 17, 12, 0, 0)
+        self._abandoned("old", "2026-07-01T10:00:00", "expired")
+        self._abandoned("new", "2026-07-16T10:00:00", "expired")
+        self.assertEqual(abandon_tally(self.conn, days=7, now=now),
+                         {"expired": 1})
+
+    def test_last_abandon_note_wins(self):
+        # a regenerated-then-reabandoned snapshot keeps several notes;
+        # only the latest reason counts
+        from datetime import datetime
+        now = datetime(2026, 7, 17, 12, 0, 0)
+        self._abandoned("j1", "2026-07-16T10:00:00", "expired")
+        self.conn.execute(
+            "UPDATE application_snapshots SET notes = notes || ?"
+            " WHERE job_id='j1'",
+            ("\n[2026-07-16T11:00:00] abandoned: broken-link",))
+        self.conn.commit()
+        self.assertEqual(abandon_tally(self.conn, days=7, now=now),
+                         {"broken-link": 1})
 
 
 if __name__ == "__main__":
