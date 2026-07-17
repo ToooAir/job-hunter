@@ -32,8 +32,9 @@ Dedup gate (per candidate, on normalized company name):
           APPLY_REJECT_COOLDOWN_DAYS), another job of the same company has an
           in-flight snapshot, or the exact title was previously rejected
   warn  — same jd_hash already applied under another job (recruiter repost),
-          second job of the same company within this batch, or a different
-          role at a company whose rejection cooled off
+          second job of the same company within this batch, a different
+          role at a company whose rejection cooled off, or a company we
+          ghosted past the cooldown (re-applying is fine — but visibly)
 
 Budget: env APPLY_DAILY_BUDGET (default 35) caps the queue; the rest is
 reported as over_budget.
@@ -201,13 +202,16 @@ class DedupContext:
 
     def __init__(self, pipeline_companies, in_flight, applied_jd_hashes,
                  cooled_rejected=None, rejected_titles=None,
-                 reject_cooldown_days=REJECT_COOLDOWN_DAYS):
+                 reject_cooldown_days=REJECT_COOLDOWN_DAYS,
+                 cooled_ghosted=None, ghost_cooldown_days=GHOST_COOLDOWN_DAYS):
         self.pipeline_companies = pipeline_companies      # norm company -> status
         self.in_flight = in_flight                        # norm company -> job_id
         self.applied_jd_hashes = applied_jd_hashes        # jd_hash -> job_id
         self.cooled_rejected = cooled_rejected or set()   # norm company (rejection cooled off)
         self.rejected_titles = rejected_titles or set()   # (norm company, norm title)
         self.reject_cooldown_days = reject_cooldown_days
+        self.cooled_ghosted = cooled_ghosted or set()     # norm company (ghost cooled off)
+        self.ghost_cooldown_days = ghost_cooldown_days
         self.batch_companies: dict[str, str] = {}         # norm company -> job_id (this batch)
         # (norm company, norm title) -> job_id — multi-city variants of one
         # posting (Breuninger ×3, heise/gtj city-suffixed reposts) collapse to
@@ -225,17 +229,21 @@ class DedupContext:
         pipeline: dict[str, str] = {}
         cooled_rejected: set[str] = set()
         rejected_titles: set[tuple[str, str]] = set()
+        cooled_ghosted: set[str] = set()
         for r in conn.execute(
             f"SELECT company, title, status, applied_at FROM jobs WHERE status IN ({placeholders})",
             PIPELINE_STATUSES,
         ):
             company = normalize_company(r["company"])
             # A company we ghosted before the cooldown never rejected us — release
-            # it so a new role there can be applied to. Unknown applied_at (should
-            # not happen for ghosted) fails closed: keep blocking.
+            # it so a new role there can be applied to, but as a warn, not
+            # silently: cross-source name variants (DKRZ German vs English name)
+            # make "have I applied here?" a human question. Unknown applied_at
+            # (should not happen for ghosted) fails closed: keep blocking.
             if r["status"] == "ghosted":
                 applied = _parse_dt(r["applied_at"])
                 if applied is not None and applied < ghost_cutoff:
+                    cooled_ghosted.add(company)
                     continue
             if r["status"] == "rejected":
                 # The rejected role's title blocks forever (a repost is the same
@@ -271,7 +279,8 @@ class DedupContext:
         }
         return cls(pipeline, in_flight, applied_hashes,
                    cooled_rejected=cooled_rejected, rejected_titles=rejected_titles,
-                   reject_cooldown_days=reject_days)
+                   reject_cooldown_days=reject_days,
+                   cooled_ghosted=cooled_ghosted, ghost_cooldown_days=cooldown_days)
 
 
 def dedup_gate(job: dict, ctx: DedupContext) -> tuple[str, str]:
@@ -307,6 +316,9 @@ def dedup_gate(job: dict, ctx: DedupContext) -> tuple[str, str]:
     elif company in ctx.cooled_rejected:
         verdict, reason = "warn", (f"rejected >{ctx.reject_cooldown_days}d ago — "
                                    "different role, human decides")
+    elif company in ctx.cooled_ghosted:
+        verdict, reason = "warn", (f"applied >{ctx.ghost_cooldown_days}d ago, "
+                                   "no reply — re-apply is a human decision")
     ctx.batch_companies.setdefault(company, job["id"])
     if title:
         ctx.batch_titles.setdefault((company, title), job["id"])
