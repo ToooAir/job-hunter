@@ -59,20 +59,38 @@ def make_job(conn, job_id, *, company="Acme", grade="A", score=80, status="score
 
 class NormalizeCompanyTest(unittest.TestCase):
     def test_strips_german_legal_suffixes(self):
-        self.assertEqual(normalize_company("Aleph Alpha GmbH"), "aleph alpha")
+        self.assertEqual(normalize_company("Aleph Alpha GmbH"), "alephalpha")
         self.assertEqual(normalize_company("Allianz SE"), "allianz")
         self.assertEqual(normalize_company("Siemens AG"), "siemens")
         self.assertEqual(normalize_company("Otto GmbH & Co. KG"), "otto")
         self.assertEqual(normalize_company("Beispiel UG (haftungsbeschränkt)"), "beispiel")
+        self.assertEqual(normalize_company("Merck KGaA"), "merck")
 
     def test_strips_international_suffixes(self):
         self.assertEqual(normalize_company("Foo Inc."), "foo")
         self.assertEqual(normalize_company("Bar Ltd"), "bar")
+        self.assertEqual(normalize_company("Sopra Steria Limited"), "soprasteria")
+        self.assertEqual(normalize_company("Hays plc"), "hays")
 
     def test_suffix_only_as_trailing_token(self):
         # "ag"/"se" inside a word must survive
-        self.assertEqual(normalize_company("Montag Media"), "montag media")
-        self.assertEqual(normalize_company("Hanse Digital"), "hanse digital")
+        self.assertEqual(normalize_company("Montag Media"), "montagmedia")
+        self.assertEqual(normalize_company("Hanse Digital"), "hansedigital")
+
+    def test_squash_matches_observed_double_apply_variants(self):
+        # every pair below produced a real duplicate application before the
+        # squash step (2026-07 alias scan)
+        self.assertEqual(normalize_company("1KOMMA5˚"),  # U+02DA ring above
+                         normalize_company("1KOMMA5° GmbH"))  # U+00B0 degree
+        self.assertEqual(normalize_company("Deutsches Klimarechenzentrum GmbH"),
+                         normalize_company("Deutsches      Klima rechenzentrum GmbH"))
+        self.assertEqual(normalize_company("AlephAlpha"),
+                         normalize_company("Aleph Alpha GmbH"))
+
+    def test_squash_keeps_distinct_companies_distinct(self):
+        self.assertNotEqual(normalize_company("H&S"), normalize_company("H&Z"))
+        self.assertNotEqual(normalize_company("Sopra Steria"),
+                            normalize_company("Sopra"))
 
 
 class TopupBudgetTest(unittest.TestCase):
