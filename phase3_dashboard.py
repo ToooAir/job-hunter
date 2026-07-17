@@ -505,7 +505,28 @@ def T(key: str) -> str:  # noqa: N802
     return STRINGS[_lang()].get(key, STRINGS["en"].get(key, key))
 
 
+# ── View-setting persistence (URL query params) ───────────────────────────────
+# A backgrounded dashboard tab drops its websocket while the user fills forms
+# via the extension; the reconnect starts a fresh session, so session-state
+# widgets snap back to their defaults — to the user it looks like the
+# auto-refresh did an F5. Filters and the language toggle are mirrored into
+# the URL: on a fresh session the query params seed the widget defaults, and
+# within a session live widget state wins as usual.
+
+
+def _qp_list(name: str, allowed: list[str], fallback: list[str]) -> list[str]:
+    """Multiselect default from a comma-joined query param; absent → fallback.
+    An empty param is a deliberate cleared selection, not an absence."""
+    raw = st.query_params.get(name)
+    if raw is None:
+        return fallback
+    return [v for v in raw.split(",") if v in allowed]
+
+
 # ── Language toggle (sidebar) ─────────────────────────────────────────────────
+
+if "lang" not in st.session_state and st.query_params.get("ui") in ("zh", "en"):
+    st.session_state["lang"] = st.query_params["ui"]
 
 _lang_map = {"中文": "zh", "English": "en"}
 _lang_display = st.sidebar.radio(
@@ -1029,54 +1050,78 @@ with st.expander(T("filter_expander"), expanded=True):
     _fc1, _fc2, _fc3, _fc4 = st.columns([1, 1.5, 3, 1.5])
     with _fc1:
         fit_grade_filter = st.multiselect(
-            T("filter_grade"), ["A", "B", "C"], default=["A", "B"],
+            T("filter_grade"), ["A", "B", "C"],
+            default=_qp_list("grade", ["A", "B", "C"], ["A", "B"]),
             key="filter_grade",
         )
     with _fc2:
+        _lang_opts = ["en_required", "de_plus", "de_required", "unknown"]
         lang_filter = st.multiselect(
-            T("filter_lang"),
-            ["en_required", "de_plus", "de_required", "unknown"],
-            default=["en_required", "de_plus", "unknown"],
+            T("filter_lang"), _lang_opts,
+            default=_qp_list("jdlang", _lang_opts,
+                             ["en_required", "de_plus", "unknown"]),
             key="filter_lang",
         )
     with _fc3:
+        _src_opts = ["arbeitnow", "englishjobs", "remotive", "jobicy",
+                     "relocateme", "bundesagentur", "greenhouse", "lever",
+                     "wearedevelopers", "heise", "jobware", "ashby", "wttj",
+                     "weworkremotely", "personio", "germantechjobs",
+                     "linkedin", "stepstone", "other"]
         source_filter = st.multiselect(
-            T("filter_source"),
-            ["arbeitnow", "englishjobs", "remotive", "jobicy",
-             "relocateme", "bundesagentur", "greenhouse", "lever",
-             "wearedevelopers", "heise", "jobware", "ashby", "wttj",
-             "weworkremotely", "personio", "germantechjobs",
-             "linkedin", "stepstone", "other"],
-            default=["arbeitnow", "englishjobs", "bundesagentur", "greenhouse",
-                     "lever", "wearedevelopers", "heise", "jobware", "ashby",
-                     "wttj", "personio", "germantechjobs",
-                     "linkedin", "stepstone", "other"],
+            T("filter_source"), _src_opts,
+            default=_qp_list(
+                "src", _src_opts,
+                ["arbeitnow", "englishjobs", "bundesagentur", "greenhouse",
+                 "lever", "wearedevelopers", "heise", "jobware", "ashby",
+                 "wttj", "personio", "germantechjobs",
+                 "linkedin", "stepstone", "other"]),
             key="filter_source",
         )
     with _fc4:
+        _status_opts = ["un-scored", "scored", "applied", "interview_1",
+                        "interview_2", "offer", "rejected", "ghosted",
+                        "skipped", "error", "expired"]
         status_filter = st.multiselect(
-            T("filter_status"),
-            ["un-scored", "scored", "applied", "interview_1", "interview_2",
-             "offer", "rejected", "ghosted", "skipped", "error", "expired"],
-            default=["scored"],
+            T("filter_status"), _status_opts,
+            default=_qp_list("status", _status_opts, ["scored"]),
             key="filter_status",
         )
     _fl1, _fl2, _fl3 = st.columns([3, 1, 1.5])
     with _fl1:
         location_filter = st.text_input(
             T("filter_location"),
+            value=st.query_params.get("loc", ""),
             placeholder=T("filter_location_ph"),
             key="filter_location",
         )
     with _fl2:
         _age_options = [14, 30, 45, 60, T("filter_age_no_limit")]
+        # persisted as the number of days or "none" — never the localized label
+        _age_idx = {"14": 0, "30": 1, "45": 2, "60": 3, "none": 4}.get(
+            st.query_params.get("age", "45"), 2)
         _age_sel = st.selectbox(
-            T("filter_age"), _age_options, index=2, key="filter_age",
+            T("filter_age"), _age_options, index=_age_idx, key="filter_age",
         )
         max_age_days = None if _age_sel == T("filter_age_no_limit") else int(_age_sel)
     with _fl3:
         st.write("")
-        remote_filter = st.checkbox(T("filter_remote"), value=False, key="filter_remote")
+        remote_filter = st.checkbox(
+            T("filter_remote"), value=st.query_params.get("remote") == "1",
+            key="filter_remote")
+
+# Mirror the chosen view into the URL (no-op when unchanged). Only read on a
+# fresh session, so live widget state always wins over a stale URL.
+st.query_params.update({
+    "ui": st.session_state["lang"],
+    "grade": ",".join(fit_grade_filter),
+    "jdlang": ",".join(lang_filter),
+    "src": ",".join(source_filter),
+    "status": ",".join(status_filter),
+    "loc": location_filter,
+    "age": "none" if max_age_days is None else str(max_age_days),
+    "remote": "1" if remote_filter else "0",
+})
 
 # ── Job table (full width) ─────────────────────────────────────────────────────
 
