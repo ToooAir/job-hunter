@@ -42,6 +42,8 @@ class TestIsGermanyLocation(unittest.TestCase):
     def test_hq_small_towns(self):
         self.assertTrue(is_germany_location("Renningen"))
         self.assertTrue(is_germany_location("Walldorf"))
+        self.assertTrue(is_germany_location("Ditzingen"))      # Trumpf HQ
+        self.assertTrue(is_germany_location("Barsinghausen"))
 
     # ── veto: pattern/postal hit inside a non-German location ──
     def test_non_de_country_vetoes_city_hit(self):

@@ -68,6 +68,7 @@ GERMANY_PATTERNS = [
     "fulda", "stralsund", "walldorf", "heilbronn", "renningen",
     "verl", "tholey", "gräfelfing", "graefelfing", "aschheim",
     "taufkirchen", "glinde", "schenefeld", "prüm", "pruem",
+    "ditzingen", "barsinghausen",
 ]
 
 # Veto list for is_germany_location(). Country names seen in the location
