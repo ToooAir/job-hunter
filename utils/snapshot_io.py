@@ -18,7 +18,10 @@ Legal transitions enforced here:
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
+from collections import Counter
+from datetime import datetime, timedelta
 
 from utils.db import (
     _now_local_iso,
@@ -57,6 +60,55 @@ def _get(conn: sqlite3.Connection, snapshot_id: int) -> dict:
 def _append_note(existing: str | None, note: str) -> str:
     line = f"[{_now_local_iso()}] {note}"
     return f"{existing}\n{line}" if existing else line
+
+
+# Structured abandon-reason slugs, single source of truth — the review page
+# dropdown offers these (plus "" = not chosen) and stores them verbatim in
+# notes, so the tally below can bucket without free-text parsing.
+ABANDON_REASON_SLUGS = ("expired", "wrong-location", "not-qualified",
+                       "broken-link", "heavy-form", "duplicate", "other")
+
+_ABANDON_NOTE_RE = re.compile(
+    r"\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})[^\]]*\] abandoned: (.+)")
+
+
+def abandon_tally(conn: sqlite3.Connection, days: int = 7,
+                  now: datetime | None = None) -> Counter:
+    """Bucketed abandon reasons over the last `days` days (guardian dial).
+
+    Buckets: the structured slugs, plus 'liveness-sweep' (auto pruning),
+    'variant-revoked' (mark_submitted sibling cleanup), and 'free-text'
+    (pre-slug or hand-typed reasons). A bucket suddenly getting fat is the
+    signal to run a /guardian pass — the tally itself never judges.
+    """
+    now = now or datetime.now()
+    cutoff = now - timedelta(days=days)
+    tally: Counter = Counter()
+    for row in conn.execute(
+        "SELECT notes FROM application_snapshots "
+        "WHERE status = 'abandoned' AND notes LIKE '%abandoned: %'"
+    ):
+        last = None
+        for m in _ABANDON_NOTE_RE.finditer(row["notes"] or ""):
+            last = m
+        if last is None:
+            continue
+        try:
+            ts = datetime.fromisoformat(last.group(1))
+        except ValueError:
+            continue
+        if ts < cutoff:
+            continue
+        reason = last.group(2).strip()
+        if reason.startswith("liveness sweep"):
+            bucket = "liveness-sweep"
+        elif reason.startswith("company already applied"):
+            bucket = "variant-revoked"
+        else:
+            head = reason.split(":", 1)[0].strip()
+            bucket = head if head in ABANDON_REASON_SLUGS else "free-text"
+        tally[bucket] += 1
+    return tally
 
 
 def get_snapshot(conn: sqlite3.Connection, snapshot_id: int) -> dict:
