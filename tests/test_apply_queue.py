@@ -303,7 +303,7 @@ class DedupGateTest(QueueTestBase):
 
     def test_rejected_company_within_cooldown_still_blocks(self):
         make_job(self.conn, "rej", company="NoCo", status="rejected",
-                 applied_at=_iso(NOW - timedelta(days=30)))
+                 applied_at=_iso(NOW - timedelta(days=10)))
         make_job(self.conn, "new", company="NoCo", title="Data Engineer")
         result = build_queue(self.conn, now=NOW)
         self.assertEqual(self.queue_ids(result), [])
@@ -311,7 +311,7 @@ class DedupGateTest(QueueTestBase):
 
     def test_rejected_company_past_cooldown_warns_on_different_role(self):
         make_job(self.conn, "rej", company="NoCo", status="rejected",
-                 title="Backend Engineer", applied_at=_iso(NOW - timedelta(days=120)))
+                 title="Backend Engineer", applied_at=_iso(NOW - timedelta(days=45)))
         make_job(self.conn, "new", company="NoCo GmbH", title="Data Engineer")
         result = build_queue(self.conn, now=NOW)
         self.assertEqual(self.queue_ids(result), ["new"])
@@ -320,7 +320,7 @@ class DedupGateTest(QueueTestBase):
 
     def test_rejected_same_title_blocked_even_past_cooldown(self):
         make_job(self.conn, "rej", company="NoCo", status="rejected",
-                 title="Backend  Engineer", applied_at=_iso(NOW - timedelta(days=120)))
+                 title="Backend  Engineer", applied_at=_iso(NOW - timedelta(days=45)))
         make_job(self.conn, "repost", company="NoCo GmbH", title="Backend Engineer")
         result = build_queue(self.conn, now=NOW)
         self.assertEqual(self.queue_ids(result), [])

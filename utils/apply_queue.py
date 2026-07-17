@@ -97,8 +97,10 @@ GHOST_COOLDOWN_DAYS = 60
 # A rejection was about one role, not the whole company — after this cooldown a
 # *different* role there re-enters the queue as a warn (human decides), while
 # the same title stays permanently blocked (a repost of the role that said no).
-# Env override: APPLY_REJECT_COOLDOWN_DAYS.
-REJECT_COOLDOWN_DAYS = 90
+# 30d is a small-company politeness buffer only: big companies' pipelines are
+# independent per team, and the real etiquette risk (same role again) is the
+# permanent title block. Env override: APPLY_REJECT_COOLDOWN_DAYS.
+REJECT_COOLDOWN_DAYS = 30
 
 # ATS the browser extension can actually auto-fill (native inputs, no custom-JS
 # widget/dropzone/captcha wall). join/indeed/softgarden are deliberately absent —
