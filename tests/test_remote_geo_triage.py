@@ -27,9 +27,18 @@ class TestClassifyRules(unittest.TestCase):
             classify_rules("Fully remote within Germany, team meets in Berlin."),
             "germany")
 
-    def test_worldwide_is_germany_eligible(self):
+    def test_worldwide_prose_defers_to_llm(self):
+        # 2026-07-17 demotion (Hostinger, snapshot #281): "work from ...
+        # anywhere in the world" is perk copy that coexists with a hard
+        # "Based in Poland" title restriction no regex can enumerate.
+        # ww-only prose no longer promotes to germany — the LLM pass decides.
         self.assertEqual(
-            classify_rules("We hire from anywhere in the world."), "germany")
+            classify_rules("We hire from anywhere in the world."), "unclear")
+        self.assertEqual(
+            classify_rules("Based in Poland. Work from modern offices in "
+                           "Kaunas and Vilnius, home, or anywhere in the "
+                           "world."),
+            "unclear")
 
     def test_marketing_worldwide_is_not_a_hiring_signal(self):
         # real mislabels (07-09..15 review queue): "organizations worldwide" /
@@ -43,11 +52,13 @@ class TestClassifyRules(unittest.TestCase):
                            "connected by healthy habits"),
             "unclear")
 
-    def test_hiring_context_worldwide_still_counts(self):
+    def test_hiring_context_worldwide_is_unclear_not_non_eu(self):
+        # demoted from germany (see above) — but a ww phrase must still mask
+        # nothing: it stays unclear for the LLM, never flips to non_eu
         self.assertEqual(
-            classify_rules("We are remote-first and hire worldwide."), "germany")
+            classify_rules("We are remote-first and hire worldwide."), "unclear")
         self.assertEqual(
-            classify_rules("This role is remote worldwide."), "germany")
+            classify_rules("This role is remote worldwide."), "unclear")
 
     def test_from_anywhere_with_region_qualifier_is_a_restriction(self):
         # real mislabel: Taxgpt "Work from anywhere across US, Canada or Mexico"
