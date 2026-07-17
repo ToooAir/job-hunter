@@ -99,12 +99,31 @@ def is_unappliable(verdict: str, job: dict) -> bool:
     return verdict == "weak-form" and not is_addressable(job)
 
 
+# Manual lane (2026-07-17): with supply now the constraint, up to this many
+# A-grade weak-forms per run survive the gate as Tier 3 hand-apply drafts
+# (scoring-stage CL + facts, human finds the real apply channel). B-grade
+# weak-forms still skip — the lane trades review effort for A-value only.
+WEAK_FORM_A_CAP = int(os.getenv("APPLY_WEAK_FORM_A_CAP", "5"))
+
+
 def skip_unappliable(conn, states: list[dict], dry_run: bool) -> list[dict]:
     """Split off un-appliable states; mark their jobs skipped. Returns the
     states that continue to Pass B."""
     keep, skipped = [], []
+    lane = 0
     for s in states:
-        (skipped if is_unappliable(s["verdict"], s["job"]) else keep).append(s)
+        if is_unappliable(s["verdict"], s["job"]):
+            if (s["verdict"] == "weak-form" and s["job"].get("fit_grade") == "A"
+                    and lane < WEAK_FORM_A_CAP):
+                lane += 1
+                s.setdefault("notes", []).append("manual lane: A-grade weak-form")
+                print(f"  ➜ 手投巷道（A 級 weak-form {lane}/{WEAK_FORM_A_CAP}，"
+                      f"{s['job']['company'][:30]}）→ 保留為 Tier 3 草稿", flush=True)
+                keep.append(s)
+            else:
+                skipped.append(s)
+        else:
+            keep.append(s)
     if skipped and not dry_run:
         now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
         for s in skipped:
