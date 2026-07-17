@@ -274,5 +274,39 @@ class TestSkipUnappliable(unittest.TestCase):
             "SELECT status FROM jobs WHERE id='j1'").fetchone()["status"], "scored")
 
 
+class TestWeakFormALane(unittest.TestCase):
+    """Manual lane: A-grade weak-forms survive as Tier 3 drafts (capped);
+    B-grade weak-forms still skip."""
+
+    @staticmethod
+    def _weak(jid, grade):
+        return {"verdict": "weak-form", "notes": [],
+                "job": {"id": jid, "company": f"C{jid}", "fit_grade": grade,
+                        "ats": "unknown", "apply_url": None}}
+
+    def test_a_grade_kept_with_lane_note_b_grade_skipped(self):
+        from apply_stage1 import skip_unappliable
+        states = [self._weak("a1", "A"), self._weak("b1", "B")]
+        keep = skip_unappliable(None, states, dry_run=True)
+        self.assertEqual([s["job"]["id"] for s in keep], ["a1"])
+        self.assertIn("manual lane: A-grade weak-form", keep[0]["notes"])
+
+    def test_lane_cap_enforced(self):
+        from unittest import mock
+
+        import apply_stage1
+        states = [self._weak(f"a{i}", "A") for i in range(4)]
+        with mock.patch.object(apply_stage1, "WEAK_FORM_A_CAP", 2):
+            keep = apply_stage1.skip_unappliable(None, states, dry_run=True)
+        self.assertEqual([s["job"]["id"] for s in keep], ["a0", "a1"])
+
+    def test_heise_own_form_never_enters_lane(self):
+        from apply_stage1 import skip_unappliable
+        states = [{"verdict": "heise-own-form", "notes": [],
+                   "job": {"id": "h1", "company": "H", "fit_grade": "A",
+                           "ats": "unknown", "apply_url": None}}]
+        self.assertEqual(skip_unappliable(None, states, dry_run=True), [])
+
+
 if __name__ == "__main__":
     unittest.main()
