@@ -18,7 +18,9 @@ Pass 1/2 — bare-"Remote" jobs from global boards (remotive/jobicy/
 weworkremotely/wttj), plus variants ("Anywhere in the World", "Remote / X"),
 classified by Germany-hiring eligibility from the JD text:
 
-    Remote — Germany   JD says Germany-eligible (or hire-from-anywhere)
+    Remote — Germany   JD names Germany, or the location label itself says
+                       hire-from-anywhere (worldwide prose in JD text defers
+                       to the LLM pass since 2026-07-17)
     Remote — EU        Europe/EU-wide remote; Germany plausible, human decides
     Remote — non-EU    restricted to US/Canada/UK/other non-EU regions
     Remote — unclear   the LLM looked and could not tell — marked so the next
@@ -120,8 +122,13 @@ def classify_rules(text: str) -> str:
     non = bool(NON_EU_RE.search(text))
     if de and not non:
         return "germany"
-    if ww and not (de or non):
-        return "germany"  # hire-from-anywhere includes Germany
+    # A worldwide phrase in JD prose is NOT a hiring-geography signal on its
+    # own: "work from ... anywhere in the world" is perk copy that coexists
+    # with a hard "Based in Poland" restriction NON_EU_RE cannot enumerate
+    # (Hostinger, snapshot #281 — 25/78 Remote—Germany labels were such
+    # promotions). Leave it unclear for the LLM pass, whose gate now matches
+    # the queue floor. A worldwide *location label* (WORLDWIDE_LOCATIONS in
+    # main) is employer-structured data and still promotes directly.
     if eu and not (de or non):
         return "europe"
     if non and not (de or eu or ww):
@@ -138,7 +145,9 @@ _LLM_SYSTEM = (
     "europe: Europe/EU-wide eligibility where Germany is plausible but not "
     "named.\n"
     "non_eu: restricted to regions that exclude Germany (US/Canada/UK/etc. "
-    "only, or non-European time-zone requirements).\n"
+    "only, non-European time-zone requirements, or the candidate must be "
+    "based in one specific country that is not Germany — e.g. 'Based in "
+    "Poland' means non_eu even though Poland is in the EU).\n"
     "unclear: the posting does not say. Never guess beyond the text."
 )
 
