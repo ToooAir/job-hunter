@@ -301,6 +301,39 @@ class DedupGateTest(QueueTestBase):
         result = build_queue(self.conn, now=NOW)
         self.assertEqual(self.queue_ids(result), [])
 
+    def test_rejected_company_within_cooldown_still_blocks(self):
+        make_job(self.conn, "rej", company="NoCo", status="rejected",
+                 applied_at=_iso(NOW - timedelta(days=30)))
+        make_job(self.conn, "new", company="NoCo", title="Data Engineer")
+        result = build_queue(self.conn, now=NOW)
+        self.assertEqual(self.queue_ids(result), [])
+        self.assertEqual(result["blocked"][0]["id"], "new")
+
+    def test_rejected_company_past_cooldown_warns_on_different_role(self):
+        make_job(self.conn, "rej", company="NoCo", status="rejected",
+                 title="Backend Engineer", applied_at=_iso(NOW - timedelta(days=120)))
+        make_job(self.conn, "new", company="NoCo GmbH", title="Data Engineer")
+        result = build_queue(self.conn, now=NOW)
+        self.assertEqual(self.queue_ids(result), ["new"])
+        self.assertEqual(result["queue"][0]["dedup"], "warn")
+        self.assertIn("rejected", result["queue"][0]["dedup_reason"])
+
+    def test_rejected_same_title_blocked_even_past_cooldown(self):
+        make_job(self.conn, "rej", company="NoCo", status="rejected",
+                 title="Backend  Engineer", applied_at=_iso(NOW - timedelta(days=120)))
+        make_job(self.conn, "repost", company="NoCo GmbH", title="Backend Engineer")
+        result = build_queue(self.conn, now=NOW)
+        self.assertEqual(self.queue_ids(result), [])
+        self.assertIn("same title previously rejected",
+                      result["blocked"][0]["dedup_reason"])
+
+    def test_rejected_missing_applied_at_fails_closed(self):
+        make_job(self.conn, "rej", company="NoCo", status="rejected")  # no applied_at
+        make_job(self.conn, "new", company="NoCo", title="Data Engineer")
+        result = build_queue(self.conn, now=NOW)
+        self.assertEqual(self.queue_ids(result), [])
+        self.assertIn("pipeline", result["blocked"][0]["dedup_reason"])
+
     def test_block_company_with_in_flight_snapshot(self):
         make_job(self.conn, "drafted", company="Beispiel UG (haftungsbeschränkt)")
         make_job(self.conn, "second", company="Beispiel")
