@@ -44,7 +44,9 @@ from utils.apply_queue import (  # noqa: E402
 from utils.db import init_db  # noqa: E402
 from utils.profile_loader import load_profile  # noqa: E402
 
-TARGET_INVENTORY = int(os.getenv("APPLY_TARGET_INVENTORY", "40"))
+# 40 until 2026-07-17; with weak-form eating ~half of a pull, 55 keeps the
+# post-gate draft wall near the ~25-35 the reviewer works through in a day.
+TARGET_INVENTORY = int(os.getenv("APPLY_TARGET_INVENTORY", "55"))
 
 OUT_JSON = Path(__file__).parent / "data" / "stage1_run.json"
 
