@@ -89,6 +89,9 @@ class ExampleTemplateTest(unittest.TestCase):
             "fields.gender.value",
             "fields.disability_status.value",
             "fields.ai_coding_agents.value",
+            "fields.current_company.value",
+            "fields.current_title.value",
+            "fields.degree.value",
         }
         self.assertEqual(todos, expected)
 
@@ -166,9 +169,43 @@ class ExampleTemplateTest(unittest.TestCase):
     def test_unmatched_label_returns_none(self):
         self.assertIsNone(self.profile.match_field("Why do you want to work here?"))
 
+    def test_stats_driven_alias_gaps(self):
+        # Every case here is a real unmatched label from fill_plan_stats.jsonl
+        # (2026-07-19 aggregation) that an alias addition now covers.
+        cases = {
+            "What is your earliest starting date? *": "earliest_start",
+            "How quickly are you looking to start a new role? *": "earliest_start",
+            "Wie haben Sie uns gefunden? *": "how_did_you_hear",
+            "Where do you currently reside?*": "current_location",
+            "Current Company*": "current_company",
+            "Current Job Title *": "current_title",
+            "Degree*": "degree",
+            "Are you able to work in Germany?*": "work_permit",
+        }
+        for label, expected_key in cases.items():
+            with self.subTest(label=label):
+                match = self.profile.match_field(label)
+                self.assertIsNotNone(match, f"no match for {label!r}")
+                self.assertEqual(match.key, expected_key)
+
+    def test_camel_case_name_attr_matches_as_extra_variant(self):
+        # softgarden's label-less date input falls back to its name attr
+        # "availabilityDatePlaceholder" — one token without camel splitting
+        self.assertEqual(self.profile.match_field("availabilityDatePlaceholder").key,
+                         "earliest_start")
+        # …but splitting is an EXTRA variant only: brand-cased labels keep
+        # matching their one-word aliases
+        self.assertEqual(self.profile.match_field("LinkedIn Profile").key, "linkedin")
+        self.assertEqual(self.profile.match_field("GitHub Link").key, "github")
+
     def test_never_fill(self):
         self.assertTrue(self.profile.is_never_fill("Bewerbungsfoto"))
         self.assertTrue(self.profile.is_never_fill("Marital status"))
+        # account walls and the US EEO block stay blank + flagged
+        self.assertTrue(self.profile.is_never_fill("Choose Password: *"))
+        self.assertTrue(self.profile.is_never_fill("Are you Hispanic/Latino?"))
+        self.assertTrue(self.profile.is_never_fill("Veteran Status"))
+        self.assertTrue(self.profile.is_never_fill("Race/Ethnicity"))
         # Geburtsdatum was promoted to an optional field (common on German forms)
         self.assertFalse(self.profile.is_never_fill("Geburtsdatum *"))
         self.assertFalse(self.profile.is_never_fill("First name"))
@@ -197,6 +234,20 @@ class ExampleTemplateTest(unittest.TestCase):
     def test_auto_consent(self):
         self.assertTrue(self.profile.is_auto_consent("Ich akzeptiere die Datenschutzerklärung"))
         self.assertFalse(self.profile.is_auto_consent("Subscribe to newsletter"))
+        # observed mandatory application-data consents (fill-plan stats)
+        self.assertTrue(self.profile.is_auto_consent(
+            "I hereby consent to the processing of my personal data for this application"))
+        self.assertTrue(self.profile.is_auto_consent(
+            "I have read and understood the privacy notice."))
+        self.assertTrue(self.profile.is_auto_consent(
+            "Ich stimme zu, dass die oben genannten Daten zum Zwecke der Bewerbung"
+            " gespeichert werden"))
+        self.assertTrue(self.profile.is_auto_consent(
+            "Ich bin damit einverstanden, dass meine Bewerberdaten gespeichert werden"))
+        # talent-pool / group-sharing / marketing stay a human decision
+        self.assertFalse(self.profile.is_auto_consent(
+            "Die Bewerbung darf in der Unternehmensgruppe weitergegeben werden"))
+        self.assertFalse(self.profile.is_auto_consent("Future Recruitment"))
 
 
 class CompleteProfileTest(unittest.TestCase):

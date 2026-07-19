@@ -327,9 +327,10 @@ def fill_plan(req: FillPlanRequest):
                 # no digits in the fact → keep the value; the input rejects it
                 # and stays blank for the human, same as before
                 value = _coerce_number(value) or value
-            if f.type == "radio" and match.option_aliases:
-                # the option label may say the value another way ("Male" for
-                # value "Männlich") — same synonym set the selects use
+            if match.option_aliases:
+                # an option may say the value another way ("Male" for value
+                # "Männlich", "Deutschland" for "Germany") — radios match their
+                # label against these, comboboxes retype them as filter text
                 extra["synonyms"] = list(match.option_aliases)
         fills.append({**ident, "action": action, "value": value, **extra,
                       "source": f"profile:{match.key}", "needs_review": needs_review})

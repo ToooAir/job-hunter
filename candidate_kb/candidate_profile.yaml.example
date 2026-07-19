@@ -62,7 +62,8 @@ fields:
 
   current_location:
     value: "TODO"                      # e.g. "Berlin, Germany"
-    aliases: [current location, location, aktueller wohnort, standort]
+    aliases: [current location, location, aktueller wohnort, standort,
+              currently reside]
 
   nationality:
     value: "TODO"
@@ -72,7 +73,8 @@ fields:
     # Adjust to your permit type (e.g. Blue Card, Chancenkarte, permanent residence).
     value: "Yes — I hold a valid German residence permit and am eligible to start immediately."
     aliases: [work permit, work authorization, eligible to work, right to work,
-              arbeitserlaubnis, arbeitsgenehmigung, aufenthaltstitel]
+              arbeitserlaubnis, arbeitsgenehmigung, aufenthaltstitel,
+              able to work in germany, arbeiten in deutschland]
 
   requires_sponsorship:
     # Chancenkarte = legal residence already in hand; conversion to a work
@@ -86,12 +88,31 @@ fields:
     value: "Immediately"
     date_value: "+14 days"             # used when the form wants a concrete date
     aliases: [earliest start, start date, availability, available from,
+              earliest starting date, starting date, looking to start,
               frühestmöglicher eintrittstermin, eintrittstermin, eintrittsdatum,
               verfügbar ab, verfügbarkeit, startdatum]
 
   notice_period:
     value: "None — available immediately"
     aliases: [notice period, kündigungsfrist]
+
+  # "Current company/title" reads as most-recent employment; if the role has
+  # ended, keep the value honest (e.g. "Musterfirma (until 06/2025)").
+  current_company:
+    value: "TODO"                      # e.g. "Musterfirma GmbH"
+    aliases: [current company, current employer, most recent company,
+              aktueller arbeitgeber, derzeitiger arbeitgeber]
+
+  current_title:
+    value: "TODO"                      # e.g. "Software Engineer"
+    aliases: [current title, current job title, current role, current position,
+              most recent title, aktuelle position, berufsbezeichnung]
+
+  degree:
+    value: "TODO"                      # e.g. "Bachelor's Degree"
+    aliases: [degree, highest degree, education level, highest level of education,
+              abschluss, höchster abschluss, höchster bildungsabschluss]
+    option_aliases: [Bachelor, Bachelor's Degree, "Bachelor's"]
 
   salary_expectation:
     value: "TODO"                      # e.g. "€65,000" — bare figure; gross/year is the default reading
@@ -136,7 +157,8 @@ fields:
   how_did_you_hear:
     value: "Job posting"
     aliases: [how did you hear, source, referral source,
-              wie haben sie von uns erfahren, aufmerksam geworden]
+              wie haben sie von uns erfahren, aufmerksam geworden,
+              wie haben sie uns gefunden, how did you find us]
 
 
   # ── Optional disclosures ─────────────────────────────────────────────────
@@ -156,10 +178,15 @@ fields:
     value: "TODO"                      # e.g. "Nein" — Schwerbehinderung is a standard German HR question
     aliases: [disability, severely disabled, schwerbehinderung, schwerbehindert]
 
-# Consent checkboxes the agent may tick automatically.
+# Consent checkboxes the agent may tick automatically. Only mandatory
+# application-data consents — talent-pool / share-within-group / marketing
+# checkboxes are real decisions and stay manual.
 consents:
   auto_accept_aliases: [privacy policy, data protection, datenschutz,
-                        datenschutzerklärung, einwilligung]
+                        datenschutzerklärung, einwilligung,
+                        privacy notice, processing of my personal data,
+                        my data to be processed, bewerberdaten,
+                        speicherung meiner daten, daten zum zwecke der]
 
 # Fields the agent must NEVER fill — leave blank and flag for human review.
 # (German forms may legally ask some of these; answering is optional.)
@@ -167,6 +194,12 @@ never_fill:
   - photo / bewerbungsfoto
   - religion / konfession
   - marital status / familienstand
+  # account-creation walls (SuccessFactors) ask for one — never auto-set
+  - password / passwort
+  # US EEO block: prefer-not-to-answer is the human's call each time
+  - hispanic / latino
+  - veteran
+  - race / ethnicity
   # referral questions ask for SOMEONE ELSE's name — 'full name' inside the
   # label must not pull the candidate's own name fact into it
   - referred / empfohlen
