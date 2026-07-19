@@ -62,6 +62,15 @@ def _contains_phrase(label_norm: str, alias_norm: str) -> bool:
     return re.search(rf"\b{re.escape(alias_norm)}\b", label_norm) is not None
 
 
+def _split_camel(text: str) -> str:
+    """camelCase → spaced words, for name-attr fallbacks: softgarden's
+    "availabilityDatePlaceholder" normalizes to one unmatchable token, so the
+    "availability" alias never saw it (fill-plan stats, 2026-07-19). Applied as
+    an EXTRA label variant, never the only form — splitting unconditionally
+    would break brand-cased labels ("LinkedIn" → "linked in", "GitHub")."""
+    return re.sub(r"(?<=[a-z])(?=[A-Z])", " ", text)
+
+
 # Sub-inputs whose whole label is one bare word, seen when a platform splits a
 # labelled group into parts (Personio renders "Name*" as two inputs labelled
 # just "First" / "Last" — carbmee, 2026-07-09). Expanded only on exact match:
@@ -151,11 +160,16 @@ class CandidateProfile:
         if not label_norm:
             return None
         label_norm = _BARE_LABEL_EXPANSIONS.get(label_norm, label_norm)
+        variants = [label_norm]
+        camel = _normalize(_split_camel(label))
+        if camel != label_norm:
+            variants.append(camel)
         best: ProfileField | None = None
         best_len = 0
         for f in self.fields.values():
             for alias in f.aliases:
-                if len(alias) > best_len and _contains_phrase(label_norm, alias):
+                if len(alias) > best_len and any(
+                        _contains_phrase(v, alias) for v in variants):
                     best, best_len = f, len(alias)
         return best
 

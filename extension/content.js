@@ -779,6 +779,15 @@ async function runProfileFill() {
       const have = normalize(collapse(fieldLabel(el)) + " " + (el.value || ""));
       ok = wants.some((w) => new RegExp("(^| )" + escapeRe(w) + "( |$)").test(have));
       if (ok) setNativeChecked(el, true);
+    } else if (isAriaCombobox(el)) {
+      // react-select-style dropdown (every Greenhouse job-boards select): a
+      // plain setNativeValue only types the FILTER text, and the widget wipes
+      // it on blur unless an option is committed — the fill looked done, then
+      // silently vanished. Type, wait for the menu, press Enter.
+      ok = await fillCombobox(el, f.value, f.synonyms || []);
+      reviewNotes.push((f.label || f.name) + (ok
+        ? " → picked a dropdown suggestion, eyeball it"
+        : " → dropdown took no suggestion, pick it manually"));
     } else {
       setNativeValue(el, f.value == null ? "" : String(f.value));
       ok = true;
@@ -994,6 +1003,14 @@ function fillableFields() {
   return queryAllDeep("input, select, textarea").filter((el) => {
     const t = (el.type || "").toLowerCase();
     if (["hidden", "submit", "button", "reset", "image"].includes(t)) return false;
+    // a11y stubs are not human-fillable: react-select renders one aria-hidden
+    // required <input> per combobox (opacity 0 but with box size, so isVisible
+    // passes) — 92 of the 105 "<no-label>" unmatched entries in the fill-plan
+    // stats were these Greenhouse phantoms, not real extraction gaps.
+    if (el.getAttribute("aria-hidden") === "true") return false;
+    // cookie-banner controls (Usercentrics/Borlabs "Essentials/Analytics/…")
+    // are consent UI, not the application form
+    if (el.closest('[id*="cookie" i], [class*="cookie" i], #usercentrics-root, #CybotCookiebotDialog')) return false;
     if (isVisible(el)) return true;
     // Skinned native select (jQuery UI selectmenu / select2 / chosen …): the
     // real <select> is hidden behind a widget but still carries the submit
@@ -1120,6 +1137,61 @@ function setNativeValue(el, value) {
   el.dispatchEvent(new Event("change", { bubbles: true }));
   el.dispatchEvent(new Event("blur"));
   el.dispatchEvent(new Event("focusout", { bubbles: true }));
+}
+
+// ARIA combobox (react-select et al.): the INPUT is just the filter box; the
+// real value commits only when an option is chosen. Native <select>s never get
+// here — they take the select_option action path.
+function isAriaCombobox(el) {
+  return el.tagName === "INPUT" && el.getAttribute("role") === "combobox";
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Type a candidate value, poll for the menu (async option lists — Greenhouse
+// location lookups hit the network), then Enter to commit the focused (first
+// filtered) option. Values the option list words differently are retried via
+// the fact's option_aliases ("Germany" → dropdown "Deutschland"). Best-effort:
+// the caller always leaves a review note either way.
+async function fillCombobox(el, value, synonyms) {
+  const desc = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value");
+  const candidates = [value, ...synonyms].map((v) => String(v == null ? "" : v)).filter(Boolean);
+  for (const cand of candidates) {
+    el.focus();
+    el.dispatchEvent(new Event("focus"));
+    el.dispatchEvent(new Event("focusin", { bubbles: true }));
+    if (desc && desc.set) desc.set.call(el, cand);
+    else el.value = cand;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    for (let waited = 0; el.getAttribute("aria-expanded") !== "true" && waited < 2000; waited += 100) {
+      await sleep(100);
+    }
+    await sleep(250); // options render/auto-focus a beat after the menu opens
+    const key = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true };
+    el.dispatchEvent(new KeyboardEvent("keydown", key));
+    el.dispatchEvent(new KeyboardEvent("keyup", key));
+    el.dispatchEvent(new Event("blur"));
+    el.dispatchEvent(new Event("focusout", { bubbles: true }));
+    await sleep(100);
+    if (comboboxShowsValue(el, cand)) return true;
+  }
+  return false;
+}
+
+// Did the commit stick? react-select clears the filter input either way; on
+// success the chosen text renders in the widget shell (.select__single-value
+// in stock markup). Checked widget-agnostically: any near ancestor's text now
+// word-contains the candidate. On failure the shell shows only a placeholder.
+function comboboxShowsValue(el, cand) {
+  const want = normalize(cand);
+  if (!want) return false;
+  const re = new RegExp("(^| )" + escapeRe(want) + "( |$)");
+  let node = el.parentElement;
+  for (let depth = 0; node && depth < 5; depth++) {
+    if (re.test(normalize(node.textContent || ""))) return true;
+    node = node.parentElement;
+  }
+  return false;
 }
 
 function setNativeChecked(el, checked) {
