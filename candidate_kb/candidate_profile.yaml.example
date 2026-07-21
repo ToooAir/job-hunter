@@ -15,6 +15,14 @@
 meta:
   cl_language: en                      # always English — decided 2026-06-10
   cv_path: candidate_kb/cv/cv.pdf      # TODO: path to your one fixed CV PDF
+  # Fed verbatim to the salary estimator so it calibrates the ask to your fit,
+  # not the role's headline market band. 2-4 lines: seniority, real domain
+  # depth, any career transition. Do NOT invent a current-salary figure.
+  # Leave the TODO in and it is ignored (prompt unchanged) until you fill it.
+  salary_positioning: >
+    TODO: e.g. "5 years backend engineering, strong in distributed systems and
+    cloud delivery. Mid-to-senior level, moving from pure engineering toward a
+    platform/lead role. Calibrate to this fit, not the top of the market band."
 
 fields:
   salutation:
