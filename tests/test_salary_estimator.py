@@ -37,6 +37,37 @@ class CandidateSectionTest(unittest.TestCase):
         )
 
 
+class CompanyTypeHintTest(unittest.TestCase):
+    def test_consultancy_jd_language_fires(self):
+        hint = se._company_type_hint(
+            "codecentric AG",
+            "You deliver AI solutions in client projects on-site at client.",
+        )
+        self.assertIn("consultancy", hint.lower())
+        self.assertIn("rule-5", hint.lower())
+
+    def test_german_client_delivery_language_fires(self):
+        hint = se._company_type_hint(
+            "Musterfirma", "Du arbeitest beim Kunden vor Ort in Kundenprojekten."
+        )
+        self.assertNotEqual(hint, "")
+
+    def test_consulting_in_company_name_fires(self):
+        self.assertNotEqual(
+            se._company_type_hint("Acme Consulting GmbH", "We build software."), ""
+        )
+
+    def test_product_company_does_not_fire(self):
+        # a product shop that merely mentions talking to stakeholders
+        self.assertEqual(
+            se._company_type_hint(
+                "Acme Product GmbH",
+                "Build our SaaS platform; consult stakeholders on the roadmap.",
+            ),
+            "",
+        )
+
+
 class PromptWiringTest(unittest.TestCase):
     JOB = {
         "company": "Musterfirma GmbH",
@@ -59,6 +90,11 @@ class PromptWiringTest(unittest.TestCase):
     def test_template_resolves_with_all_sections_empty(self):
         prompt = se._assemble_prompt(self.JOB, "en", "", "", "")
         self.assertIn("Musterfirma GmbH", prompt)
+
+    def test_consultancy_hint_reaches_the_assembled_prompt(self):
+        job = {**self.JOB, "raw_jd_text": "Delivery in client projects at our clients."}
+        prompt = se._assemble_prompt(job, "en", "", "", "")
+        self.assertIn("Company-type signal", prompt)
 
     def test_zh_language_resolves(self):
         prompt = se._assemble_prompt(self.JOB, "zh", "", "", "")
