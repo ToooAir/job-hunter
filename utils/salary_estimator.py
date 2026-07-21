@@ -151,7 +151,7 @@ Important rules:
     - Opening ask (verbal negotiation) may target the JD upper bound, but must never materially exceed it.
     - Rationale: HR pre-screening filters out candidates above stated budget. Passing screening is the priority.
 
-Job details:
+{company_type_section}Job details:
 Company: {company}
 Title: {title}
 Location: {location}
@@ -195,6 +195,40 @@ def _load_positioning() -> str:
     except ProfileError:
         return ""
     return str(profile.meta.get("salary_positioning") or "")
+
+
+# Consultancy / professional-services markers. Rule 5 already asks the LLM to
+# detect this, but it can miss it in 4000 chars of JD — an explicit up-front
+# flag makes the downward adjustment reliable. Phrases (not the bare word
+# "consult") to avoid firing on a product company that merely "consults
+# stakeholders"; these signal a client-delivery / staffing business model.
+_CONSULTANCY_MARKERS = (
+    "consultancy", "consulting", "unternehmensberatung", "it-beratung",
+    "it beratung", "beratungshaus", "professional services",
+    "client project", "client projects", "kundenprojekt", "kundenprojekte",
+    "beim kunden", "bei unseren kunden", "beim kunden vor ort", "end client",
+    "end-client", "on-site at client", "at our clients", "at client site",
+)
+
+
+def _company_type_hint(company: str, jd_text: str) -> str:
+    """Prompt section flagging a consultancy/services employer, or '' if none.
+
+    Fires on client-delivery language in the JD or 'consulting/Beratung' in the
+    company name, so the estimator applies the rule-5 downward adjustment
+    instead of assuming product-company budget (codecentric-type roles, 2026-07).
+    """
+    hay = f"{company or ''} \n {jd_text or ''}".lower()
+    if not any(m in hay for m in _CONSULTANCY_MARKERS):
+        return ""
+    return (
+        "### Company-type signal\n"
+        "_(detected from the posting)_ This reads as a **consultancy / "
+        "professional-services** employer — client-project delivery, possibly "
+        "an unclear end client. Apply the rule-5 consultancy downward "
+        "adjustment (−5% to −10%) and do NOT assume product-company or big-tech "
+        "budget unless the JD gives explicit high-budget signals.\n\n"
+    )
 
 
 def _build_gtj_section(gtj_results: list[dict]) -> str:
@@ -291,6 +325,8 @@ def _assemble_prompt(
     jd_salary = job.get("salary_range") or ("未標示" if lang == "zh" else "not stated")
     return _PROMPT_TEMPLATE.format(
         candidate_section=candidate_section,  # '' when no positioning
+        company_type_section=_company_type_hint(  # '' when not a consultancy
+            job["company"], job.get("raw_jd_text") or ""),
         gtj_section=gtj_section,        # '' when no data
         levels_section=levels_section,  # '' when no data
         lang_instruction=_LANG_INSTRUCTION.get(lang, _LANG_INSTRUCTION["en"]),
