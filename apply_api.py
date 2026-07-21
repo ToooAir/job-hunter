@@ -440,13 +440,37 @@ def _salary_form_figure(estimate: str) -> int | None:
     return fig if fig >= 20_000 else None
 
 
+_CONF_ZH = {"高": "High", "中": "Medium", "低": "Low"}
+
+
+def _salary_confidence(estimate: str) -> str | None:
+    """The estimator's own confidence (High/Medium/Low), so a shaky high ask is
+    visibly shaky before the human pastes it. None if not stated."""
+    m = re.search(r"(?:Confidence|信心水準)\W*(High|Medium|Low|高|中|低)",
+                  estimate or "", re.IGNORECASE)
+    if not m:
+        return None
+    v = m.group(1)
+    return _CONF_ZH.get(v, v.capitalize())
+
+
+def _salary_market_range(estimate: str) -> str | None:
+    """The estimator's stated market range (e.g. '€68,000 – €82,000'), surfaced
+    so the human sees where the typed figure sits. None if unparseable."""
+    m = re.search(r"(?:Market range|市場區間)\W*?(€[\d.,]+\s*[–-]\s*€[\d.,]+)",
+                  estimate or "", re.IGNORECASE)
+    return m.group(1).strip() if m else None
+
+
 def _fact_answer(match, job: dict | None, notes: list[str]) -> str:
     """Deterministic answer for a fact question — the value, no prose.
 
     Salary is special-cased: the per-job salary_estimator figure is used
     when it beats the profile floor (a fixed number undersells high-paying
-    jobs), never below the floor. Everything is surfaced in notes so the
-    human sees the basis before pasting."""
+    jobs), never below the floor — max() self-filters low-market jobs to the
+    walk-away, which is the wanted behaviour. The estimator's confidence and
+    market range are surfaced in the note so the human sees how firm the
+    number is (a Low-confidence high ask is worth trimming) before pasting."""
     value = match.resolve_date() or match.value
     if match.key != "salary_expectation":
         return value
@@ -454,11 +478,21 @@ def _fact_answer(match, job: dict | None, notes: list[str]) -> str:
         floor = int(match.extra.get("value_eur_year") or 0)
     except (TypeError, ValueError):
         floor = 0
-    fig = _salary_form_figure((job or {}).get("salary_estimate") or "")
+    estimate = (job or {}).get("salary_estimate") or ""
+    fig = _salary_form_figure(estimate)
     if fig:
         ask = max(fig, floor)
-        notes.append(f"salary_estimator form figure €{fig:,} · profile floor "
-                     f"€{floor:,}" + (" — floor kept" if fig < floor else ""))
+        note = (f"salary_estimator form figure €{fig:,} · profile floor "
+                f"€{floor:,}" + (" — floor kept" if fig < floor else ""))
+        conf = _salary_confidence(estimate)
+        rng = _salary_market_range(estimate)
+        if conf:
+            note += f" · confidence: {conf}"
+            if conf == "Low":
+                note += " (weak evidence — consider the lower end)"
+        if rng:
+            note += f" · market {rng}"
+        notes.append(note)
         # bare figure: gross/year is every form's default reading, and
         # "(negotiable)" carries no weight on a form — some fields are
         # numeric-only anyway (user call, 2026-07-10)

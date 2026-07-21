@@ -640,6 +640,50 @@ class AnswerTest(unittest.TestCase):
         self.assertEqual(body["answer"], "€82,000")
         self.assertTrue(any("€82,000" in n for n in body["notes"]))
 
+    def test_salary_note_surfaces_confidence_and_range(self):
+        from tests.test_apply_llm import FakeClient
+        from utils.db import set_focus
+        est = (
+            "### Salary Estimate\n"
+            "- **Market range**: €68,000 – €82,000 / year\n"
+            "- **Confidence**: Medium\n"
+            "### Gehaltsvorstellung — Application Form\n"
+            "- **Suggested figure**: €75,000"
+        )
+        self.conn.execute(
+            "UPDATE jobs SET salary_estimate = ? WHERE id='lever-1'", (est,))
+        self.conn.commit()
+        set_focus(self.conn, self.sids["lever-1"], "lever-1")
+        self.apply_api._llm = lambda: (FakeClient([]), "m")
+        body = self._ask(question="Gehaltsvorstellung?").json()
+        self.assertEqual(body["answer"], "€75,000")  # max(75k, 70k floor)
+        note = next(n for n in body["notes"] if "form figure" in n)
+        self.assertIn("confidence: Medium", note)
+        self.assertIn("€68,000 – €82,000", note)
+
+    def test_salary_low_confidence_adds_a_caution(self):
+        from tests.test_apply_llm import FakeClient
+        from utils.db import set_focus
+        est = ("- **Confidence**: Low\n"
+               "- **Suggested figure**: €90,000")
+        self.conn.execute(
+            "UPDATE jobs SET salary_estimate = ? WHERE id='lever-1'", (est,))
+        self.conn.commit()
+        set_focus(self.conn, self.sids["lever-1"], "lever-1")
+        self.apply_api._llm = lambda: (FakeClient([]), "m")
+        body = self._ask(question="Gehaltsvorstellung?").json()
+        self.assertTrue(any("consider the lower end" in n for n in body["notes"]))
+
+    def test_salary_confidence_and_range_parsers(self):
+        p = self.apply_api
+        self.assertEqual(p._salary_confidence("- **Confidence**: High"), "High")
+        self.assertEqual(p._salary_confidence("- **信心水準**：中"), "Medium")
+        self.assertIsNone(p._salary_confidence("no confidence line here at all"))
+        self.assertEqual(
+            p._salary_market_range("- **Market range**: €68,000 – €82,000 / year"),
+            "€68,000 – €82,000")
+        self.assertIsNone(p._salary_market_range("- **Suggested figure**: €75,000"))
+
     def test_salary_generates_estimate_on_demand(self):
         # the workflow moment for an estimate IS the salary question — no
         # pre-generated estimate exists, so /answer must create + use one
