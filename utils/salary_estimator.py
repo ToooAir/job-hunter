@@ -16,6 +16,7 @@ from utils.db import init_db, fetch_job_by_id, set_salary_estimate
 from utils.llm import make_client, chat_model, rate_limit
 from utils.levels_scraper import fetch_levels_data, LevelsSummary
 from utils.gtj_salary_scraper import fetch_gtj_data
+from utils.profile_loader import load_profile, ProfileError
 
 log = logging.getLogger(__name__)
 
@@ -67,7 +68,7 @@ Estimate a realistic BASE SALARY range for this specific role, then provide:
 {lang_instruction}
 Output in Markdown format.
 
-{gtj_section}{levels_section}\
+{candidate_section}{gtj_section}{levels_section}\
 {salary_heading}
 {market}
 {jd_sal}
@@ -150,7 +151,7 @@ Important rules:
     - Opening ask (verbal negotiation) may target the JD upper bound, but must never materially exceed it.
     - Rationale: HR pre-screening filters out candidates above stated budget. Passing screening is the priority.
 
-Job details:
+{company_type_section}Job details:
 Company: {company}
 Title: {title}
 Location: {location}
@@ -160,6 +161,74 @@ Source: {source}
 Job description (excerpt):
 {jd_text}
 """
+
+
+def _build_candidate_section(positioning: str | None) -> str:
+    """Who is actually applying, injected ahead of the market data.
+
+    Without it the estimator sees only the ROLE and anchors on the role's
+    headline market band — AI-titled roles then over-ask, because the model
+    can't know the applicant is a backend engineer transitioning in rather
+    than a top-of-band AI specialist (codecentric €75k vs a €70k fit, 2026-07).
+    Empty or still-TODO text returns '' so the prompt is unchanged and a stub
+    profile stays safe.
+    """
+    text = (positioning or "").strip()
+    if not text or "TODO" in text:
+        return ""
+    return (
+        "### The Candidate Applying\n"
+        "_(calibrate the ask to THIS person's fit and level — not just the "
+        "role's headline market band)_\n"
+        f"{text}\n\n"
+    )
+
+
+def _load_positioning() -> str:
+    """Candidate positioning text from the profile meta, '' if unavailable.
+
+    Non-strict load: a half-filled profile must not break salary estimation,
+    and TODO text is filtered by _build_candidate_section anyway.
+    """
+    try:
+        profile = load_profile(strict=False, check_cv_file=False)
+    except ProfileError:
+        return ""
+    return str(profile.meta.get("salary_positioning") or "")
+
+
+# Consultancy / professional-services markers. Rule 5 already asks the LLM to
+# detect this, but it can miss it in 4000 chars of JD — an explicit up-front
+# flag makes the downward adjustment reliable. Phrases (not the bare word
+# "consult") to avoid firing on a product company that merely "consults
+# stakeholders"; these signal a client-delivery / staffing business model.
+_CONSULTANCY_MARKERS = (
+    "consultancy", "consulting", "unternehmensberatung", "it-beratung",
+    "it beratung", "beratungshaus", "professional services",
+    "client project", "client projects", "kundenprojekt", "kundenprojekte",
+    "beim kunden", "bei unseren kunden", "beim kunden vor ort", "end client",
+    "end-client", "on-site at client", "at our clients", "at client site",
+)
+
+
+def _company_type_hint(company: str, jd_text: str) -> str:
+    """Prompt section flagging a consultancy/services employer, or '' if none.
+
+    Fires on client-delivery language in the JD or 'consulting/Beratung' in the
+    company name, so the estimator applies the rule-5 downward adjustment
+    instead of assuming product-company budget (codecentric-type roles, 2026-07).
+    """
+    hay = f"{company or ''} \n {jd_text or ''}".lower()
+    if not any(m in hay for m in _CONSULTANCY_MARKERS):
+        return ""
+    return (
+        "### Company-type signal\n"
+        "_(detected from the posting)_ This reads as a **consultancy / "
+        "professional-services** employer — client-project delivery, possibly "
+        "an unclear end client. Apply the rule-5 consultancy downward "
+        "adjustment (−5% to −10%) and do NOT assume product-company or big-tech "
+        "budget unless the JD gives explicit high-budget signals.\n\n"
+    )
 
 
 def _build_gtj_section(gtj_results: list[dict]) -> str:
@@ -240,6 +309,49 @@ def _build_levels_section(levels_results: list[dict]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _assemble_prompt(
+    job: dict,
+    lang: str,
+    candidate_section: str,
+    gtj_section: str,
+    levels_section: str,
+) -> str:
+    """Fill the prompt template from the job and the pre-built sections.
+
+    Pure (no IO) so the template wiring — every placeholder resolved, no
+    stray KeyError when a section is added — is unit-testable.
+    """
+    s = _SECTIONS.get(lang, _SECTIONS["en"])
+    jd_salary = job.get("salary_range") or ("未標示" if lang == "zh" else "not stated")
+    return _PROMPT_TEMPLATE.format(
+        candidate_section=candidate_section,  # '' when no positioning
+        company_type_section=_company_type_hint(  # '' when not a consultancy
+            job["company"], job.get("raw_jd_text") or ""),
+        gtj_section=gtj_section,        # '' when no data
+        levels_section=levels_section,  # '' when no data
+        lang_instruction=_LANG_INSTRUCTION.get(lang, _LANG_INSTRUCTION["en"]),
+        salary_heading=s["salary"],
+        market=s["market"],
+        jd_sal=s["jd_sal"].format(jd_salary=jd_salary),
+        conf=s["conf"],
+        basis=s["basis"],
+        nego_heading=s["nego"],
+        ask=s["ask"],
+        floor=s["floor"],
+        strat=s["strat"],
+        form_heading=s["form"],
+        form_fig=s["form_fig"],
+        form_note=s["form_note"],
+        form_phrase=s["form_phrase"],
+        company=job["company"],
+        title=job["title"],
+        location=job.get("location") or "Germany",
+        contract_type=job.get("contract_type") or "unknown",
+        source=job.get("source") or "—",
+        jd_text=(job.get("raw_jd_text") or "")[:4000],
+    )
+
+
 def estimate_salary(job_id: str, db_path: str, lang: str = "en") -> str | None:
     """Generate and persist a salary estimate + negotiation brief. Returns text or None."""
     conn = init_db(db_path)
@@ -249,8 +361,9 @@ def estimate_salary(job_id: str, db_path: str, lang: str = "en") -> str | None:
         log.warning("estimate_salary: job %s not found", job_id)
         return None
 
-    s = _SECTIONS.get(lang, _SECTIONS["en"])
-    jd_salary = job.get("salary_range") or ("未標示" if lang == "zh" else "not stated")
+    # Candidate positioning (profile meta) so the estimate fits the applicant,
+    # not just the role's headline market band.
+    candidate_section = _build_candidate_section(_load_positioning())
 
     # Fetch GermanTechJobs local base salary data (cached; silent fallback on failure)
     gtj_results = fetch_gtj_data(
@@ -276,30 +389,7 @@ def estimate_salary(job_id: str, db_path: str, lang: str = "en") -> str | None:
         slugs = [r["source_slug"] for r in levels_results]
         log.info("salary estimate: injecting Levels.fyi data %s for job %s", slugs, job_id)
 
-    prompt = _PROMPT_TEMPLATE.format(
-        gtj_section=gtj_section,        # '' when no data
-        levels_section=levels_section,  # '' when no data
-        lang_instruction=_LANG_INSTRUCTION.get(lang, _LANG_INSTRUCTION["en"]),
-        salary_heading=s["salary"],
-        market=s["market"],
-        jd_sal=s["jd_sal"].format(jd_salary=jd_salary),
-        conf=s["conf"],
-        basis=s["basis"],
-        nego_heading=s["nego"],
-        ask=s["ask"],
-        floor=s["floor"],
-        strat=s["strat"],
-        form_heading=s["form"],
-        form_fig=s["form_fig"],
-        form_note=s["form_note"],
-        form_phrase=s["form_phrase"],
-        company=job["company"],
-        title=job["title"],
-        location=job.get("location") or "Germany",
-        contract_type=job.get("contract_type") or "unknown",
-        source=job.get("source") or "—",
-        jd_text=(job.get("raw_jd_text") or "")[:4000],
-    )
+    prompt = _assemble_prompt(job, lang, candidate_section, gtj_section, levels_section)
 
     client = make_client()
     for attempt in range(1, 4):
