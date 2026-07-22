@@ -34,8 +34,13 @@ const ATS_FRAME_RE = /(^|\.)(greenhouse\.io|ashbyhq\.com|jobs\.personio\.de|leve
 // path-routed ATS boards): a lone host hit proves nothing there — the Audatic
 // draft bound a KHS application page on career5.successfactors.eu
 // (2026-07-10). On these hosts binding needs an exact page match or 🎯 focus.
+// indeed.com is the same class: every job lives under it (de.indeed.com,
+// smartapply.indeed.com/…/post-apply). Its universal apply form even subdomain-
+// matches a bare-indeed.com draft while NOT matching the de.indeed.com draft the
+// user actually focused, so a lone-host bind picked the wrong indeed job AND
+// pre-empted the 🎯 focus (reisetopia → EAGLE EYE, 2026-07-22).
 const MULTI_TENANT_RE =
-  /successfactors|myworkdayjobs|greenhouse\.io|ashbyhq\.com|lever\.co|workable\.com|smartrecruiters\.com|join\.com|softgarden|icims\.com|taleo/i;
+  /successfactors|myworkdayjobs|greenhouse\.io|ashbyhq\.com|lever\.co|workable\.com|smartrecruiters\.com|join\.com|softgarden|icims\.com|taleo|indeed\.com/i;
 
 // Declared BEFORE the boot block below: injectPanel() runs immediately, and a
 // `const` referenced across that call must already be initialized (TDZ) —
@@ -479,7 +484,11 @@ function hostMatch(a, b) {
 // mostly tracking noise and ignored — EXCEPT the identifying params of
 // query-routed ATS (successfactors: ?company=X&jobId=N shares one path
 // across every employer): those the draft URL carries must match the page.
-const IDENTITY_PARAMS = ["company", "jobId", "gh_jid", "job", "id"];
+// "jk" is indeed's job key (de.indeed.com/viewjob?jk=…) — every indeed job
+// shares the /viewjob path, so without it two indeed drafts would both
+// same-page any indeed viewjob page. Only indeed carries jk, so it is inert
+// elsewhere.
+const IDENTITY_PARAMS = ["company", "jobId", "gh_jid", "job", "id", "jk"];
 
 function samePage(applyUrl) {
   if (!applyUrl) return false;
