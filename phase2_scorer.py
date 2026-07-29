@@ -407,6 +407,18 @@ SOURCE_BONUS: dict[str, int] = {
     "bundesagentur": 5,  # official DE listing — higher visa-sponsorship rate
 }
 
+# Seniority-overreach penalty: titles that demand far more than the candidate's
+# ~4 yrs + tech-lead experience (Principal/Staff IC, Head of, Architect). Applied
+# as a SOFT deterministic penalty (like the source bonus, in Python not the prompt),
+# not a hard title_excluded drop — a standout tech match can still surface as A/B,
+# but the bulk of these fall out of grade A (and the weak half below 60 → skipped).
+# "vice president"/"director" are deliberately OUT: finance-sector title inflation
+# ("Senior Backend Engineer, Vice President") makes them false-positive-prone and
+# they are low-frequency anyway. Tune the magnitude to taste: -10 gentler, -20 harsher.
+# At -15 (measured on the current pool): grade-A overreach roles ≈ −10%, ~half skipped.
+SENIORITY_OVERREACH_RE = re.compile(r"\bprincipal\b|\bstaff\b|\bhead of\b|\barchitect\b", re.I)
+SENIORITY_OVERREACH_PENALTY = 15
+
 
 def _sanitize_jd(text: str) -> str:
     """Escape angle brackets and strip null bytes to prevent prompt injection from external JD content."""
@@ -648,12 +660,18 @@ def score_jobs(
                 )
                 break
 
-        # ── Apply source bonus (deterministic, not LLM) ──
+        # ── Deterministic post-LLM score adjustments (source bonus + seniority overreach) ──
         if result is not None:
             bonus = SOURCE_BONUS.get(job.get("source", ""), 0)
-            if bonus:
+            penalty = (
+                SENIORITY_OVERREACH_PENALTY
+                if SENIORITY_OVERREACH_RE.search(job.get("title") or "")
+                else 0
+            )
+            delta = bonus - penalty
+            if delta:
                 original = result.match_score
-                result.match_score = max(0, min(100, result.match_score + bonus))
+                result.match_score = max(0, min(100, result.match_score + delta))
                 score = result.match_score
                 lang  = result.jd_language_req
                 result.fit_grade = (
@@ -662,8 +680,9 @@ def score_jobs(
                     else "B"
                 )
                 log.info(
-                    "source bonus %+d (%s): %d → %d | grade %s",
-                    bonus, job.get("source"), original, result.match_score, result.fit_grade,
+                    "score adj %+d (source %+d, seniority %+d): %d → %d | grade %s | %s",
+                    delta, bonus, -penalty, original, result.match_score,
+                    result.fit_grade, job["title"],
                 )
             log.debug(
                 "[%s] %s @ %s | score=%d | lang=%s",
