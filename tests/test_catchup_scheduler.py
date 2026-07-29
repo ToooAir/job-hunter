@@ -10,7 +10,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -48,11 +48,15 @@ def _make_db(tmpdir: str):
 
 
 def _insert_unscored(conn, job_id: str):
+    # fetched_at must stay within auto_expire_stale_jobs' TTL (default 45 days from
+    # fetched_at) or these jobs get marked 'expired' before scoring — use a dynamic
+    # recent timestamp so the test never rots as wall-clock time passes.
+    recent = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S")
     conn.execute(
         "INSERT INTO jobs (id, company, title, url, source, raw_jd_text, fetched_at) "
         "VALUES (?, ?, ?, ?, ?, ?, ?)",
         (job_id, "ACME GmbH", "Backend Engineer", f"https://x.test/{job_id}",
-         "test", LONG_EN_JD, "2026-06-11T00:00:00"),
+         "test", LONG_EN_JD, recent),
     )
     conn.commit()
 
