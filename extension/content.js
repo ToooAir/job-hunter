@@ -1164,7 +1164,14 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // the caller always leaves a review note either way.
 async function fillCombobox(el, value, synonyms) {
   const desc = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value");
-  const candidates = [value, ...synonyms].map((v) => String(v == null ? "" : v)).filter(Boolean);
+  // Dedupe case-insensitively: the country fact lists "Germany" as BOTH the value
+  // and an option_alias, so the raw list was ["Germany","Deutschland","Germany","DE"]
+  // — re-typing an already-tried value is half of the visible "thrashing" on
+  // react-select country fields (Superchat Greenhouse, 2026-07-31).
+  const seen = new Set();
+  const candidates = [value, ...synonyms]
+    .map((v) => String(v == null ? "" : v))
+    .filter((v) => v && !seen.has(v.toLowerCase()) && seen.add(v.toLowerCase()));
   for (const cand of candidates) {
     el.focus();
     el.dispatchEvent(new Event("focus"));
@@ -1181,8 +1188,14 @@ async function fillCombobox(el, value, synonyms) {
     el.dispatchEvent(new KeyboardEvent("keyup", key));
     el.dispatchEvent(new Event("blur"));
     el.dispatchEvent(new Event("focusout", { bubbles: true }));
-    await sleep(100);
-    if (comboboxShowsValue(el, cand)) return true;
+    // Poll for the commit rather than checking once: react-select re-renders the
+    // chosen .select__single-value asynchronously, and a single 100ms check raced
+    // that render → reported false → the loop moved to the next alias and re-typed
+    // (the other half of the thrashing). Return the instant a value sticks.
+    for (let waited = 0; waited < 800; waited += 100) {
+      await sleep(100);
+      if (comboboxShowsValue(el, cand)) return true;
+    }
   }
   return false;
 }
