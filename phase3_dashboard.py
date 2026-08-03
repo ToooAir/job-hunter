@@ -38,6 +38,10 @@ STRINGS: dict[str, dict[str, str]] = {
         "kpi_ghosted":        "Ghosted 👻",
         "kpi_errors":         "Score Errors ❌",
         # Stats
+        "trends_header":      "📈 Application Trends",
+        "today_applied":      "Applied Today ✅",
+        "this_week_applied":  "Applied This Week ✅",
+        "more_stats_expander": "📊 More Analytics",
         "stats_expander":     "📊 Analytics",
         "grade_dist":         "**Grade Distribution**",
         "lang_dist":          "**Language Requirement Distribution**",
@@ -271,6 +275,10 @@ STRINGS: dict[str, dict[str, str]] = {
         "kpi_ghosted":        "無聲卡 👻",
         "kpi_errors":         "評分失敗 ❌",
         # Stats
+        "trends_header":      "📈 投遞趨勢",
+        "today_applied":      "今日投遞 ✅",
+        "this_week_applied":  "本週投遞 ✅",
+        "more_stats_expander": "📊 更多統計",
         "stats_expander":     "📊 統計分析",
         "grade_dist":         "**等級分布**",
         "lang_dist":          "**語言要求分布**",
@@ -929,9 +937,36 @@ k5.metric(T("kpi_followup"),      kpis["needs_followup"])
 k6.metric(T("kpi_ghosted"),       kpis["ghosted"])
 k7.metric(T("kpi_errors"),        kpis["errors"])
 
-with st.expander(T("stats_expander"), expanded=False):
-    stats = fetch_stats(conn)
+stats = fetch_stats(conn)
 
+# ── Application trends (always visible: the most-used view) ──────────────────────
+# today/this-week counts are read off daily_df (Mon→today, today = last row) so
+# the numbers always match the daily bar chart right below them.
+_daily = stats["daily_df"]
+_today_cnt = int(_daily["cnt"].iloc[-1]) if not _daily.empty else 0
+_week_cnt = int(_daily["cnt"].sum()) if not _daily.empty else 0
+
+st.markdown(f"#### {T('trends_header')}")
+t1, t2 = st.columns(2)
+t1.metric(T("today_applied"), _today_cnt)
+t2.metric(T("this_week_applied"), _week_cnt)
+
+col_daily, col_weekly = st.columns(2)
+with col_daily:
+    st.markdown(T("daily_trend"))
+    if not _daily.empty and _week_cnt > 0:
+        st.bar_chart(_daily, y="cnt")
+    else:
+        st.caption(T("no_applications"))
+with col_weekly:
+    st.markdown(T("weekly_trend"))
+    if not stats["week_df"].empty:
+        st.bar_chart(stats["week_df"], y="cnt")
+    else:
+        st.caption(T("no_applications"))
+
+# ── Everything else: kept, but tucked into a collapsed expander ─────────────────
+with st.expander(T("more_stats_expander"), expanded=False):
     col_grade, col_lang = st.columns(2)
 
     with col_grade:
@@ -977,22 +1012,6 @@ with st.expander(T("stats_expander"), expanded=False):
         )
     else:
         st.caption(T("no_data"))
-
-    col_weekly, col_daily = st.columns([3, 2])
-
-    with col_weekly:
-        st.markdown(T("weekly_trend"))
-        if not stats["week_df"].empty:
-            st.bar_chart(stats["week_df"], y="cnt")
-        else:
-            st.caption(T("no_applications"))
-
-    with col_daily:
-        st.markdown(T("daily_trend"))
-        if not stats["daily_df"].empty and stats["daily_df"]["cnt"].sum() > 0:
-            st.bar_chart(stats["daily_df"], y="cnt")
-        else:
-            st.caption(T("no_applications"))
 
 with st.expander(T("log_expander"), expanded=False):
     log_path = Path("logs/pipeline.log")
