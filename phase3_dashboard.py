@@ -951,22 +951,22 @@ t1, t2 = st.columns(2)
 t1.metric(T("today_applied"), _today_cnt)
 t2.metric(T("this_week_applied"), _week_cnt)
 
-col_daily, col_weekly = st.columns(2)
-with col_daily:
-    st.markdown(T("daily_trend"))
-    if not _daily.empty and _week_cnt > 0:
-        st.bar_chart(_daily, y="cnt")
-    else:
-        st.caption(T("no_applications"))
-with col_weekly:
-    st.markdown(T("weekly_trend"))
-    if not stats["week_df"].empty:
-        st.bar_chart(stats["week_df"], y="cnt")
-    else:
-        st.caption(T("no_applications"))
-
-# ── Everything else: kept, but tucked into a collapsed expander ─────────────────
+# ── Everything else (incl. the trend charts): kept, but in a collapsed expander ──
 with st.expander(T("more_stats_expander"), expanded=False):
+    col_daily, col_weekly = st.columns(2)
+    with col_daily:
+        st.markdown(T("daily_trend"))
+        if not _daily.empty and _week_cnt > 0:
+            st.bar_chart(_daily, y="cnt")
+        else:
+            st.caption(T("no_applications"))
+    with col_weekly:
+        st.markdown(T("weekly_trend"))
+        if not stats["week_df"].empty:
+            st.bar_chart(stats["week_df"], y="cnt")
+        else:
+            st.caption(T("no_applications"))
+
     col_grade, col_lang = st.columns(2)
 
     with col_grade:
