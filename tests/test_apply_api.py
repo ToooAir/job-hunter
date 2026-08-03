@@ -867,6 +867,28 @@ class EmailMatchTest(unittest.TestCase):
         self.assertIsNone(body["book_as"])
         self.assertEqual([m["id"] for m in body["matches"]], ["j-acme"])
 
+    def test_upstream_rate_limit_becomes_clean_503_not_500(self):
+        # An upstream 429 ("Service tier capacity exceeded") used to bubble up
+        # as an opaque 500 with a stack trace; the panel must get a clean,
+        # actionable status instead.
+        import httpx
+        import openai
+        orig = self.apply_api._chat_json
+        self.addCleanup(lambda: setattr(self.apply_api, "_chat_json", orig))
+        self.apply_api._llm = lambda: (object(), "m")  # type: ignore[assignment]
+
+        def _boom(*_a, **_k):
+            raise openai.RateLimitError(
+                "Service tier capacity exceeded for this model.",
+                response=httpx.Response(
+                    429, request=httpx.Request("POST", "http://llm")),
+                body=None)
+
+        self.apply_api._chat_json = _boom  # type: ignore[assignment]
+        r = self._match(self.REJECTION)
+        self.assertEqual(r.status_code, 503)
+        self.assertIn("rate limited", r.json()["detail"].lower())
+
     def test_confirmation_email_offers_no_booking(self):
         self._llm_with({"intent": "received_confirmation", "matches": [2],
                         "evidence": "thank you for your interest in Acme"})
