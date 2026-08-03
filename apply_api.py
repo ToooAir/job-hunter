@@ -35,6 +35,7 @@ from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from utils.apply_llm import _chat_json, _sanitize, build_profile_facts
@@ -65,6 +66,33 @@ app.add_middleware(
     # null header and falls back to "cv.pdf").
     expose_headers=["Content-Disposition"],
 )
+
+
+# ── upstream LLM failures → clean HTTP status, not a 500 stack trace ───────────
+# _chat_json lets transient API errors bubble up by design (the verifier relies
+# on that contract), so we translate them here at the HTTP boundary instead of
+# touching it. Without this, an upstream 429 ("Service tier capacity exceeded")
+# reaches the panel as an opaque 500. Imported lazily: the host venv
+# intentionally lacks the LLM stack, and apply_api must still import there.
+try:
+    from openai import APIError as _OpenAIError
+except Exception:  # pragma: no cover - LLM stack absent (host venv)
+    _OpenAIError = None
+
+if _OpenAIError is not None:
+    @app.exception_handler(_OpenAIError)
+    async def _llm_error_handler(_request, exc):
+        # 429/503 = rate limit / capacity; no status = connection/timeout.
+        # All are retriable → 503 the human can act on. Other status codes
+        # (bad key, 400) are our misconfiguration → 502.
+        status = getattr(exc, "status_code", None)
+        if status in (429, 503) or status is None:
+            return JSONResponse(status_code=503, content={
+                "detail": "the language model is busy right now (rate limited)"
+                          " — wait a moment and try again"})
+        log.warning("upstream LLM error %s: %s", status, exc)
+        return JSONResponse(status_code=502, content={
+            "detail": f"upstream language model error ({status})"})
 
 
 # ── auth & db (both resolved per-request so tests/env can set them late) ───────
