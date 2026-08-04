@@ -249,6 +249,31 @@ def mark_expired(conn: sqlite3.Connection, job_ids: list[str]) -> int:
     return cur.rowcount
 
 
+def expire_gone_scored_jobs(conn: sqlite3.Connection) -> int:
+    """Promote confirmed-dead scored jobs to 'expired' so they stop surfacing in
+    the dashboard's scored pool. build_queue already drops ats='gone', but the
+    browse/review view filters on status only, so a job known-gone by ats_scan
+    kept showing up (and the reviewer clicked through to a dead posting).
+
+    Conservative, mirroring the draft-liveness sweep:
+      * only ats='gone' (a hard takedown signal) — never transient 'fetch-error';
+      * never a job with an in-flight application snapshot (draft/submitted),
+        so work the human may be mid-application on is left untouched.
+    Returns the number of jobs expired.
+    """
+    placeholders = ",".join("?" for _ in IN_FLIGHT_SNAPSHOT_STATUSES)
+    cur = conn.execute(
+        f"""UPDATE jobs SET status = 'expired'
+            WHERE status = 'scored' AND ats = 'gone'
+              AND id NOT IN (
+                  SELECT job_id FROM application_snapshots
+                  WHERE status IN ({placeholders}))""",
+        IN_FLIGHT_SNAPSHOT_STATUSES,
+    )
+    conn.commit()
+    return cur.rowcount
+
+
 def get_unscored_jobs(conn: sqlite3.Connection) -> list[dict]:
     cur = conn.execute("SELECT * FROM jobs WHERE status = 'un-scored'")
     return [dict(row) for row in cur.fetchall()]

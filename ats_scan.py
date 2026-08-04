@@ -37,7 +37,7 @@ from bs4 import BeautifulSoup
 
 sys.path.insert(0, str(Path(__file__).parent))
 from utils.apply_queue import MIN_B_SCORE, REMOTE_ELIGIBLE_LOCATIONS  # noqa: E402
-from utils.db import init_db, set_job_ats  # noqa: E402
+from utils.db import expire_gone_scored_jobs, init_db, set_job_ats  # noqa: E402
 from utils.gone_text import redirect_off_posting, soft_gone  # noqa: E402
 
 ROOT = Path(__file__).parent
@@ -113,6 +113,21 @@ SKIP_HREF_RE = re.compile(r"^(#|javascript:|tel:)", re.I)
 # native applications even the form schema (application_fields).
 WTTJ_RE = re.compile(r"welcometothejungle\.com/[^/]+/companies/([^/]+)/jobs/([^/?#]+)")
 WTTJ_API = "https://api.welcometothejungle.com/api/v1/organizations/{org}/jobs/{slug}"
+
+# WeAreDevelopers external ("/ext/") postings are a client-rendered SPA: a live
+# job and an expired one return the SAME generic 200 shell (the "Whoops! That
+# page is gone" notice is drawn client-side), so a raw HTTP GET can't tell them
+# apart and soft_gone never sees the wording. The private detail API is the
+# source of truth — 404 "Job not found" = gone, 200 exposes the real downstream
+# apply_url (the /ext/ page only ever links out to the true host). Mirrors WTTJ.
+WAD_JOB_RE = re.compile(r"wearedevelopers\.com/[^/]+/jobs/ext/(\d+)/([^/?#]+)")
+WAD_API_DETAIL = "https://wad-api.wearedevelopers.com/api/v2/jobs/details"
+WAD_HEADERS = {
+    **HEADERS,
+    "Origin": "https://www.wearedevelopers.com",
+    "Referer": "https://www.wearedevelopers.com/",
+    "Accept": "application/json",
+}
 
 
 def fetch_jobs(limit=None):
@@ -223,6 +238,43 @@ def resolve_wttj(url, result):
     return True
 
 
+def resolve_wad(url, result):
+    """Resolve a WeAreDevelopers external ('/ext/') posting via its detail API.
+    Returns True if handled. 404/410 = gone; 200 exposes the real apply_url,
+    which we classify to the downstream ATS (the /ext/ page never hosts the
+    form itself). A raw GET of the /ext/ page can't do this — see WAD_JOB_RE."""
+    m = WAD_JOB_RE.search(url)
+    if not m:
+        return False
+    params = {"job_id": m.group(1), "job_slug": m.group(2), "external": "true"}
+    try:
+        r = requests.get(WAD_API_DETAIL, params=params, headers=WAD_HEADERS,
+                         timeout=TIMEOUT)
+    except requests.RequestException as e:
+        result.update(ats="fetch-error", evidence=f"WAD API: {str(e)[:180]}")
+        return True
+    if r.status_code in (404, 410):
+        result.update(ats="gone", evidence=f"WAD API HTTP {r.status_code}: job not found")
+        return True
+    if r.status_code != 200:
+        result.update(ats="fetch-error", evidence=f"WAD API HTTP {r.status_code}")
+        return True
+    try:
+        data = r.json() or {}
+    except ValueError:
+        result.update(ats="fetch-error", evidence="WAD API: unparseable json")
+        return True
+    apply_url = str(data.get("apply_url") or "").strip()
+    ats = classify_url(apply_url) if apply_url else None
+    if ats:
+        result.update(ats=ats, evidence=apply_url)
+    elif apply_url:
+        result.update(ats="unknown-external", evidence=apply_url)
+    else:
+        result.update(ats="unknown", evidence="WAD detail: no external apply_url")
+    return True
+
+
 def resolve_one(job):
     url = job["url"]
     result = {
@@ -232,6 +284,8 @@ def resolve_one(job):
         "url": url, "ats": "unknown", "evidence": "",
     }
     if resolve_wttj(url, result):
+        return result
+    if resolve_wad(url, result):
         return result
     try:
         r = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
@@ -363,9 +417,16 @@ def write_results_to_db(results, checked_at, db_path=DB_PATH):
         )
         updated += ok
         missing += not ok
+    # A job just marked ats='gone' must leave the scored pool, or it keeps
+    # surfacing in the dashboard (which filters on status, not ats). Conservative:
+    # skips jobs with an in-flight draft. Cleans the whole pool, so it also
+    # clears any 'gone' backlog from earlier scans.
+    n_expired = expire_gone_scored_jobs(conn)
     conn.close()
     note = f"（{missing} 筆 job_id 已不在 DB）" if missing else ""
     print(f"已寫入 DB：{updated} 筆 ats/apply_url/ats_checked_at{note}")
+    if n_expired:
+        print(f"另將 {n_expired} 筆 scored+gone（無進行中 draft）轉為 expired")
 
 
 def main():
