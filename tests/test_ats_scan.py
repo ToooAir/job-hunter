@@ -15,6 +15,7 @@ try:  # ats_scan needs requests/bs4 — present in the container, not the host
         _evidence_to_apply_url,
         plausible_apply_url,
         resolve_one,
+        resolve_wad,
         scan_text_for_ats,
     )
     HAS_DEPS = True
@@ -131,6 +132,55 @@ class ResolveOneRedirectTest(unittest.TestCase):
     def test_same_url_stays_unknown(self):
         res = self._resolve(self.JOB["url"])
         self.assertNotEqual(res["ats"], "gone")
+
+
+@unittest.skipUnless(HAS_DEPS, "ats_scan deps not installed on this host")
+class ResolveWadTest(unittest.TestCase):
+    """WeAreDevelopers /ext/ postings are a client-rendered SPA — a live and an
+    expired job return the same 200 shell to a raw GET, so liveness must come
+    from the private detail API (404 = gone; 200 exposes the downstream link)."""
+
+    URL = "https://www.wearedevelopers.com/en/jobs/ext/7331120/senior-python-dev"
+
+    def _resolve(self, status, json_data=None, url=None):
+        from unittest import mock
+        fake = mock.Mock(status_code=status)
+        fake.json.return_value = json_data if json_data is not None else {}
+        result = {"ats": "unknown", "evidence": ""}
+        with mock.patch("ats_scan.requests.get", return_value=fake):
+            handled = resolve_wad(url or self.URL, result)
+        return handled, result
+
+    def test_api_404_marks_gone(self):
+        handled, res = self._resolve(404, {"message": "Job not found"})
+        self.assertTrue(handled)
+        self.assertEqual(res["ats"], "gone")
+
+    def test_200_known_ats_apply_url_is_classified(self):
+        _, res = self._resolve(
+            200, {"apply_url": "https://boards.greenhouse.io/acme/jobs/1"})
+        self.assertEqual(res["ats"], "greenhouse")
+        self.assertEqual(res["evidence"], "https://boards.greenhouse.io/acme/jobs/1")
+
+    def test_200_external_non_ats_apply_url_is_unknown_external(self):
+        _, res = self._resolve(200, {"apply_url": "https://uk.jobsora.com/job-47"})
+        self.assertEqual(res["ats"], "unknown-external")
+
+    def test_200_without_apply_url_stays_unknown(self):
+        _, res = self._resolve(200, {"apply_url": ""})
+        self.assertEqual(res["ats"], "unknown")
+
+    def test_non_ext_url_is_not_handled(self):
+        # native WAD jobs (/jobs/<id>/ without /ext/) fall through to the HTTP path
+        result = {"ats": "unknown", "evidence": ""}
+        self.assertFalse(
+            resolve_wad("https://www.wearedevelopers.com/en/jobs/123/native-role",
+                        result))
+
+    def test_5xx_is_fetch_error_not_gone(self):
+        # a transient server error must never be mistaken for a takedown
+        _, res = self._resolve(503)
+        self.assertEqual(res["ats"], "fetch-error")
 
 
 if __name__ == "__main__":
