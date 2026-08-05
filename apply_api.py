@@ -784,29 +784,43 @@ class EmailBookRequest(BaseModel):
 def _active_applications(conn) -> list[dict]:
     """Applications a decision email can be about — in flight, newest first."""
     rows = conn.execute(
-        "SELECT id, company, title, applied_at, status FROM jobs"
+        "SELECT id, company, company_aliases, title, applied_at, status FROM jobs"
         " WHERE status IN (?, ?, ?) ORDER BY applied_at DESC",
         _EMAIL_ACTIVE_STATUSES).fetchall()
     return [dict(r) for r in rows]
 
 
-def _company_in_text(company: str, text: str) -> bool:
-    """Cross-check for the panel's look-twice warning: does the company name
-    string-overlap the email at all? Token-level, so 'Dorsch Gruppe' in the
-    email counts for 'Dorsch Service GmbH' (the smoke test's false alarm).
-    A legit LLM match can still fail this (agency posting, renamed brand) —
+def _alias_suffix(aliases: str | None) -> str:
+    """Render mined brand aliases as a listing suffix, e.g. ' (aka prelytics)'."""
+    names = [a.strip() for a in (aliases or "").split(",") if a.strip()]
+    return f" (aka {', '.join(names)})" if names else ""
+
+
+def _company_in_text(company: str, text: str, aliases: str | None = None) -> bool:
+    """Cross-check for the panel's look-twice warning: does the company name —
+    or any brand alias mined from its JD — string-overlap the email at all?
+    Token-level, so 'Dorsch Gruppe' in the email counts for 'Dorsch Service
+    GmbH' (the smoke test's false alarm), and 'prelytics' counts for the legal
+    name 'U-Glow GmbH'. A legit LLM match can still fail this (agency posting) —
     it flags, never vetoes."""
     from utils.apply_queue import normalize_company
-    norm = normalize_company(company or "")
     hay = re.sub(r"[^a-z0-9]", "", (text or "").lower())
-    if not norm or not hay:
+    if not hay:
         return False
-    full = re.sub(r"[^a-z0-9]", "", norm)
-    if full in hay:
-        return True
-    # any distinctive name token (≥4 chars keeps 'data'/'gmbh'-grade noise out;
-    # short names like 'H&Z' are covered by the full-squash check above)
-    return any(tok in hay for tok in norm.split() if len(tok) >= 4)
+    names = [company or ""] + [a.strip() for a in (aliases or "").split(",")
+                               if a.strip()]
+    for name in names:
+        norm = normalize_company(name)
+        if not norm:
+            continue
+        full = re.sub(r"[^a-z0-9]", "", norm)
+        if full and full in hay:
+            return True
+        # any distinctive name token (≥4 chars keeps 'data'/'gmbh'-grade noise
+        # out; short names like 'H&Z' are covered by the full-squash check)
+        if any(tok in hay for tok in norm.split() if len(tok) >= 4):
+            return True
+    return False
 
 
 def _append_email_match_stat(stat: dict) -> None:
@@ -842,7 +856,8 @@ def email_match(req: EmailMatchRequest):
                 "book_as": None, "warnings": ["no active applications"]}
 
     listing = "\n".join(
-        f"{i + 1}. {c['company']} — {c['title']}"
+        f"{i + 1}. {c['company']}{_alias_suffix(c.get('company_aliases'))}"
+        f" — {c['title']}"
         f" (applied {(c['applied_at'] or '?')[:10]}, {c['status']})"
         for i, c in enumerate(cands))
     client, model = _llm()
@@ -866,8 +881,8 @@ def email_match(req: EmailMatchRequest):
             continue  # invented / duplicate numbers are dropped, never guessed at
         seen.add(n)
         c = cands[n - 1]
-        matches.append({**c, "company_in_email": _company_in_text(c["company"],
-                                                                  text)})
+        matches.append({**c, "company_in_email": _company_in_text(
+            c["company"], text, c.get("company_aliases"))})
         if len(matches) >= MAX_EMAIL_MATCHES:
             break
 
