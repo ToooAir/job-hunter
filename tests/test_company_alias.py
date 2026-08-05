@@ -23,27 +23,17 @@ class ExtractCompanyAliasesTest(unittest.TestCase):
                 if a.strip()]
 
     # ── positives: real markers ──────────────────────────────────────────
-    def test_bzw_and_trademark_real_case(self):
-        # the U-Glow / prelytics case that motivated the feature
+    def test_bzw_gated_real_case(self):
+        # the U-Glow / prelytics case that motivated the feature: 'bzw.' is
+        # trusted only because its left side IS the company
         jd = ("Bei U-Glow bzw. prelytics® entwickeln wir benutzerfreundliche"
               " Softwarelösungen für komplexe Aufgaben.")
         self.assertIn("prelytics", self._aliases("U-Glow GmbH", jd))
 
-    def test_trademark_alone(self):
-        jd = "We are Globex, and our flagship product Initech™ powers logistics."
+    def test_bzw_second_brand(self):
+        # the anchored marker works past the trademark form too
+        jd = "Willkommen bei Globex bzw. Initech, dem Marktführer."
         self.assertIn("Initech", self._aliases("Globex SE", jd))
-
-    def test_trading_as(self):
-        jd = "Acme Holding GmbH, trading as Rocketworks, is hiring engineers."
-        self.assertIn("Rocketworks", self._aliases("Acme Holding GmbH", jd))
-
-    def test_formerly_known_as(self):
-        jd = "Nimbus AG (formerly known as Cirrus) builds weather models."
-        self.assertIn("Cirrus", self._aliases("Nimbus AG", jd))
-
-    def test_slash_gated_on_company_left_side(self):
-        jd = "Willkommen bei U-Glow / prelytics, dem Analytics-Spezialisten."
-        self.assertIn("prelytics", self._aliases("U-Glow GmbH", jd))
 
     # ── negatives: precision guards ──────────────────────────────────────
     def test_no_markers_yields_empty(self):
@@ -51,26 +41,67 @@ class ExtractCompanyAliasesTest(unittest.TestCase):
         self.assertEqual(extract_company_aliases("Acme GmbH", jd), "")
 
     def test_company_self_is_not_an_alias(self):
-        # a trademark on the company's own name must not echo it back
-        jd = "Acme® is the market leader in robotics."
+        # "Acme bzw. Acme GmbH" must not echo the company back as its own alias
+        jd = "Acme bzw. Acme GmbH is the market leader in robotics."
         self.assertEqual(self._aliases("Acme GmbH", jd), [])
 
-    def test_generic_token_after_connective_dropped(self):
-        jd = "Globex, formerly the market leader, now trading as software."
-        self.assertNotIn("software", [a.lower() for a in
-                                      self._aliases("Globex SE", jd)])
-        self.assertNotIn("the", [a.lower() for a in
-                                 self._aliases("Globex SE", jd)])
+    def test_generic_token_after_marker_dropped(self):
+        # even anchored, a generic / stop-word right side is not a brand
+        self.assertEqual(self._aliases("Acme GmbH", "Acme bzw. software teams"), [])
+        self.assertEqual(self._aliases("Acme GmbH", "Acme bzw. im Team"), [])
 
-    def test_unrelated_slash_ignored(self):
-        # left side of the slash is not the company → not an alias (avoids
-        # paths, "and/or", unrelated pairs)
-        jd = "Send a CV and/or portfolio. Visit https://x/careers/apply now."
-        self.assertEqual(self._aliases("Acme GmbH", jd), [])
+    def test_ungated_connectives_dropped(self):
+        # real regression: 'formerly / trading as / a.k.a.' fire on third-party
+        # vendor mentions, so they are not trusted. A storage reseller's JD:
+        # "Everpure (formerly Pure Storage)" must NOT alias the employer.
+        jd = ("Structured Communication Systems partners with Dell, Everpure"
+              " (formerly Pure Storage), Rubrik and more.")
+        self.assertEqual(
+            extract_company_aliases("Structured Communication Systems, Inc.", jd),
+            "")
+        self.assertEqual(
+            extract_company_aliases("Acme GmbH",
+                                    "Acme, trading as Rocketworks, hires."), "")
+
+    def test_german_bzw_conjunction_not_captured(self):
+        # real regression: 'bzw.' is an everyday German conjunction, so an
+        # UNANCHORED one (left side is not the company) must never yield an
+        # alias — this used to emit 'praktische Erfahrung im'
+        jd = ("Wir suchen einen Entwickler bzw. praktische Erfahrung im"
+              " Bereich Cloud ist erwünscht.")
+        self.assertEqual(extract_company_aliases("E.v. Bonn", jd), "")
+
+    def test_unanchored_trademark_ignored(self):
+        # real regression: a ® / ™ on some other firm's product in the JD
+        # (about™, CD®) is not the employer's brand
+        self.assertEqual(
+            extract_company_aliases("HomeToGo GmbH", "Learn more about™ us."), "")
+        self.assertEqual(
+            extract_company_aliases("Getspecialfasteners", "We ship CD® media."),
+            "")
+
+    def test_slash_noise_ignored(self):
+        # the "X / Y" rule was dropped: tech stacks and URL paths collide with
+        # it. Real regressions: 'CI/CD' emitted 'CD' ('ci' hid inside
+        # 'getspeCIalfasteners'), 'hometogo.com/about' emitted 'about'.
+        self.assertEqual(
+            extract_company_aliases("Getspecialfasteners",
+                                    "Experience with CI/CD and REST/GraphQL."), "")
+        self.assertEqual(
+            extract_company_aliases("HomeToGo GmbH",
+                                    "Read more at hometogo.com/about today."), "")
+        self.assertEqual(extract_company_aliases(
+            "Acme GmbH", "Send a CV and/or portfolio to https://x/apply."), "")
+
+    def test_bzw_short_substring_left_not_trusted(self):
+        # a 2-char left token that happens to sit inside the company name must
+        # not open the gate
+        self.assertEqual(
+            extract_company_aliases("Getspecialfasteners", "ci bzw. nonsense"), "")
 
     def test_capped_at_three(self):
-        jd = ("Acme, trading as Aone, bzw. Btwo® formerly Cthree also known as"
-              " Dfour aka Efive builds things.")
+        jd = ("Acme bzw. Aone. Acme bzw. Btwo. Acme bzw. Cthree."
+              " Acme bzw. Dfour. Acme bzw. Efive.")
         self.assertLessEqual(len(self._aliases("Acme GmbH", jd)), 3)
 
     def test_empty_inputs(self):

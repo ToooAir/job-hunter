@@ -9,8 +9,11 @@ mine that alias once at ingest (``utils.db.upsert_job``) and carry it on the
 job row so ``/email-match`` (and the dedup / matcher paths) can reuse it.
 
 Precision over recall: a missed alias only keeps the status quo, but a wrong
-alias adds noise to the LLM's nomination list, so every rule is conservative
-and generic / legal tokens are dropped.
+alias adds noise to the LLM's nomination list. Validating candidate rules
+against real JDs killed every loose one (bare ® trademark, "X / Y", ungated
+"formerly / trading as / a.k.a." — all fire on third-party products, tech
+stacks, URLs, or vendor lists), leaving exactly one trusted marker: the German
+"‹company› bzw. ‹brand›" anchored on the company. Deliberately narrow.
 
 Self-contained on purpose — ``utils.apply_queue`` imports ``utils.db`` and
 ``utils.db`` imports this module, so importing ``apply_queue`` here would close
@@ -35,35 +38,49 @@ _LEGAL_SUFFIX_RE = re.compile(
 _SCAN_CHARS = 1500
 _MAX_ALIASES = 3
 
-# A brand phrase: 1–3 words, only the first may be lowercase (so a connective
-# followed by a filler word like "the market leader" captures "the" alone,
-# which the blacklist then drops).
+# A brand phrase: 1–3 words, only the first may be lowercase (so a filler word
+# like "im Team" is captured as "im" alone, which the blacklist then drops).
 _NAME = r"([A-Za-z0-9][\w&.'-]*(?:\s+[A-Z0-9][\w&.'-]*){0,2})"
 
-# Connective markers that introduce an alternative employer name.
-_CONNECTIVES = [
-    re.compile(r"\bbzw\.?\s+" + _NAME, re.IGNORECASE),
-    re.compile(r"\btrading as\s+" + _NAME, re.IGNORECASE),
-    re.compile(r"\bformerly(?:\s+known\s+as)?\s+" + _NAME, re.IGNORECASE),
-    re.compile(r"\ba\.?k\.?a\.?\s+" + _NAME, re.IGNORECASE),
-    re.compile(r"\balso known as\s+" + _NAME, re.IGNORECASE),
-]
-# A trademarked token: the single word immediately before ® or ™. Kept to one
-# token on purpose — a name run would drift left and swallow the preceding word
-# ("product Initech™" → "Initech", not "product Initech").
-_TRADEMARK = re.compile(r"([A-Za-z0-9][\w&.'-]*)\s*[®™]")
-# "Legal / Brand" — gated below on the left side matching the company.
-_SLASH = re.compile(r"([A-Za-z0-9][\w&.'-]*)\s*/\s*" + _NAME)
+# A single token, used as the left (company) side of a gated marker.
+_TOK = r"([A-Za-z0-9][\w&.'-]*)"
 
-# Generic / structural tokens that are never a distinctive brand (normalized,
-# i.e. lowercased with non-alphanumerics stripped).
+# The single trusted marker: "‹company› bzw. ‹brand›". 'bzw.' (German
+# beziehungsweise, "or / respectively") is the pattern that carried the real
+# case ("U-Glow bzw. prelytics®"), and gating it on the company being on the
+# LEFT is what makes it safe. Everything looser was tried and dropped after
+# validating against real JDs (see tests):
+#   • a bare ® / ™ trademark — JDs cite other firms' products (CD®, about™);
+#   • "X / Y" — collides with tech stacks (CI/CD, REST/GraphQL) and URL paths
+#     ('ci' even hid inside 'getspeCIalfasteners');
+#   • ungated "trading as / formerly / a.k.a." — fire on third-party vendor
+#     mentions, e.g. a storage reseller's "Everpure (formerly Pure Storage)".
+# NB: no re.IGNORECASE — it would make _NAME's [A-Z0-9] continuation match
+# lowercase too, letting the brand run drift into following prose ("Acme bzw.
+# Acme GmbH is the market leader" → "Acme GmbH is"). The token/keyword parts are
+# already case-insensitive via character classes.
+_GATED = [
+    re.compile(_TOK + r"\s+[Bb][Zz][Ww]\.?\s+" + _NAME),
+]
+
+# Generic / structural / stop-word tokens that are never a distinctive brand
+# (normalized: lowercased, non-alphanumerics stripped). Includes German
+# function words so "‹company› bzw. im Team" cannot leak "im".
 _GENERIC = {
+    # legal / structural
     "gmbh", "ag", "se", "kg", "kgaa", "ug", "inc", "ltd", "limited", "llc",
-    "plc", "co", "cokg", "group", "gruppe", "holding", "team", "company",
+    "plc", "co", "cokg", "gmbhcokg", "ohg", "mbh", "group", "gruppe",
+    "holding", "team", "company", "firma",
+    # industry filler
     "software", "solutions", "systems", "technologies", "technology",
     "digital", "media", "labs", "consulting", "services", "ventures",
+    # English stop words
     "the", "and", "or", "we", "our", "us", "you", "your", "career", "careers",
-    "job", "jobs", "gmbhcokg", "gmbhcokg", "ohg", "mbh",
+    "job", "jobs", "a", "an", "of", "for", "with",
+    # German stop words / conjunction fillers
+    "der", "die", "das", "den", "dem", "des", "ein", "eine", "einen", "einem",
+    "im", "in", "um", "am", "an", "auf", "bei", "mit", "für", "und", "oder",
+    "auch", "als", "wir", "uns", "unsere", "unser", "sowie", "bzw",
 }
 
 
@@ -76,6 +93,19 @@ def _squash(name: str) -> str:
         prev = norm
         norm = _LEGAL_SUFFIX_RE.sub("", norm).rstrip(" ,.-")
     return "".join(c for c in norm if c.isalnum())
+
+
+def _company_match(left_key: str, company_key: str) -> bool:
+    """Is ``left_key`` (a marker's left side) the company? Exact, or a
+    containment where the shorter side is ≥4 chars (so a 2-char token can't
+    match inside an unrelated name)."""
+    if not left_key or not company_key:
+        return False
+    if left_key == company_key:
+        return True
+    shorter = min(left_key, company_key, key=len)
+    return len(shorter) >= 4 and (left_key in company_key
+                                  or company_key in left_key)
 
 
 def _display(candidate: str) -> str:
@@ -98,16 +128,14 @@ def extract_company_aliases(company: str, jd_text: str) -> str:
     company_key = _squash(company)
 
     raw: list[str] = []
-    for pat in _CONNECTIVES:
-        raw += pat.findall(head)
-    raw += _TRADEMARK.findall(head)
-    for left, right in _SLASH.findall(head):
-        # only trust a slash when its left side IS the company (avoids paths,
-        # "and/or", unrelated pairs)
-        lk = _squash(left)
-        if lk and company_key and (lk == company_key
-                                   or lk in company_key or company_key in lk):
-            raw.append(right)
+    for pat in _GATED:
+        for left, right in pat.findall(head):
+            # trust the marker only when its left side IS the company. Substring
+            # is allowed (multi-word names collapse to one token) but only when
+            # the shorter side is ≥4 chars — else a 2-char token like 'ci' spuriously
+            # matches inside 'getspeCIalfasteners'.
+            if _company_match(_squash(left), company_key):
+                raw.append(right)
 
     aliases: list[str] = []
     seen: set[str] = set()
@@ -117,6 +145,10 @@ def extract_company_aliases(company: str, jd_text: str) -> str:
         if not key or len(alias) < 2 or len(alias) > 40:
             continue
         if key == company_key or key in _GENERIC or key in seen:
+            continue
+        # a brand never opens with a function word ("im Team", "the group")
+        words = alias.split()
+        if words and _squash(words[0]) in _GENERIC:
             continue
         seen.add(key)
         aliases.append(alias)

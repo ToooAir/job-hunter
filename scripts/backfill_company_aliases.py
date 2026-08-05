@@ -28,6 +28,9 @@ _ACTIVE = ("applied", "interview_1", "interview_2")
 def backfill(db_path: str, active_only: bool = False, limit: int | None = None) -> None:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
+    # the scheduler's scorer may be writing concurrently — wait for the WAL
+    # write lock instead of erroring out with "database is locked"
+    conn.execute("PRAGMA busy_timeout = 30000")
     where = "company_aliases IS NULL"
     params: list = []
     if active_only:
