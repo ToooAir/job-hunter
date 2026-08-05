@@ -939,6 +939,24 @@ class EmailMatchTest(unittest.TestCase):
         # 'U-Glow' never appears in the email, but the alias clears the flag
         self.assertTrue(body["matches"][0]["company_in_email"])
 
+    def test_alias_inherited_from_same_company_sibling_row(self):
+        # a dedup miss can strand the brand on a scored duplicate: the APPLIED
+        # U-Glow row has no alias, but a scored sibling does — the active
+        # application must still inherit 'prelytics' (company-level union)
+        self.conn.executescript(
+            "INSERT INTO jobs (id, company, company_aliases, title, url, source,"
+            " raw_jd_text, fetched_at, status, applied_at) VALUES"
+            " ('u-applied','U-Glow GmbH',NULL,'Python Developer','https://x/ua',"
+            "  'test','jd','2026-06-01T08:00:00','interview_1','2026-07-06T10:00:00'),"
+            " ('u-scored','U-Glow GmbH','prelytics','Python Developer','https://x/us',"
+            "  'test','jd','2026-06-01T08:00:00','scored',NULL);")
+        self.conn.commit()
+        cands = self.apply_api._active_applications(self.conn)
+        app = [c for c in cands if c["id"] == "u-applied"][0]
+        self.assertIn("prelytics", app["company_aliases"])
+        # and the scored sibling is NOT in the active (bookable) pool
+        self.assertNotIn("u-scored", [c["id"] for c in cands])
+
     def test_fabricated_evidence_quote_warns(self):
         self._llm_with({"intent": "rejection", "matches": [2],
                         "evidence": "We regret to inform you"})  # not in email

@@ -787,7 +787,29 @@ def _active_applications(conn) -> list[dict]:
         "SELECT id, company, company_aliases, title, applied_at, status FROM jobs"
         " WHERE status IN (?, ?, ?) ORDER BY applied_at DESC",
         _EMAIL_ACTIVE_STATUSES).fetchall()
-    return [dict(r) for r in rows]
+    apps = [dict(r) for r in rows]
+
+    # Aliases are a COMPANY-level fact (a brand belongs to the employer, not one
+    # posting), and a dedup miss can strand the brand on a sibling row: U-Glow's
+    # applied row has no 'prelytics', but its scored duplicate does. Union every
+    # non-empty alias across rows of the same normalized company so the active
+    # application inherits it — no row demotion needed (re-apply is already
+    # blocked company-level by apply_queue.dedup_gate).
+    from utils.apply_queue import normalize_company
+    by_company: dict[str, set[str]] = {}
+    for comp, al in conn.execute(
+            "SELECT company, company_aliases FROM jobs"
+            " WHERE company_aliases IS NOT NULL AND company_aliases != ''"):
+        key = normalize_company(comp or "")
+        if key:
+            by_company.setdefault(key, set()).update(
+                a.strip() for a in al.split(",") if a.strip())
+    for app in apps:
+        merged = {a.strip() for a in (app.get("company_aliases") or "").split(",")
+                  if a.strip()}
+        merged |= by_company.get(normalize_company(app["company"] or ""), set())
+        app["company_aliases"] = ", ".join(sorted(merged))
+    return apps
 
 
 def _alias_suffix(aliases: str | None) -> str:
