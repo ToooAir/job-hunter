@@ -5,6 +5,8 @@ import sqlite3
 import os
 from datetime import datetime, timedelta, timezone
 
+from utils.company_alias import extract_company_aliases
+
 log = logging.getLogger(__name__)
 
 def _jd_hash(text: str) -> str:
@@ -44,6 +46,7 @@ SCHEMA_COLUMNS = [
     ("notes",              "TEXT"),
     ("interview_brief",    "TEXT"),
     ("company_research",   "TEXT"),
+    ("company_aliases",    "TEXT"),   # brand / trade names mined from the JD (company_alias.py)
     ("salary_estimate",    "TEXT"),
     ("visa_analysis",      "TEXT"),
     ("translated_jd_text", "TEXT"),
@@ -177,6 +180,11 @@ def upsert_job(conn: sqlite3.Connection, job: dict) -> bool:
     under a different URL, skip insertion and log a warning.
     """
     jd_hash = _jd_hash(job.get("raw_jd_text", ""))
+    # Mine brand aliases from the JD once, here at the single ingest choke point
+    # (every scraper funnels through upsert_job). Keep a caller-supplied value.
+    job = {**job, "company_aliases": job.get("company_aliases")
+           or extract_company_aliases(job.get("company", ""),
+                                      job.get("raw_jd_text", ""))}
 
     existing = conn.execute(
         "SELECT id, source, url FROM jobs WHERE jd_hash = ?", (jd_hash,)

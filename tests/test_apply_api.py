@@ -912,6 +912,33 @@ class EmailMatchTest(unittest.TestCase):
         body = self._match(self.REJECTION).json()
         self.assertTrue(body["matches"][0]["company_in_email"])
 
+    def test_alias_bridges_brand_only_email(self):
+        # legal name U-Glow, brand (mined from the JD) prelytics — an email that
+        # only ever says 'prelytics' must still reach the listing and match,
+        # with the look-twice flag clearing via the alias
+        self.conn.execute(
+            "INSERT INTO jobs (id, company, company_aliases, title, url, source,"
+            " raw_jd_text, fetched_at, status, applied_at)"
+            " VALUES ('j-uglow','U-Glow GmbH','prelytics','Python Developer',"
+            " 'https://x/uglow','test','jd','2026-06-01T08:00:00',"
+            " 'interview_1','2026-07-05T10:00:00')")
+        self.conn.commit()
+        from tests.test_apply_llm import FakeClient
+        fake = FakeClient([self._json.dumps(
+            {"intent": "rejection", "matches": [1],
+             "evidence": "we will not be moving forward"})])
+        self.apply_api._llm = lambda: (fake, "m")  # type: ignore[assignment]
+        email = ("Hello, thank you for applying to prelytics. Unfortunately we"
+                 " will not be moving forward with your application.")
+        body = self._match(email).json()
+        # the mined alias reached the LLM's candidate listing
+        sent = fake.calls[0]["messages"][-1]["content"]
+        self.assertIn("(aka prelytics)", sent)
+        # newest-applied first → j-uglow (2026-07-05) is #1
+        self.assertEqual(body["matches"][0]["id"], "j-uglow")
+        # 'U-Glow' never appears in the email, but the alias clears the flag
+        self.assertTrue(body["matches"][0]["company_in_email"])
+
     def test_fabricated_evidence_quote_warns(self):
         self._llm_with({"intent": "rejection", "matches": [2],
                         "evidence": "We regret to inform you"})  # not in email
