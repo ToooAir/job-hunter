@@ -90,6 +90,25 @@ def title_excluded(title: str | None) -> bool:
     """True when the job title marks a student/intern role we never apply to."""
     return bool(TITLE_EXCLUDE_RE.search(title or ""))
 
+
+# Titles that reach past the candidate's ~4yr + tech-lead level. phase2_scorer
+# already SOFT-penalizes Principal/Staff/Head/Architect (-15); the ones that
+# stay grade-A despite it are strong matches we keep — but they get RANKED
+# BEHIND on-target roles rather than occupying scarce in-budget review slots
+# (never dropped: the search is IC-track, so people-manager titles are included
+# too — "(Senior) Manager – AI", "Engineering Manager" were abandoned as
+# not-qualified). VP/Director stay in via the broad leadership terms below since
+# demotion — unlike the scorer's penalty — is reversible from over_budget.
+QUEUE_OVERREACH_RE = re.compile(
+    r"\bprincipal\b|\bstaff\b|\bhead of\b|\barchitect\b|\bvp\b|"
+    r"\bvice president\b|\bdirector\b|\bchief\b|\bmanager\b", re.I)
+
+
+def title_overreaches(title: str | None) -> bool:
+    """True when the title is a seniority/leadership reach — kept, but ranked
+    behind on-target roles in the queue."""
+    return bool(QUEUE_OVERREACH_RE.search(title or ""))
+
 # A ghosted company never actually rejected us — after this cooldown a *new* role
 # there is fair game again. applied/interview/offer stay permanently
 # blocked. Env override: APPLY_GHOST_COOLDOWN_DAYS.
@@ -418,10 +437,22 @@ def build_queue(conn, budget: int | None = None, now: datetime | None = None,
         job = {**job, "age_days": job_age_days(job["fetched_at"], now),
                "dedup": verdict, "dedup_reason": reason,
                "addressable": is_addressable(job)}
+        # Rank-back (never drop) reasons: keep the job visible but push it out of
+        # the scarce in-budget slots so on-target, applicable roles fill them.
+        demote_reasons = []
+        if title_overreaches(job.get("title")):                 # ② seniority reach
+            demote_reasons.append("seniority-reach")
+        job["demote"] = bool(demote_reasons)
+        job["demote_reasons"] = demote_reasons
         if verdict == "block":
             blocked.append(job)
         else:
             queue.append(job)
+
+    # Stable sort keeps the sort_key order within each group and floats demoted
+    # jobs to the back, so the budget cut lands them in over_budget (still shown,
+    # just behind on-target roles). A-grade is never dropped by this — only ranked.
+    queue.sort(key=lambda j: 1 if j["demote"] else 0)
 
     for rank, job in enumerate(queue, 1):
         job["rank"] = rank
