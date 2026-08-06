@@ -21,6 +21,7 @@ from utils.apply_queue import (  # noqa: E402
     is_addressable,
     normalize_company,
     title_excluded,
+    title_overreaches,
     topup_budget,
 )
 from utils.db import (  # noqa: E402
@@ -157,6 +158,31 @@ class TitleExcludedTest(unittest.TestCase):
         self.assertFalse(title_excluded("Senior Software Engineer (Internal Tools)"))
         self.assertFalse(title_excluded("Software Engineer"))
         self.assertFalse(title_excluded(None))
+
+
+class SeniorityRankBackTest(QueueTestBase):
+    """② Overreach titles are kept but ranked behind on-target roles — never
+    dropped, and the demotion beats even a higher match_score."""
+
+    def test_title_overreaches_matches_leadership_not_ic(self):
+        for t in ("Staff Engineer", "Principal Software Engineer",
+                  "Head of Engineering", "Solutions Architect",
+                  "(Senior) Manager – AI", "Engineering Manager",
+                  "VP of Engineering", "Director of Data"):
+            self.assertTrue(title_overreaches(t), t)
+        for t in ("Software Engineer", "Senior Backend Engineer",
+                  "Full Stack Developer", None):
+            self.assertFalse(title_overreaches(t), t)
+
+    def test_overreach_demoted_below_on_target_despite_higher_score(self):
+        make_job(self.conn, "ic", grade="A", score=70, title="Software Engineer")
+        make_job(self.conn, "staff", grade="A", score=90, title="Staff Engineer")
+        result = build_queue(self.conn, budget=1, now=NOW)
+        self.assertEqual(self.queue_ids(result), ["ic"])          # in-budget
+        self.assertEqual([j["id"] for j in result["over_budget"]], ["staff"])
+        # kept & flagged, not blocked/dropped
+        self.assertEqual([j["id"] for j in result["blocked"]], [])
+        self.assertIn("seniority-reach", result["over_budget"][0]["demote_reasons"])
 
 
 class EligibilityTest(QueueTestBase):
