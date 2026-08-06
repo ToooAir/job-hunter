@@ -216,6 +216,26 @@ class FormReachabilityTest(QueueTestBase):
         self.assertEqual(result["queue"][0]["demote_reasons"], [])
 
 
+class AGradeLivenessWindowTest(QueueTestBase):
+    """⑥ A-grade gets a tighter liveness window (3d) than B (7d), so an A is
+    re-verified sooner and less likely to surface already-expired."""
+
+    def test_a_recheck_at_4d_but_b_still_live(self):
+        make_job(self.conn, "a-mid", company="C1", grade="A", score=80,
+                 checked_days_ago=4)   # >3d → A is stale
+        make_job(self.conn, "b-mid", company="C2", grade="B", score=70,
+                 checked_days_ago=4)   # <7d → B still live
+        result = build_queue(self.conn, now=NOW)  # include_stale=False (default)
+        self.assertEqual(self.queue_ids(result), ["b-mid"])
+        self.assertIn("a-mid", {j["id"] for j in result["needs_recheck"]})
+
+    def test_include_stale_lets_a_through_for_pass_a(self):
+        make_job(self.conn, "a-mid", company="C1", grade="A", score=80,
+                 checked_days_ago=4)
+        result = build_queue(self.conn, now=NOW, include_stale=True)
+        self.assertEqual(self.queue_ids(result), ["a-mid"])  # Pass A re-verifies
+
+
 class SameCompanyBatchTest(QueueTestBase):
     """④ A 2nd+ role at the same company in one batch is ranked back (not
     blocked): the best-ranked one keeps the in-budget slot, the rest go to
@@ -291,9 +311,11 @@ class EligibilityTest(QueueTestBase):
         self.assertEqual({j["id"] for j in result["dead"]}, {"gone", "err"})
 
     def test_stale_or_missing_liveness_goes_to_recheck(self):
-        make_job(self.conn, "fresh", company="C1", checked_days_ago=6)
-        make_job(self.conn, "stale", company="C2", checked_days_ago=8)
-        make_job(self.conn, "never", company="C3", checked_days_ago=None)
+        # grade B → the general 7-day window (A has a tighter 3-day one, tested
+        # separately in AGradeLivenessWindowTest)
+        make_job(self.conn, "fresh", company="C1", grade="B", score=70, checked_days_ago=6)
+        make_job(self.conn, "stale", company="C2", grade="B", score=70, checked_days_ago=8)
+        make_job(self.conn, "never", company="C3", grade="B", score=70, checked_days_ago=None)
         result = build_queue(self.conn, now=NOW)
         self.assertEqual(self.queue_ids(result), ["fresh"])
         self.assertEqual({j["id"] for j in result["needs_recheck"]}, {"stale", "never"})
