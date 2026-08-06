@@ -455,6 +455,7 @@ def build_queue(conn, budget: int | None = None, now: datetime | None = None,
 
     queue, blocked = [], []
     ctx = DedupContext.from_db(conn, now=now)
+    seen_companies: set[str] = set()  # ④ first (best-ranked) queued job per company
     for job in eligible:
         verdict, reason = dedup_gate(job, ctx)
         job = {**job, "age_days": job_age_days(job["fetched_at"], now),
@@ -467,11 +468,16 @@ def build_queue(conn, budget: int | None = None, now: datetime | None = None,
             demote_reasons.append("seniority-reach")
         if form_unreachable(job) and job["fit_grade"] != "A":   # ③ known dead-end (A kept)
             demote_reasons.append("form-unreachable")
+        ckey = normalize_company(job.get("company"))
+        if verdict != "block" and ckey and ckey in seen_companies:  # ④ 2nd+ of a company
+            demote_reasons.append("same-company-in-batch")
         job["demote"] = bool(demote_reasons)
         job["demote_reasons"] = demote_reasons
         if verdict == "block":
             blocked.append(job)
         else:
+            if ckey:
+                seen_companies.add(ckey)  # eligible is best-first → first kept wins
             queue.append(job)
 
     # Stable sort keeps the sort_key order within each group and floats demoted

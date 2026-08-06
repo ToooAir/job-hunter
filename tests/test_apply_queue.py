@@ -175,8 +175,10 @@ class SeniorityRankBackTest(QueueTestBase):
             self.assertFalse(title_overreaches(t), t)
 
     def test_overreach_demoted_below_on_target_despite_higher_score(self):
-        make_job(self.conn, "ic", grade="A", score=70, title="Software Engineer")
-        make_job(self.conn, "staff", grade="A", score=90, title="Staff Engineer")
+        make_job(self.conn, "ic", company="C1", grade="A", score=70,
+                 title="Software Engineer")
+        make_job(self.conn, "staff", company="C2", grade="A", score=90,
+                 title="Staff Engineer")
         result = build_queue(self.conn, budget=1, now=NOW)
         self.assertEqual(self.queue_ids(result), ["ic"])          # in-budget
         self.assertEqual([j["id"] for j in result["over_budget"]], ["staff"])
@@ -191,23 +193,52 @@ class FormReachabilityTest(QueueTestBase):
     kept in the queue (constraint: A weak-form still gets a manual look)."""
 
     def test_b_unreachable_demoted_below_b_unknown(self):
-        make_job(self.conn, "b-open", grade="B", score=70, form_verdict=None)
-        make_job(self.conn, "b-dead", grade="B", score=70, form_verdict="no-form")
+        make_job(self.conn, "b-open", company="C1", grade="B", score=70,
+                 form_verdict=None)
+        make_job(self.conn, "b-dead", company="C2", grade="B", score=70,
+                 form_verdict="no-form")
         result = build_queue(self.conn, budget=1, now=NOW)
         self.assertEqual(self.queue_ids(result), ["b-open"])
         self.assertEqual([j["id"] for j in result["over_budget"]], ["b-dead"])
-        self.assertIn("form-unreachable",
-                      result["over_budget"][0]["demote_reasons"])
+        self.assertEqual(result["over_budget"][0]["demote_reasons"],
+                         ["form-unreachable"])
 
     def test_a_unreachable_stays_in_queue_above_addressable_b(self):
         # constraint #1: an A weak/no-form role outranks a fully-addressable B
         # and is never demoted
-        make_job(self.conn, "a-dead", grade="A", score=60, form_verdict="captcha")
-        make_job(self.conn, "b-fill", grade="B", score=95, ats="greenhouse")
+        make_job(self.conn, "a-dead", company="C1", grade="A", score=60,
+                 form_verdict="captcha")
+        make_job(self.conn, "b-fill", company="C2", grade="B", score=95,
+                 ats="greenhouse")
         result = build_queue(self.conn, budget=1, now=NOW)
         self.assertEqual(self.queue_ids(result), ["a-dead"])
         self.assertEqual([j["id"] for j in result["over_budget"]], ["b-fill"])
         self.assertEqual(result["queue"][0]["demote_reasons"], [])
+
+
+class SameCompanyBatchTest(QueueTestBase):
+    """④ A 2nd+ role at the same company in one batch is ranked back (not
+    blocked): the best-ranked one keeps the in-budget slot, the rest go to
+    over_budget so one company can't monopolize the review queue."""
+
+    def test_second_role_same_company_demoted_not_blocked(self):
+        make_job(self.conn, "freenet-sr", company="freenet AG", grade="A",
+                 score=90, title="Senior AI Engineer")
+        make_job(self.conn, "freenet-jr", company="freenet AG", grade="A",
+                 score=85, title="Junior AI Engineer")  # different title → not batch-blocked
+        result = build_queue(self.conn, budget=1, now=NOW)
+        self.assertEqual(self.queue_ids(result), ["freenet-sr"])
+        self.assertEqual([j["id"] for j in result["over_budget"]], ["freenet-jr"])
+        self.assertEqual([j["id"] for j in result["blocked"]], [])   # kept, not blocked
+        self.assertIn("same-company-in-batch",
+                      result["over_budget"][0]["demote_reasons"])
+
+    def test_distinct_companies_not_demoted(self):
+        make_job(self.conn, "a", company="Acme", grade="A", score=80)
+        make_job(self.conn, "b", company="Globex", grade="A", score=75)
+        result = build_queue(self.conn, budget=2, now=NOW)
+        self.assertEqual(set(self.queue_ids(result)), {"a", "b"})
+        self.assertTrue(all(j["demote_reasons"] == [] for j in result["queue"]))
 
 
 class EligibilityTest(QueueTestBase):
