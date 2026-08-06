@@ -268,13 +268,16 @@ def run_pass_a(jobs: list[dict]) -> list[dict]:
 
 
 def refresh_liveness(conn, states: list[dict]) -> None:
-    """Visiting the page IS the liveness check — record when we did."""
+    """Visiting the page IS the liveness check — record when we did, and persist
+    the probe verdict so the queue can rank a known-unreachable form (no-form /
+    captcha / external-board) behind applicable roles next run instead of
+    re-probing and re-surfacing it (batch ③)."""
     now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
     for s in states:
         conn.execute(
-            "UPDATE jobs SET ats_checked_at = ?, "
+            "UPDATE jobs SET ats_checked_at = ?, form_verdict = ?, "
             "apply_url = COALESCE(?, apply_url) WHERE id = ?",
-            (now, s.get("apply_url"), s["job"]["id"]),
+            (now, s.get("verdict"), s.get("apply_url"), s["job"]["id"]),
         )
     conn.commit()
 
