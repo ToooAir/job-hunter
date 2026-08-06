@@ -19,6 +19,7 @@ from utils.apply_queue import (  # noqa: E402
     build_queue,
     dedup_gate,
     is_addressable,
+    is_staffing_employer,
     normalize_company,
     title_excluded,
     title_overreaches,
@@ -92,6 +93,33 @@ class NormalizeCompanyTest(unittest.TestCase):
         self.assertNotEqual(normalize_company("H&S"), normalize_company("H&Z"))
         self.assertNotEqual(normalize_company("Sopra Steria"),
                             normalize_company("Sopra"))
+
+
+class IsStaffingEmployerTest(unittest.TestCase):
+    def test_recruitment_and_staffing_names_match(self):
+        # generic descriptor terms only — German staffing/consultancy firms
+        # almost always carry one in their legal name. Bare brand names with no
+        # descriptor (e.g. "Randstad Deutschland") are deliberately NOT hardcoded
+        # (brittle); their different-role case is still handled by the
+        # different-title→warn path, only same-title-different-client slips through.
+        for name in ("ABALON Recruitment GmbH", "Hays Professional Solutions",
+                     "XY Personaldienstleistung GmbH",
+                     "Muster Zeitarbeit GmbH", "Foo Personalberatung",
+                     "Bar Personalvermittlung", "Acme IT-Beratung",
+                     "Some Unternehmensberatung AG", "Global Consulting Group",
+                     "Nimbus Consultancy"):
+            self.assertTrue(is_staffing_employer(name), name)
+
+    def test_product_companies_do_not_match(self):
+        # a product company that merely "consults stakeholders" must not match —
+        # the bare word "consult" is never used alone
+        for name in ("Zalando SE", "Celonis", "Mistral AI", "HelloFresh",
+                     "N26", "Trade Republic", "adesso SE", "Consultstakeholders"):
+            self.assertFalse(is_staffing_employer(name), name)
+
+    def test_empty_is_false(self):
+        self.assertFalse(is_staffing_employer(None))
+        self.assertFalse(is_staffing_employer(""))
 
 
 class TopupBudgetTest(unittest.TestCase):
@@ -392,12 +420,59 @@ class DedupGateTest(QueueTestBase):
         self.assertEqual(second["dedup"], "warn")
 
     def test_block_company_in_pipeline(self):
-        make_job(self.conn, "applied", company="Acme GmbH", status="applied")
-        make_job(self.conn, "new", company="Acme")  # suffix differs, must still match
+        # same role, suffix-normalized company name must still match → block
+        make_job(self.conn, "applied", company="Acme GmbH", status="applied",
+                 title="Backend Engineer")
+        make_job(self.conn, "new", company="Acme", title="Backend Engineer")
         result = build_queue(self.conn, now=NOW)
         self.assertEqual(self.queue_ids(result), [])
         self.assertEqual(result["blocked"][0]["id"], "new")
         self.assertIn("pipeline", result["blocked"][0]["dedup_reason"])
+
+    def test_applied_company_different_role_warns_not_blocks(self):
+        # supply-yield relaxation: a genuinely different role at a company we
+        # applied to is a human decision (warn), not a hard block
+        make_job(self.conn, "applied", company="Zalando SE", status="applied",
+                 title="Backend Engineer")
+        make_job(self.conn, "new", company="Zalando", title="ML Platform Engineer")
+        result = build_queue(self.conn, now=NOW)
+        self.assertEqual(self.queue_ids(result), ["new"])
+        self.assertEqual(result["queue"][0]["dedup"], "warn")
+        self.assertIn("different role", result["queue"][0]["dedup_reason"])
+
+    def test_applied_company_same_role_still_blocks(self):
+        make_job(self.conn, "applied", company="Zalando SE", status="applied",
+                 title="Backend Engineer")
+        make_job(self.conn, "repost", company="Zalando", title="Backend  Engineer")
+        result = build_queue(self.conn, now=NOW)
+        self.assertEqual(self.queue_ids(result), [])
+        self.assertEqual(result["blocked"][0]["id"], "repost")
+        self.assertIn("pipeline", result["blocked"][0]["dedup_reason"])
+
+    def test_staffing_company_in_pipeline_warns_even_same_title(self):
+        # a recruitment agency fronts many end clients — a second posting there
+        # (even same title = different client) is a warn, never a company block
+        make_job(self.conn, "a1", company="ABALON Recruitment GmbH",
+                 status="applied", title="Backend Developer")
+        make_job(self.conn, "a2", company="ABALON Recruitment",
+                 title="Backend Developer")
+        result = build_queue(self.conn, now=NOW)
+        self.assertEqual(self.queue_ids(result), ["a2"])
+        self.assertEqual(result["queue"][0]["dedup"], "warn")
+        self.assertIn("staffing", result["queue"][0]["dedup_reason"])
+
+    def test_staffing_same_title_rejected_still_blocks(self):
+        # a rejection is a rejection even for a staffing firm: the exact role
+        # that said no stays out
+        make_job(self.conn, "rej", company="Hays Professional Solutions GmbH",
+                 status="rejected", title="Data Engineer",
+                 applied_at=_iso(NOW - timedelta(days=5)))
+        make_job(self.conn, "repost", company="Hays Professional Solutions",
+                 title="Data Engineer")
+        result = build_queue(self.conn, now=NOW)
+        self.assertEqual(self.queue_ids(result), [])
+        self.assertIn("same title previously rejected",
+                      result["blocked"][0]["dedup_reason"])
 
     def test_ghosted_company_within_cooldown_still_blocks(self):
         make_job(self.conn, "ghost", company="GhostCo", status="ghosted",
@@ -468,12 +543,26 @@ class DedupGateTest(QueueTestBase):
         self.assertIn("pipeline", result["blocked"][0]["dedup_reason"])
 
     def test_block_company_with_in_flight_snapshot(self):
-        make_job(self.conn, "drafted", company="Beispiel UG (haftungsbeschränkt)")
-        make_job(self.conn, "second", company="Beispiel")
+        # same role, in-flight draft at the suffix-normalized company → block
+        make_job(self.conn, "drafted", company="Beispiel UG (haftungsbeschränkt)",
+                 title="Backend Engineer")
+        make_job(self.conn, "second", company="Beispiel", title="Backend Engineer")
         create_application_snapshot(self.conn, "drafted", status="draft")
         result = build_queue(self.conn, now=NOW)
         self.assertEqual(self.queue_ids(result), [])  # drafted skipped, second blocked
         self.assertEqual(result["blocked"][0]["id"], "second")
+
+    def test_in_flight_different_role_warns_not_blocks(self):
+        # a draft in progress for one role must not hide a genuinely different
+        # role at the same company — surfaced as a warn, human decides
+        make_job(self.conn, "drafted", company="Beispiel UG (haftungsbeschränkt)",
+                 title="Backend Engineer")
+        make_job(self.conn, "other", company="Beispiel", title="Data Engineer")
+        create_application_snapshot(self.conn, "drafted", status="draft")
+        result = build_queue(self.conn, now=NOW)
+        self.assertEqual(self.queue_ids(result), ["other"])
+        self.assertEqual(result["queue"][0]["dedup"], "warn")
+        self.assertIn("different role", result["queue"][0]["dedup_reason"])
 
     def test_warn_jd_hash_applied_elsewhere(self):
         make_job(self.conn, "via-board", company="Recruiter AG", status="applied",

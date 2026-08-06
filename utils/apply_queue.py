@@ -27,14 +27,19 @@ interview rate with utils.resume_stats:
   APPLY_ADDRESSABLE_ONLY=1 keep only extension-fillable ATS (is_addressable)
 
 Dedup gate (per candidate, on normalized company name):
-  block — company already has a pipeline record (a ghosted one expires after
-          APPLY_GHOST_COOLDOWN_DAYS, a rejected one after
-          APPLY_REJECT_COOLDOWN_DAYS), another job of the same company has an
-          in-flight snapshot, or the exact title was previously rejected
-  warn  — same jd_hash already applied under another job (recruiter repost),
-          second job of the same company within this batch, a different
-          role at a company whose rejection cooled off, or a company we
-          ghosted past the cooldown (re-applying is fine — but visibly)
+  block — the exact title was previously rejected; or (non-staffing employer)
+          the company has an in-flight snapshot, or a pipeline record for the
+          SAME role, or any pipeline record while a rejection/ghost cooldown is
+          still running (ghosted expires after APPLY_GHOST_COOLDOWN_DAYS, a
+          rejected one after APPLY_REJECT_COOLDOWN_DAYS); or a same-title
+          multi-city variant already in this batch
+  warn  — same jd_hash already applied under another job (recruiter repost); a
+          staffing/consultancy employer already in the pipeline (each posting is
+          a different end client); a genuinely different role at a company we
+          applied to / are interviewing with; second job of the same company in
+          this batch; a different role at a company whose rejection cooled off;
+          or a company we ghosted past the cooldown (re-applying is fine — but
+          visibly)
 
 Budget: env APPLY_DAILY_BUDGET (default 35) caps the queue; the rest is
 reported as over_budget.
@@ -172,6 +177,30 @@ def form_unreachable(job: dict) -> bool:
     only ranks within grade and demotes non-A to over_budget."""
     return (job.get("form_verdict") or "").lower() in UNREACHABLE_VERDICTS
 
+
+# Recruitment agencies / consultancies post many distinct end-client roles under
+# one legal name, so the company-level dedup ("one live application per company")
+# over-blocks them: applying to one ABALON/Hays role should not hide every other
+# client role there. Name-matched (the queue has no JD text loaded), high-precision
+# phrases only — a product company that merely "consults stakeholders" must not
+# match, so the bare word "consult" is never used alone. Shares intent with
+# salary_estimator._CONSULTANCY_MARKERS but stays local (apply_queue is stdlib-only).
+_STAFFING_RE = re.compile(
+    r"recruit|personaldienst|personalvermittl|personalberatung|zeitarbeit|"
+    r"arbeitnehmer(ü|ue)berlassung|staffing|"
+    r"consulting|consultanc|unternehmensberatung|it-beratung|"
+    r"professional (solutions|services)",
+    re.I,
+)
+
+
+def is_staffing_employer(company: str | None) -> bool:
+    """True when the company name reads as a recruitment/consultancy/staffing
+    firm — one legal entity fronting many different end clients. Such an employer
+    is exempt from the company-level pipeline block: a second posting there is a
+    different client, not a re-application, so it is surfaced as a warn."""
+    return bool(_STAFFING_RE.search(company or ""))
+
 # Same notion of "in the pipeline" as the dashboard: once a company has any of
 # these, a new application there needs a human decision first.
 PIPELINE_STATUSES = ("applied", "interview_1", "interview_2", "offer", "rejected", "ghosted")
@@ -260,9 +289,15 @@ class DedupContext:
     def __init__(self, pipeline_companies, in_flight, applied_jd_hashes,
                  cooled_rejected=None, rejected_titles=None,
                  reject_cooldown_days=REJECT_COOLDOWN_DAYS,
-                 cooled_ghosted=None, ghost_cooldown_days=GHOST_COOLDOWN_DAYS):
+                 cooled_ghosted=None, ghost_cooldown_days=GHOST_COOLDOWN_DAYS,
+                 pipeline_titles=None, in_flight_titles=None):
         self.pipeline_companies = pipeline_companies      # norm company -> status
+        # (norm company, norm title) of the roles actually in the pipeline — a
+        # candidate whose title is NOT here is a genuinely different role at an
+        # engaged company (warn, human decides) rather than a re-application.
+        self.pipeline_titles = pipeline_titles or set()   # {(norm company, norm title)}
         self.in_flight = in_flight                        # norm company -> job_id
+        self.in_flight_titles = in_flight_titles or set() # {(norm company, norm title)}
         self.applied_jd_hashes = applied_jd_hashes        # jd_hash -> job_id
         self.cooled_rejected = cooled_rejected or set()   # norm company (rejection cooled off)
         self.rejected_titles = rejected_titles or set()   # (norm company, norm title)
@@ -284,6 +319,7 @@ class DedupContext:
         reject_days = int(os.getenv("APPLY_REJECT_COOLDOWN_DAYS", str(REJECT_COOLDOWN_DAYS)))
         reject_cutoff = now - timedelta(days=reject_days)
         pipeline: dict[str, str] = {}
+        pipeline_titles: set[tuple[str, str]] = set()
         cooled_rejected: set[str] = set()
         rejected_titles: set[tuple[str, str]] = set()
         cooled_ghosted: set[str] = set()
@@ -315,16 +351,23 @@ class DedupContext:
                     cooled_rejected.add(company)
                     continue
             pipeline[company] = r["status"]
+            ptitle = _norm_title(r["title"])
+            if ptitle:
+                pipeline_titles.add((company, ptitle))
         snap_placeholders = ",".join("?" for _ in IN_FLIGHT_SNAPSHOT_STATUSES)
-        in_flight = {
-            normalize_company(r["company"]): r["job_id"]
-            for r in conn.execute(
-                f"""SELECT s.job_id, j.company FROM application_snapshots s
-                    JOIN jobs j ON j.id = s.job_id
-                    WHERE s.status IN ({snap_placeholders})""",
-                IN_FLIGHT_SNAPSHOT_STATUSES,
-            )
-        }
+        in_flight: dict[str, str] = {}
+        in_flight_titles: set[tuple[str, str]] = set()
+        for r in conn.execute(
+            f"""SELECT s.job_id, j.company, j.title FROM application_snapshots s
+                JOIN jobs j ON j.id = s.job_id
+                WHERE s.status IN ({snap_placeholders})""",
+            IN_FLIGHT_SNAPSHOT_STATUSES,
+        ):
+            fcompany = normalize_company(r["company"])
+            in_flight[fcompany] = r["job_id"]
+            ftitle = _norm_title(r["title"])
+            if ftitle:
+                in_flight_titles.add((fcompany, ftitle))
         applied_hashes = {
             r["jd_hash"]: r["id"]
             for r in conn.execute(
@@ -337,7 +380,8 @@ class DedupContext:
         return cls(pipeline, in_flight, applied_hashes,
                    cooled_rejected=cooled_rejected, rejected_titles=rejected_titles,
                    reject_cooldown_days=reject_days,
-                   cooled_ghosted=cooled_ghosted, ghost_cooldown_days=cooldown_days)
+                   cooled_ghosted=cooled_ghosted, ghost_cooldown_days=cooldown_days,
+                   pipeline_titles=pipeline_titles, in_flight_titles=in_flight_titles)
 
 
 def dedup_gate(job: dict, ctx: DedupContext) -> tuple[str, str]:
@@ -347,27 +391,50 @@ def dedup_gate(job: dict, ctx: DedupContext) -> tuple[str, str]:
     so a later job of the same company in the same batch gets a warn.
     """
     company = normalize_company(job["company"])
-    if company in ctx.pipeline_companies:
-        return "block", f"company in pipeline ({ctx.pipeline_companies[company]})"
-    if company in ctx.in_flight:
-        return "block", f"company has in-flight snapshot (job {ctx.in_flight[company]})"
-
     title = _norm_title(job.get("title"))
+    staffing = is_staffing_employer(job.get("company"))
+
+    # The exact role that said no stays out — a repost is the same "no". Applies
+    # to staffing firms too: a rejection is a rejection, whoever the client was.
     if title and (company, title) in ctx.rejected_titles:
-        # even after the company's rejection cooled off, the exact role that
-        # said no stays out — a repost of it is the same "no"
         return "block", "same title previously rejected"
-    if title and (company, title) in ctx.batch_titles:
-        # same company AND same title in one batch = a multi-city variant of
-        # one posting — a second draft is pure generation + review noise (the
-        # sibling's submit auto-revokes it anyway). A genuinely different role
-        # at the same company stays a warn below, not a block.
-        return "block", (f"same-title variant in batch "
-                         f"(job {ctx.batch_titles[(company, title)]})")
+
+    # Staffing/consultancy names front many distinct end clients, so the
+    # one-live-application-per-company block does not apply to them (surfaced as
+    # a warn below). For every other employer the company block holds — except
+    # that a genuinely DIFFERENT role at a company we applied to / are
+    # interviewing with is a human decision (warn), not a hard block. A recent
+    # rejection or ghost keeps the full company block until its cooldown releases.
+    if not staffing:
+        if company in ctx.in_flight and (
+                (not title) or (company, title) in ctx.in_flight_titles):
+            return "block", f"company has in-flight snapshot (job {ctx.in_flight[company]})"
+        if company in ctx.pipeline_companies:
+            status = ctx.pipeline_companies[company]
+            same_role = (not title) or (company, title) in ctx.pipeline_titles
+            cooldown_status = status in ("rejected", "ghosted")
+            if same_role or cooldown_status:
+                return "block", f"company in pipeline ({status})"
+        if title and (company, title) in ctx.batch_titles:
+            # same company AND same title in one batch = a multi-city variant of
+            # one posting — a second draft is pure generation + review noise (the
+            # sibling's submit auto-revokes it anyway). A genuinely different role
+            # at the same company stays a warn below, not a block.
+            return "block", (f"same-title variant in batch "
+                             f"(job {ctx.batch_titles[(company, title)]})")
 
     verdict, reason = "ok", ""
     if job.get("jd_hash") and job["jd_hash"] in ctx.applied_jd_hashes:
         verdict, reason = "warn", f"same JD applied as job {ctx.applied_jd_hashes[job['jd_hash']]}"
+    elif staffing and (company in ctx.pipeline_companies or company in ctx.in_flight):
+        verdict, reason = "warn", "staffing/consultancy — distinct end client, human decides"
+    elif company in ctx.pipeline_companies or company in ctx.in_flight:
+        # non-staffing, passed the block above ⇒ a genuinely different role at a
+        # company we applied to / are interviewing with / have a draft for
+        # (never rejected/ghosted here — those stay blocked until cooldown)
+        engaged = ctx.pipeline_companies.get(company) or "in-flight draft"
+        verdict, reason = "warn", (f"different role at engaged company "
+                                   f"({engaged}), human decides")
     elif company in ctx.batch_companies:
         verdict, reason = "warn", f"2nd job of company in batch (job {ctx.batch_companies[company]})"
     elif company in ctx.cooled_rejected:
