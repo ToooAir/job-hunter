@@ -17,6 +17,7 @@ import this without pulling in streamlit/requests.
 """
 
 import re
+from urllib.parse import urlparse
 
 # Sentinel in GERMANY_PATTERNS: the dashboard expands it to a 5-digit postal
 # code GLOB instead of a LIKE.
@@ -108,26 +109,62 @@ _DE_POSTAL_RE = re.compile(r"\b\d{5}\b")
 _DE_TOKEN_RE = re.compile(r",\s*de\s*(?=,|$)", re.I)
 
 
-def has_non_de_marker(location: str | None) -> bool:
-    """True when the location outright names a non-German country/city.
+def _indeed_cc(url: str | None) -> str | None:
+    """The country subdomain of an Indeed URL — 'es' for es.indeed.com,
+    'de' for de.indeed.com — or None when the host is not a
+    '<cc>.indeed.com' (bare indeed.com, www., smartapply., non-Indeed).
+
+    Indeed is the only source in our scraper set that carries the posting's
+    market in the hostname; "es.indeed.com/viewjob?jk=..." is a Spanish-market
+    posting that no location string or JD text may reveal. The leftmost label
+    is taken as the country code only when it is a bare two-letter alpha, so
+    'www'/'smartapply'/'de-de' never parse as a country.
+    """
+    host = (urlparse(url or "").hostname or "").lower()
+    labels = host.split(".")
+    if labels[-2:] == ["indeed", "com"] and len(labels) >= 3:
+        cc = labels[0]
+        if len(cc) == 2 and cc.isalpha():
+            return cc
+    return None
+
+
+def url_is_non_de(url: str | None) -> bool:
+    """True when the source URL alone places the posting outside Germany.
+
+    Currently just Indeed's country subdomain (es./fr./us./…). 'de' is the
+    only code that is NOT non-DE; an unrecognised host returns False so it
+    still flows through the normal location/JD checks.
+    """
+    cc = _indeed_cc(url)
+    return cc is not None and cc != "de"
+
+
+def has_non_de_marker(location: str | None, url: str | None = None) -> bool:
+    """True when the location — or the source URL's country subdomain —
+    outright places the job outside Germany.
 
     Used by phase2_scorer as a scoring veto: a job whose location says
-    "Municipality of Madrid, Spain" can never enter the Germany-only apply
-    queue, so LLM-scoring it is pure spend. Bare/ambiguous locations
-    ("Remote", "Schlieren") return False — absence of a marker is not
-    evidence of Germany, so they still get scored.
+    "Municipality of Madrid, Spain", or whose URL is es.indeed.com, can never
+    enter the Germany-only apply queue, so LLM-scoring it is pure spend.
+    Bare/ambiguous locations ("Remote", "Schlieren") with no URL signal
+    return False — absence of a marker is not evidence of Germany, so they
+    still get scored.
     """
-    return bool(_NON_DE_RE.search((location or "").lower()))
+    return bool(_NON_DE_RE.search((location or "").lower())) or url_is_non_de(url)
 
 
-def is_germany_location(location: str | None) -> bool:
+def is_germany_location(location: str | None, url: str | None = None) -> bool:
     """Precise check: does this location string place the job in Germany?
 
-    Any non-DE marker vetoes the whole string, so mixed strings stay out and
-    a human decides. Meant for write-back relabeling, not for search recall.
+    Any non-DE marker — in the location string or the source URL's country
+    subdomain — vetoes the whole string, so mixed strings stay out and a
+    human decides. Meant for write-back relabeling, not for search recall.
     """
     loc = (location or "").strip()
     if not loc:
+        return False
+    if url_is_non_de(url):
         return False
     low = loc.lower()
     if _NON_DE_RE.search(low):

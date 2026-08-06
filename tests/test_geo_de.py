@@ -14,6 +14,7 @@ from utils.geo_de import (  # noqa: E402
     GERMANY_PATTERNS,
     has_non_de_marker,
     is_germany_location,
+    url_is_non_de,
 )
 
 
@@ -125,6 +126,42 @@ class TestHasNonDeMarker(unittest.TestCase):
         self.assertFalse(has_non_de_marker("Hamburg"))
         self.assertFalse(has_non_de_marker("Dresden (DE)"))
         self.assertFalse(has_non_de_marker("54595 Prüm"))
+
+
+class TestIndeedCountrySubdomain(unittest.TestCase):
+    """The Indeed country subdomain (es./fr./us.) is a geo signal no location
+    string or JD text carries — the motivating case was es.indeed.com jobs
+    surfacing into Apply Review despite obviously not being in Germany."""
+
+    def test_non_de_subdomain_flags(self):
+        self.assertTrue(url_is_non_de("https://es.indeed.com/viewjob?jk=1153f2"))
+        self.assertTrue(url_is_non_de("https://fr.indeed.com/viewjob?jk=abc"))
+        self.assertTrue(url_is_non_de("https://us.indeed.com/rc/clk?jk=xyz"))
+        self.assertTrue(url_is_non_de("https://uk.indeed.com/viewjob?jk=q"))
+
+    def test_de_subdomain_is_not_non_de(self):
+        self.assertFalse(url_is_non_de("https://de.indeed.com/viewjob?jk=743e9c"))
+
+    def test_bare_and_non_country_hosts_are_neutral(self):
+        # no country code → fall through to location/JD checks, never veto
+        self.assertFalse(url_is_non_de("https://www.indeed.com/viewjob?jk=1"))
+        self.assertFalse(url_is_non_de("https://indeed.com/viewjob?jk=1"))
+        self.assertFalse(url_is_non_de("https://smartapply.indeed.com/beta/x"))
+        self.assertFalse(url_is_non_de("https://boards.greenhouse.io/acme/jobs/1"))
+        self.assertFalse(url_is_non_de(""))
+        self.assertFalse(url_is_non_de(None))
+
+    def test_url_veto_overrides_bare_location(self):
+        # location gives no signal, but the URL alone places it outside Germany
+        self.assertTrue(has_non_de_marker("Remote", "https://es.indeed.com/viewjob?jk=1"))
+        self.assertTrue(has_non_de_marker("", "https://es.indeed.com/viewjob?jk=1"))
+        self.assertFalse(is_germany_location("Frankfurt", "https://es.indeed.com/viewjob?jk=1"))
+
+    def test_de_url_does_not_falsely_promote(self):
+        # a de.indeed URL is not non-DE, but it also must not promote a bare
+        # non-German location to Germany on its own
+        self.assertFalse(is_germany_location("Remote", "https://de.indeed.com/viewjob?jk=1"))
+        self.assertTrue(is_germany_location("Hamburg", "https://de.indeed.com/viewjob?jk=1"))
 
 
 if __name__ == "__main__":

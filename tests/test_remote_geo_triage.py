@@ -137,21 +137,21 @@ class TestFetchAndWriteBack(unittest.TestCase):
         self.conn.execute(
             "CREATE TABLE jobs (id TEXT PRIMARY KEY, company TEXT, title TEXT,"
             " location TEXT, status TEXT, match_score INTEGER,"
-            " raw_jd_text TEXT, translated_jd_text TEXT)")
+            " raw_jd_text TEXT, translated_jd_text TEXT, url TEXT)")
         rows = [
-            ("j1", "Acme", "Backend", "Remote", "scored", 90, "Remote within Germany", None),
-            ("j2", "Umbrella", "ML", "Remote", "scored", 85, None, "US only role"),
-            ("j3", "Initech", "Dev", "Hamburg", "scored", 88, "irrelevant", None),  # keyword match
-            ("j4", "Hooli", "SRE", "Remote", "applied", 92, "anywhere", None),      # not scored
-            ("j5", "Piper", "Go dev", "Anywhere in the World", "scored", 90, "great team", None),
-            ("j6", "Vandelay", "QA", "Remote / New York", "scored", 88, "eng org", None),
-            ("j7", "Sirius", "Data", "Dresden (DE)", "scored", 88, "eng org", None),
-            ("j8", "Globex", "SRE", "Municipality of Madrid, Spain", "scored", 88, "x", None),
+            ("j1", "Acme", "Backend", "Remote", "scored", 90, "Remote within Germany", None, None),
+            ("j2", "Umbrella", "ML", "Remote", "scored", 85, None, "US only role", None),
+            ("j3", "Initech", "Dev", "Hamburg", "scored", 88, "irrelevant", None, None),  # keyword match
+            ("j4", "Hooli", "SRE", "Remote", "applied", 92, "anywhere", None, None),      # not scored
+            ("j5", "Piper", "Go dev", "Anywhere in the World", "scored", 90, "great team", None, None),
+            ("j6", "Vandelay", "QA", "Remote / New York", "scored", 88, "eng org", None, None),
+            ("j7", "Sirius", "Data", "Dresden (DE)", "scored", 88, "eng org", None, None),
+            ("j8", "Globex", "SRE", "Municipality of Madrid, Spain", "scored", 88, "x", None, None),
             # un-scored: triage now runs before phase2_scorer and must see these
-            ("j9", "Wonka", "Rust dev", "Remote", "un-scored", None, "EU-wide, CET overlap", None),
-            ("j10", "Stark", "Embedded", "Karlsruhe", "un-scored", None, "x", None),
+            ("j9", "Wonka", "Rust dev", "Remote", "un-scored", None, "EU-wide, CET overlap", None, None),
+            ("j10", "Stark", "Embedded", "Karlsruhe", "un-scored", None, "x", None, None),
         ]
-        self.conn.executemany("INSERT INTO jobs VALUES (?,?,?,?,?,?,?,?)", rows)
+        self.conn.executemany("INSERT INTO jobs VALUES (?,?,?,?,?,?,?,?,?)", rows)
         self.conn.commit()
 
     def tearDown(self):
