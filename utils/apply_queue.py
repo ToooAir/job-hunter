@@ -57,6 +57,11 @@ from utils.db import IN_FLIGHT_SNAPSHOT_STATUSES, init_db  # noqa: E402
 DEFAULT_DB_PATH = str(Path(__file__).resolve().parents[1] / "data" / "jobs.db")
 DEFAULT_BUDGET = 35
 LIVENESS_MAX_AGE_DAYS = 7
+# A-grade roles are the priority and the ones most-often abandoned as "expired"
+# (died inside the 7-day liveness window before review). Re-verify them sooner
+# so a fresh liveness precedes an A surfacing; non-A keep the 7-day window to
+# bound the browser re-probe cost (batch ⑥). Env override for tuning.
+A_LIVENESS_MAX_AGE_DAYS = 3
 FRESH_BUCKET_DAYS = 3
 DEAD_ATS = ("gone", "fetch-error")
 
@@ -415,6 +420,9 @@ def build_queue(conn, budget: int | None = None, now: datetime | None = None,
         budget = int(os.getenv("APPLY_DAILY_BUDGET", str(DEFAULT_BUDGET)))
     now = now or datetime.now()
     liveness_cutoff = now - timedelta(days=LIVENESS_MAX_AGE_DAYS)
+    a_liveness_cutoff = now - timedelta(
+        days=int(os.getenv("APPLY_A_LIVENESS_MAX_AGE_DAYS",
+                           str(A_LIVENESS_MAX_AGE_DAYS))))
 
     # Ranking bias toward extension-fillable ATS (default on).
     prefer_addressable = os.getenv("APPLY_PREFER_ADDRESSABLE", "1") != "0"
@@ -445,7 +453,8 @@ def build_queue(conn, budget: int | None = None, now: datetime | None = None,
             dead.append(job)
             continue
         checked = _parse_dt(job["ats_checked_at"])
-        is_stale = checked is None or checked < liveness_cutoff
+        cutoff = a_liveness_cutoff if job["fit_grade"] == "A" else liveness_cutoff
+        is_stale = checked is None or checked < cutoff
         if is_stale and not include_stale:
             needs_recheck.append(job)  # JIT re-verify before it may enter the queue
             continue
