@@ -453,17 +453,19 @@ Company: {company} | Title: {title} | Location: {location}
     return system_prompt, user_prompt
 
 
-def geo_excluded(location: str | None) -> bool:
+def geo_excluded(location: str | None, url: str | None = None) -> bool:
     """Locations that can never reach the Germany-only apply queue.
 
-    Two sources: an outright non-German country/city in the location string
-    ("Municipality of Madrid, Spain"), or remote_geo_triage's non-EU verdict
-    (it runs before this stage in the pipeline). Ambiguous locations
-    ("Remote", bare foreign town names without a country) are NOT excluded —
-    they still get scored, and the triage LLM gate needs those scores.
+    Three sources: an outright non-German country/city in the location string
+    ("Municipality of Madrid, Spain"), the source URL's country subdomain
+    (es.indeed.com — a Spanish-market posting no location string reveals), or
+    remote_geo_triage's non-EU verdict (it runs before this stage in the
+    pipeline). Ambiguous locations ("Remote", bare foreign town names without
+    a country) with no URL signal are NOT excluded — they still get scored,
+    and the triage LLM gate needs those scores.
     """
     loc = (location or "").strip()
-    return loc == "Remote — non-EU" or has_non_de_marker(loc)
+    return loc == "Remote — non-EU" or has_non_de_marker(loc, url)
 
 
 # ── Main Scoring Loop ──────────────────────────────────────────────────────────
@@ -523,7 +525,7 @@ def score_jobs(
             expired_ids.append(job["id"])
             log.info("expired: %s (%s @ %s, exp=%s)", job["id"], job["title"], job["company"], exp)
             continue
-        if geo_excluded(job.get("location")):
+        if geo_excluded(job.get("location"), job.get("url")):
             # can never enter the Germany-only apply queue — scoring is pure
             # spend. Stays un-scored (no DB write): re-filtered each run for
             # pennies of CPU until auto_expire's TTL removes it.

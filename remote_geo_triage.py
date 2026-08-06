@@ -215,7 +215,7 @@ def fetch_de_candidates(conn, limit=None):
     "bonn").
     """
     sql = (
-        "SELECT id, company, title, location, match_score "
+        "SELECT id, company, title, location, match_score, url "
         "FROM jobs WHERE status IN ('un-scored','scored') "
         "AND location IS NOT NULL AND location != '' "
         "AND location NOT LIKE 'Remote%' "
@@ -248,7 +248,7 @@ def main():
 
     # ── Pass 0: German locations the 14-keyword filter misses ─────────────
     de_jobs = fetch_de_candidates(conn, args.limit)
-    de_hits = [j for j in de_jobs if is_germany_location(j["location"])]
+    de_hits = [j for j in de_jobs if is_germany_location(j["location"], j.get("url"))]
     print(f"分類 Pass 0:{len(de_jobs)} 筆非德國標記地點中,{len(de_hits)} 筆"
           f"判定在德國 → 加註 ', Germany'", flush=True)
     for j in de_hits:

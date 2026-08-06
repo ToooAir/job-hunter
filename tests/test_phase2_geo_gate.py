@@ -39,6 +39,15 @@ class TestGeoExcluded(unittest.TestCase):
         self.assertFalse(geo_excluded(""))
         self.assertFalse(geo_excluded(None))
 
+    def test_indeed_country_subdomain_excludes_bare_location(self):
+        # es.indeed.com is a Spanish-market posting no location string reveals;
+        # a bare "Remote"/empty location must still be excluded from scoring
+        self.assertTrue(geo_excluded("Remote", "https://es.indeed.com/viewjob?jk=1"))
+        self.assertTrue(geo_excluded("", "https://fr.indeed.com/viewjob?jk=1"))
+        # de.indeed.com and non-Indeed hosts do not exclude on the URL alone
+        self.assertFalse(geo_excluded("Remote", "https://de.indeed.com/viewjob?jk=1"))
+        self.assertFalse(geo_excluded("Hamburg", "https://www.indeed.com/viewjob?jk=1"))
+
 
 if __name__ == "__main__":
     unittest.main()
