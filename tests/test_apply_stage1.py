@@ -6,7 +6,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from apply_stage1 import _has_apply_signature, is_unappliable, verdict_of  # noqa: E402
+from apply_stage1 import (  # noqa: E402
+    _has_apply_signature,
+    is_unappliable,
+    refresh_liveness,
+    verdict_of,
+)
 from utils.dom_pruner import FormField  # noqa: E402
 
 
@@ -37,6 +42,31 @@ class TestApplySignature(unittest.TestCase):
 
     def test_email_only_newsletter_widget_does_not(self):
         self.assertFalse(_has_apply_signature(fields("email", "email", "checkbox")))  # Riverty
+
+
+class TestRefreshLiveness(unittest.TestCase):
+    """③ the probe verdict must be persisted to jobs.form_verdict so the queue
+    can rank a known dead-end behind reachable roles next run."""
+
+    def test_persists_probe_verdict_and_checked_at(self):
+        import tempfile
+
+        from utils.db import init_db
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = init_db(str(Path(tmp) / "jobs.db"))
+            conn.execute(
+                "INSERT INTO jobs (id, company, title, url, source, raw_jd_text,"
+                " fetched_at, status) VALUES ('j1','Acme','Eng','https://x/1',"
+                " 'test','x','2026-06-01T08:00:00','scored')")
+            conn.commit()
+            refresh_liveness(conn, [{"job": {"id": "j1"}, "verdict": "no-form",
+                                     "apply_url": None}])
+            row = conn.execute(
+                "SELECT form_verdict, ats_checked_at FROM jobs WHERE id='j1'"
+            ).fetchone()
+            self.assertEqual(row["form_verdict"], "no-form")
+            self.assertIsNotNone(row["ats_checked_at"])
+            conn.close()
 
 
 class TestVerdictOf(unittest.TestCase):

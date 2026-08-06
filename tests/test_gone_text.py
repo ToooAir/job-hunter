@@ -17,6 +17,17 @@ class RedirectOffPostingTest(unittest.TestCase):
             "https://germantechjobs.de/jobs/ilexius-GmbH-Software-Developer--Data-Scientist-mfd",
             "https://germantechjobs.de/jobs/Data/all"))
 
+    def test_homepage_bounce_fires_regardless_of_slug_length(self):
+        # ⑤ real posting path bounced to the bare domain root = takedown, even
+        # for a short slug the general slug check would have skipped
+        self.assertTrue(redirect_off_posting(
+            "https://x.com/jobs/senior-backend-engineer", "https://x.com/"))
+        self.assertTrue(redirect_off_posting(
+            "https://x.com/jobs/abc", "https://x.com"))
+
+    def test_root_to_root_is_not_a_bounce(self):
+        self.assertFalse(redirect_off_posting("https://x.com/", "https://x.com/"))
+
     def test_redirect_keeping_slug_or_host_change_is_fine(self):
         # locale/canonical redirects keep the slug — alive
         self.assertFalse(redirect_off_posting(

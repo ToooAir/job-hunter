@@ -106,6 +106,13 @@ NON_EU_RE = re.compile(
     r"us citizens?|green card|authorized to work in the (us|usa|u\.s\.|united states)|"
     r"us work (authorization|permit)|north america(n)? (only|based|time ?zones?)|"
     r"(pst|pt|est|et) time ?zones?|west coast|east coast|bay area|"
+    # North-America residency lists that slipped past the above and left the
+    # job 'unclear' for the LLM to mislabel as germany (Taxgpt: "anywhere across
+    # US, Canada or Mexico"). US-pay-range-only cases are deliberately NOT here
+    # (they coexist with 'worldwide' marketing); the classify_llm guard catches
+    # those instead.
+    r"across (the )?(us|usa|u\.s\.|united states|north america)|"
+    r"(us|usa|u\.s\.|united states),? (and |or )?(canada|mexico)|"
     r"uk only|uk-based|canada only|canadian residents)\b",
     re.I)
 
@@ -159,7 +166,19 @@ def classify_llm(client, model, job) -> str:
             f"Title: {_sanitize(job['title'])}\n\nJob posting:\n{text}")
     out = _chat_json(client, model, _LLM_SYSTEM, user, max_tokens=200)
     region = (out or {}).get("region", "unclear")
-    return region if region in ("germany", "europe", "non_eu") else "unclear"
+    if region not in ("germany", "europe", "non_eu"):
+        return "unclear"
+    # Guard against evidence-free "germany": the LLM sometimes upgrades a
+    # US-remote posting (no German location, no hire-from-anywhere) to germany,
+    # which then passes the "Remote — Germany" queue floor and gets abandoned as
+    # wrong-location. "germany" must rest on a POSITIVE signal; absent one, keep
+    # it 'unclear' so it stays out of the Germany queue.
+    if region == "germany" and not (
+        GERMANY_RE.search(text) or WORLDWIDE_RE.search(text)
+        or (job.get("location") or "").strip().lower() in WORLDWIDE_LOCATIONS
+    ):
+        return "unclear"
+    return region
 
 
 def fetch_remote_jobs(conn, limit=None):

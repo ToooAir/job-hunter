@@ -57,6 +57,11 @@ from utils.db import IN_FLIGHT_SNAPSHOT_STATUSES, init_db  # noqa: E402
 DEFAULT_DB_PATH = str(Path(__file__).resolve().parents[1] / "data" / "jobs.db")
 DEFAULT_BUDGET = 35
 LIVENESS_MAX_AGE_DAYS = 7
+# A-grade roles are the priority and the ones most-often abandoned as "expired"
+# (died inside the 7-day liveness window before review). Re-verify them sooner
+# so a fresh liveness precedes an A surfacing; non-A keep the 7-day window to
+# bound the browser re-probe cost (batch ⑥). Env override for tuning.
+A_LIVENESS_MAX_AGE_DAYS = 3
 FRESH_BUCKET_DAYS = 3
 DEAD_ATS = ("gone", "fetch-error")
 
@@ -89,6 +94,25 @@ TITLE_EXCLUDE_RE = re.compile(
 def title_excluded(title: str | None) -> bool:
     """True when the job title marks a student/intern role we never apply to."""
     return bool(TITLE_EXCLUDE_RE.search(title or ""))
+
+
+# Titles that reach past the candidate's ~4yr + tech-lead level. phase2_scorer
+# already SOFT-penalizes Principal/Staff/Head/Architect (-15); the ones that
+# stay grade-A despite it are strong matches we keep — but they get RANKED
+# BEHIND on-target roles rather than occupying scarce in-budget review slots
+# (never dropped: the search is IC-track, so people-manager titles are included
+# too — "(Senior) Manager – AI", "Engineering Manager" were abandoned as
+# not-qualified). VP/Director stay in via the broad leadership terms below since
+# demotion — unlike the scorer's penalty — is reversible from over_budget.
+QUEUE_OVERREACH_RE = re.compile(
+    r"\bprincipal\b|\bstaff\b|\bhead of\b|\barchitect\b|\bvp\b|"
+    r"\bvice president\b|\bdirector\b|\bchief\b|\bmanager\b", re.I)
+
+
+def title_overreaches(title: str | None) -> bool:
+    """True when the title is a seniority/leadership reach — kept, but ranked
+    behind on-target roles in the queue."""
+    return bool(QUEUE_OVERREACH_RE.search(title or ""))
 
 # A ghosted company never actually rejected us — after this cooldown a *new* role
 # there is fair game again. applied/interview/offer stay permanently
@@ -129,6 +153,24 @@ def is_addressable(job: dict) -> bool:
         return True
     url = (job.get("apply_url") or "").lower()
     return any(p in url for p in _ADDRESSABLE_URL_PATTERNS)
+
+
+# stage1 probe verdicts (persisted on jobs.form_verdict) that mean the form
+# cannot be completed: no reachable form, a captcha wall, an off-site redirect,
+# an account gate, or an email/heise-own path. The queue ranks these behind
+# reachable roles and drops the non-A ones to over_budget, so a dead-end the
+# user already abandoned does not keep re-surfacing after a re-probe (batch ③).
+UNREACHABLE_VERDICTS = frozenset({
+    "no-form", "captcha", "external-board", "account-wall", "nav-error",
+    "email-only", "heise-own-form",
+})
+
+
+def form_unreachable(job: dict) -> bool:
+    """True when stage1 has already probed this job and found no completable
+    form. A-grade stays in the queue regardless (kept for a manual look) — this
+    only ranks within grade and demotes non-A to over_budget."""
+    return (job.get("form_verdict") or "").lower() in UNREACHABLE_VERDICTS
 
 # Same notion of "in the pipeline" as the dashboard: once a company has any of
 # these, a new application there needs a human decision first.
@@ -199,11 +241,16 @@ def sort_key(job: dict, now: datetime, prefer_addressable: bool = False):
     age = job_age_days(job["fetched_at"], now)
     fresh_bucket = 0 if age is not None and age <= FRESH_BUCKET_DAYS else 1
     grade_rank = 0 if job["fit_grade"] == "A" else 1
-    # Among same-freshness, same-grade jobs, float ones the extension can actually
-    # submit to. Never lets a B jump an A — a gentle bias, not an override.
-    addr_bucket = 0 if (prefer_addressable and is_addressable(job)) else 1
+    # Among same-freshness, same-grade jobs, order by form reachability:
+    #   0 extension-fillable · 1 unknown/un-probed · 2 known-unreachable.
+    # Sits AFTER grade_rank, so it NEVER lets a B jump an A — a within-grade
+    # bias only (an A weak-form still outranks every B).
+    if prefer_addressable:
+        reach_bucket = 0 if is_addressable(job) else (2 if form_unreachable(job) else 1)
+    else:
+        reach_bucket = 0
     fetched = _parse_dt(job["fetched_at"]) or datetime.min
-    return (fresh_bucket, grade_rank, addr_bucket,
+    return (fresh_bucket, grade_rank, reach_bucket,
             -(job["match_score"] or 0), -fetched.timestamp())
 
 
@@ -342,7 +389,7 @@ def fetch_candidates(conn) -> list[dict]:
     loc_clause = " OR ".join(loc_terms)
     rows = conn.execute(
         "SELECT id, source, company, title, url, location, fit_grade, match_score, "
-        "       fetched_at, jd_hash, ats, apply_url, ats_checked_at "
+        "       fetched_at, jd_hash, ats, apply_url, ats_checked_at, form_verdict "
         "FROM jobs "
         "WHERE status = 'scored' "
         f"  AND (fit_grade = 'A' OR (fit_grade = 'B' AND match_score >= {MIN_B_SCORE})) "
@@ -373,6 +420,9 @@ def build_queue(conn, budget: int | None = None, now: datetime | None = None,
         budget = int(os.getenv("APPLY_DAILY_BUDGET", str(DEFAULT_BUDGET)))
     now = now or datetime.now()
     liveness_cutoff = now - timedelta(days=LIVENESS_MAX_AGE_DAYS)
+    a_liveness_cutoff = now - timedelta(
+        days=int(os.getenv("APPLY_A_LIVENESS_MAX_AGE_DAYS",
+                           str(A_LIVENESS_MAX_AGE_DAYS))))
 
     # Ranking bias toward extension-fillable ATS (default on).
     prefer_addressable = os.getenv("APPLY_PREFER_ADDRESSABLE", "1") != "0"
@@ -403,7 +453,8 @@ def build_queue(conn, budget: int | None = None, now: datetime | None = None,
             dead.append(job)
             continue
         checked = _parse_dt(job["ats_checked_at"])
-        is_stale = checked is None or checked < liveness_cutoff
+        cutoff = a_liveness_cutoff if job["fit_grade"] == "A" else liveness_cutoff
+        is_stale = checked is None or checked < cutoff
         if is_stale and not include_stale:
             needs_recheck.append(job)  # JIT re-verify before it may enter the queue
             continue
@@ -413,15 +464,35 @@ def build_queue(conn, budget: int | None = None, now: datetime | None = None,
 
     queue, blocked = [], []
     ctx = DedupContext.from_db(conn, now=now)
+    seen_companies: set[str] = set()  # ④ first (best-ranked) queued job per company
     for job in eligible:
         verdict, reason = dedup_gate(job, ctx)
         job = {**job, "age_days": job_age_days(job["fetched_at"], now),
                "dedup": verdict, "dedup_reason": reason,
                "addressable": is_addressable(job)}
+        # Rank-back (never drop) reasons: keep the job visible but push it out of
+        # the scarce in-budget slots so on-target, applicable roles fill them.
+        demote_reasons = []
+        if title_overreaches(job.get("title")):                 # ② seniority reach
+            demote_reasons.append("seniority-reach")
+        if form_unreachable(job) and job["fit_grade"] != "A":   # ③ known dead-end (A kept)
+            demote_reasons.append("form-unreachable")
+        ckey = normalize_company(job.get("company"))
+        if verdict != "block" and ckey and ckey in seen_companies:  # ④ 2nd+ of a company
+            demote_reasons.append("same-company-in-batch")
+        job["demote"] = bool(demote_reasons)
+        job["demote_reasons"] = demote_reasons
         if verdict == "block":
             blocked.append(job)
         else:
+            if ckey:
+                seen_companies.add(ckey)  # eligible is best-first → first kept wins
             queue.append(job)
+
+    # Stable sort keeps the sort_key order within each group and floats demoted
+    # jobs to the back, so the budget cut lands them in over_budget (still shown,
+    # just behind on-target roles). A-grade is never dropped by this — only ranked.
+    queue.sort(key=lambda j: 1 if j["demote"] else 0)
 
     for rank, job in enumerate(queue, 1):
         job["rank"] = rank
