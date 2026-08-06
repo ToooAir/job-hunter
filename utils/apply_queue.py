@@ -149,6 +149,24 @@ def is_addressable(job: dict) -> bool:
     url = (job.get("apply_url") or "").lower()
     return any(p in url for p in _ADDRESSABLE_URL_PATTERNS)
 
+
+# stage1 probe verdicts (persisted on jobs.form_verdict) that mean the form
+# cannot be completed: no reachable form, a captcha wall, an off-site redirect,
+# an account gate, or an email/heise-own path. The queue ranks these behind
+# reachable roles and drops the non-A ones to over_budget, so a dead-end the
+# user already abandoned does not keep re-surfacing after a re-probe (batch ③).
+UNREACHABLE_VERDICTS = frozenset({
+    "no-form", "captcha", "external-board", "account-wall", "nav-error",
+    "email-only", "heise-own-form",
+})
+
+
+def form_unreachable(job: dict) -> bool:
+    """True when stage1 has already probed this job and found no completable
+    form. A-grade stays in the queue regardless (kept for a manual look) — this
+    only ranks within grade and demotes non-A to over_budget."""
+    return (job.get("form_verdict") or "").lower() in UNREACHABLE_VERDICTS
+
 # Same notion of "in the pipeline" as the dashboard: once a company has any of
 # these, a new application there needs a human decision first.
 PIPELINE_STATUSES = ("applied", "interview_1", "interview_2", "offer", "rejected", "ghosted")
@@ -218,11 +236,16 @@ def sort_key(job: dict, now: datetime, prefer_addressable: bool = False):
     age = job_age_days(job["fetched_at"], now)
     fresh_bucket = 0 if age is not None and age <= FRESH_BUCKET_DAYS else 1
     grade_rank = 0 if job["fit_grade"] == "A" else 1
-    # Among same-freshness, same-grade jobs, float ones the extension can actually
-    # submit to. Never lets a B jump an A — a gentle bias, not an override.
-    addr_bucket = 0 if (prefer_addressable and is_addressable(job)) else 1
+    # Among same-freshness, same-grade jobs, order by form reachability:
+    #   0 extension-fillable · 1 unknown/un-probed · 2 known-unreachable.
+    # Sits AFTER grade_rank, so it NEVER lets a B jump an A — a within-grade
+    # bias only (an A weak-form still outranks every B).
+    if prefer_addressable:
+        reach_bucket = 0 if is_addressable(job) else (2 if form_unreachable(job) else 1)
+    else:
+        reach_bucket = 0
     fetched = _parse_dt(job["fetched_at"]) or datetime.min
-    return (fresh_bucket, grade_rank, addr_bucket,
+    return (fresh_bucket, grade_rank, reach_bucket,
             -(job["match_score"] or 0), -fetched.timestamp())
 
 
@@ -361,7 +384,7 @@ def fetch_candidates(conn) -> list[dict]:
     loc_clause = " OR ".join(loc_terms)
     rows = conn.execute(
         "SELECT id, source, company, title, url, location, fit_grade, match_score, "
-        "       fetched_at, jd_hash, ats, apply_url, ats_checked_at "
+        "       fetched_at, jd_hash, ats, apply_url, ats_checked_at, form_verdict "
         "FROM jobs "
         "WHERE status = 'scored' "
         f"  AND (fit_grade = 'A' OR (fit_grade = 'B' AND match_score >= {MIN_B_SCORE})) "
@@ -442,6 +465,8 @@ def build_queue(conn, budget: int | None = None, now: datetime | None = None,
         demote_reasons = []
         if title_overreaches(job.get("title")):                 # ② seniority reach
             demote_reasons.append("seniority-reach")
+        if form_unreachable(job) and job["fit_grade"] != "A":   # ③ known dead-end (A kept)
+            demote_reasons.append("form-unreachable")
         job["demote"] = bool(demote_reasons)
         job["demote_reasons"] = demote_reasons
         if verdict == "block":

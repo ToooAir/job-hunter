@@ -42,17 +42,17 @@ def _iso(dt: datetime) -> str:
 def make_job(conn, job_id, *, company="Acme", grade="A", score=80, status="scored",
              location="Hamburg, Germany", ats="unknown", checked_days_ago=1,
              fetched_days_ago=1, jd_hash=None, source="heise", apply_url=None,
-             applied_at=None, title=None):
+             applied_at=None, title=None, form_verdict=None):
     conn.execute(
         "INSERT INTO jobs (id, company, title, url, source, raw_jd_text, fetched_at, "
-        "  location, fit_grade, match_score, status, ats, ats_checked_at, jd_hash, apply_url, applied_at) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "  location, fit_grade, match_score, status, ats, ats_checked_at, jd_hash, apply_url, applied_at, form_verdict) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             job_id, company, title or f"Title {job_id}", f"https://example.com/{job_id}", source,
             "x" * 600, _iso(NOW - timedelta(days=fetched_days_ago)),
             location, grade, score, status, ats,
             _iso(NOW - timedelta(days=checked_days_ago)) if checked_days_ago is not None else None,
-            jd_hash, apply_url, applied_at,
+            jd_hash, apply_url, applied_at, form_verdict,
         ),
     )
     conn.commit()
@@ -183,6 +183,31 @@ class SeniorityRankBackTest(QueueTestBase):
         # kept & flagged, not blocked/dropped
         self.assertEqual([j["id"] for j in result["blocked"]], [])
         self.assertIn("seniority-reach", result["over_budget"][0]["demote_reasons"])
+
+
+class FormReachabilityTest(QueueTestBase):
+    """③ A persisted stage1 verdict of no-form/captcha ranks a job behind
+    reachable roles; non-A dead-ends drop to over_budget, but A-grade is always
+    kept in the queue (constraint: A weak-form still gets a manual look)."""
+
+    def test_b_unreachable_demoted_below_b_unknown(self):
+        make_job(self.conn, "b-open", grade="B", score=70, form_verdict=None)
+        make_job(self.conn, "b-dead", grade="B", score=70, form_verdict="no-form")
+        result = build_queue(self.conn, budget=1, now=NOW)
+        self.assertEqual(self.queue_ids(result), ["b-open"])
+        self.assertEqual([j["id"] for j in result["over_budget"]], ["b-dead"])
+        self.assertIn("form-unreachable",
+                      result["over_budget"][0]["demote_reasons"])
+
+    def test_a_unreachable_stays_in_queue_above_addressable_b(self):
+        # constraint #1: an A weak/no-form role outranks a fully-addressable B
+        # and is never demoted
+        make_job(self.conn, "a-dead", grade="A", score=60, form_verdict="captcha")
+        make_job(self.conn, "b-fill", grade="B", score=95, ats="greenhouse")
+        result = build_queue(self.conn, budget=1, now=NOW)
+        self.assertEqual(self.queue_ids(result), ["a-dead"])
+        self.assertEqual([j["id"] for j in result["over_budget"]], ["b-fill"])
+        self.assertEqual(result["queue"][0]["demote_reasons"], [])
 
 
 class EligibilityTest(QueueTestBase):

@@ -47,6 +47,7 @@ SCHEMA_COLUMNS = [
     ("interview_brief",    "TEXT"),
     ("company_research",   "TEXT"),
     ("company_aliases",    "TEXT"),   # brand / trade names mined from the JD (company_alias.py)
+    ("form_verdict",       "TEXT"),   # last stage1 probe verdict (captcha/no-form/…) for queue ranking
     ("salary_estimate",    "TEXT"),
     ("visa_analysis",      "TEXT"),
     ("translated_jd_text", "TEXT"),
