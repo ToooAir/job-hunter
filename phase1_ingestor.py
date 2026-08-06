@@ -18,6 +18,7 @@ import yaml
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
+from utils.ats_harvest import merged_companies, persist_seeds
 from utils.db import init_db, upsert_job
 
 # ── Setup ──────────────────────────────────────────────────────────────────────
@@ -2292,13 +2293,23 @@ if __name__ == "__main__":
     #     exclude_geo=jc.get("exclude_geo", []),
     # )
 
+    # ── ATS seed harvest ──
+    # Mine the corpus for companies ats_scan already tagged on a direct ATS and
+    # feed their tenant slugs back as seeds, so each direct scraper deep-scrapes
+    # the company's full openings (100% reachable) instead of one leaked job.
+    log.info("harvesting ATS seeds from corpus …")
+    ats_seeds = persist_seeds(conn)
+    log.info("  ATS seeds harvested: %s",
+             {k: len(v) for k, v in ats_seeds.items()})
+
     # ── Ashby ──
     log.info("scraping ashby …")
     ab = config.get("ashby", {})
-    if ab.get("companies"):
+    ashby_companies = merged_companies(ab.get("companies"), "ashby", ats_seeds)
+    if ashby_companies:
         results["ashby"] = scrape_ashby(
             conn,
-            companies=ab["companies"],
+            companies=ashby_companies,
             keywords=ab.get("keywords", []),
         )
     else:
@@ -2308,10 +2319,11 @@ if __name__ == "__main__":
     # ── Workable ──
     log.info("scraping workable …")
     wb = config.get("workable", {})
-    if wb.get("companies"):
+    workable_companies = merged_companies(wb.get("companies"), "workable", ats_seeds)
+    if workable_companies:
         results["workable"] = scrape_workable(
             conn,
-            companies=wb["companies"],
+            companies=workable_companies,
             keywords=wb.get("keywords", []),
         )
     else:
@@ -2332,10 +2344,11 @@ if __name__ == "__main__":
     # ── Greenhouse ──
     log.info("scraping greenhouse …")
     gh = config.get("greenhouse", {})
-    if gh.get("companies"):
+    greenhouse_companies = merged_companies(gh.get("companies"), "greenhouse", ats_seeds)
+    if greenhouse_companies:
         results["greenhouse"] = scrape_greenhouse(
             conn,
-            companies=gh["companies"],
+            companies=greenhouse_companies,
             keywords=gh.get("keywords", []),
         )
     else:
@@ -2359,10 +2372,11 @@ if __name__ == "__main__":
     # ── Personio ──
     log.info("scraping personio …")
     pn = config.get("personio", {})
-    if pn.get("companies"):
+    personio_companies = merged_companies(pn.get("companies"), "personio", ats_seeds)
+    if personio_companies:
         results["personio"] = scrape_personio(
             conn,
-            companies=pn["companies"],
+            companies=personio_companies,
             keywords=pn.get("keywords", []),
         )
     else:
@@ -2385,10 +2399,11 @@ if __name__ == "__main__":
     # ── Lever ──
     log.info("scraping lever …")
     lv = config.get("lever", {})
-    if lv.get("companies"):
+    lever_companies = merged_companies(lv.get("companies"), "lever", ats_seeds)
+    if lever_companies:
         results["lever"] = scrape_lever(
             conn,
-            companies=lv["companies"],
+            companies=lever_companies,
             keywords=lv.get("keywords", []),
         )
     else:
