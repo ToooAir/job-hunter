@@ -49,11 +49,16 @@ def redirect_off_posting(orig_url: str, final_url: str | None) -> bool:
     o, f = urlparse(orig_url), urlparse(final_url)
     if o.netloc.lower().removeprefix("www.") != f.netloc.lower().removeprefix("www."):
         return False
-    slug = o.path.rstrip("/").rsplit("/", 1)[-1]
+    orig_path, final_path = o.path.rstrip("/"), f.path.rstrip("/")
+    # A real posting path bounced to the bare domain root is a homepage redirect
+    # ("連結進去轉跳到首頁") — a takedown regardless of slug length, so it is
+    # checked before the short-slug guard below.
+    if orig_path and not final_path:
+        return True
+    slug = orig_path.rsplit("/", 1)[-1]
     if len(slug) < 8:
         return False
-    return (o.path.rstrip("/") != f.path.rstrip("/")
-            and slug.lower() not in final_url.lower())
+    return orig_path != final_path and slug.lower() not in final_url.lower()
 
 
 def soft_gone(html: str | None) -> str | None:
