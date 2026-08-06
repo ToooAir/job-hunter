@@ -15,10 +15,40 @@ from remote_geo_triage import (  # noqa: E402
     LABELS,
     LLM_UNCLEAR_LABEL,
     WORLDWIDE_LOCATIONS,
+    classify_llm,
     classify_rules,
     fetch_de_candidates,
     fetch_remote_jobs,
 )
+
+
+class TestClassifyLlmGuard(unittest.TestCase):
+    """The LLM sometimes upgrades an evidence-free US-remote posting to
+    'germany'; the guard keeps it 'unclear' unless a positive Germany signal
+    (named DE location / hire-from-anywhere) is present."""
+
+    def _client(self, region):
+        import json as _json
+        from tests.test_apply_llm import FakeClient
+        return FakeClient([_json.dumps({"region": region, "evidence": "x"})])
+
+    def test_germany_without_evidence_is_downgraded(self):
+        job = {"company": "SentinelOne", "title": "Staff Backend Engineer",
+               "jd": "Join our fully remote team building security software.",
+               "location": "Remote"}
+        self.assertEqual(classify_llm(self._client("germany"), "m", job), "unclear")
+
+    def test_germany_with_named_location_is_kept(self):
+        job = {"company": "Acme", "title": "Engineer",
+               "jd": "Remote role, team hubs in Berlin and Munich.",
+               "location": "Remote"}
+        self.assertEqual(classify_llm(self._client("germany"), "m", job), "germany")
+
+    def test_non_germany_verdicts_pass_through(self):
+        job = {"company": "Acme", "title": "Engineer", "jd": "EU remote.",
+               "location": "Remote"}
+        self.assertEqual(classify_llm(self._client("europe"), "m", job), "europe")
+        self.assertEqual(classify_llm(self._client("non_eu"), "m", job), "non_eu")
 
 
 class TestClassifyRules(unittest.TestCase):
@@ -60,12 +90,15 @@ class TestClassifyRules(unittest.TestCase):
         self.assertEqual(
             classify_rules("This role is remote worldwide."), "unclear")
 
-    def test_from_anywhere_with_region_qualifier_is_a_restriction(self):
+    def test_na_residency_list_is_non_eu(self):
         # real mislabel: Taxgpt "Work from anywhere across US, Canada or Mexico"
+        # used to stay 'unclear' → the LLM then wrongly upgraded it to germany.
+        # A North-America residency list is now a deterministic non_eu.
         self.assertEqual(
             classify_rules("Remote-first: Work from anywhere across US, "
                            "Canada or Mexico."),
-            "unclear")
+            "non_eu")
+
 
     def test_europe_wide(self):
         self.assertEqual(
