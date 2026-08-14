@@ -72,8 +72,12 @@ _STRINGS = {
         "never_verified": "尚未重驗失效",
         "set_focus": "我要投這筆",
         "focus_now": "🎯 投遞中:{} — {}({})— 插件答案面板以此職缺為根據",
-        "dup_same_job": "⛔ 重複投遞:這個職缺已於 {} 投遞入帳——這份草稿請放棄",
-        "dup_same_company": "⚠️ 同公司已投過:{}({})— 確認不是同一職缺再投",
+        "dup_same_job": "⛔ 重複投遞:這個職缺已於 {} 投遞入帳({})——這份草稿請放棄",
+        "dup_same_company": "⚠️ 同公司已投過:{}({},{})— 確認不是同一職缺再投",
+        "dup_history": "同公司投遞紀錄 {} 筆:",
+        "outcome_waiting": "等回覆中", "outcome_interview": "進到面試",
+        "outcome_offer": "拿到 offer", "outcome_rejected": "已被拒",
+        "outcome_ghosted": "無回音",
     },
     "en": {
         "title": "Apply Review Queue",
@@ -122,8 +126,12 @@ _STRINGS = {
         "never_verified": "not liveness-checked yet",
         "set_focus": "applying to this one",
         "focus_now": "🎯 applying: {} — {} ({}) — the answer panel grounds on this job",
-        "dup_same_job": "⛔ Duplicate: this job was booked applied on {} — abandon this draft",
-        "dup_same_company": "⚠️ Company already applied to: {} ({}) — make sure this is a different role",
+        "dup_same_job": "⛔ Duplicate: this job was booked applied on {} ({}) — abandon this draft",
+        "dup_same_company": "⚠️ Company already applied to: {} ({}, {}) — make sure this is a different role",
+        "dup_history": "{} applications to this company:",
+        "outcome_waiting": "waiting", "outcome_interview": "reached interview",
+        "outcome_offer": "offer", "outcome_rejected": "rejected",
+        "outcome_ghosted": "no reply",
     },
 }
 
@@ -474,7 +482,7 @@ def _applied_lookup(conn) -> dict[str, list[dict]]:
     instead of relying on each booking path having cleaned up after itself."""
     from utils.apply_queue import normalize_company  # pure; lazy to avoid cycle
     idx: dict[str, list[dict]] = {}
-    for r in conn.execute("SELECT id, company, title, applied_at FROM jobs"
+    for r in conn.execute("SELECT id, company, title, applied_at, status FROM jobs"
                           " WHERE applied_at IS NOT NULL"):
         key = normalize_company(r["company"] or "")
         if key:
@@ -482,17 +490,37 @@ def _applied_lookup(conn) -> dict[str, list[dict]]:
     return idx
 
 
-def _dup_applied(snap: dict, applied_idx: dict) -> tuple[str, dict] | None:
-    """('job'|'company', applied job) when this draft collides with a booked
-    application — same job id is a hard duplicate, same company a soft one."""
+def _dup_applied(snap: dict, applied_idx: dict) -> tuple[str, dict, list[dict]] | None:
+    """('job'|'company', the colliding job, every booked job at this company)
+    when this draft collides with a booked application — same job id is a hard
+    duplicate, same company a soft one. The full list rides along because one
+    prior application rarely tells the whole story (a company can hold a
+    rejection and an open thread at once)."""
     from utils.apply_queue import normalize_company
     hits = applied_idx.get(normalize_company(snap["job"].get("company") or ""))
     if not hits:
         return None
     same_job = [h for h in hits if h["id"] == snap["job_id"]]
     if same_job:
-        return "job", same_job[0]
-    return "company", max(hits, key=lambda h: h["applied_at"] or "")
+        return "job", same_job[0], hits
+    return "company", max(hits, key=lambda h: h["applied_at"] or ""), hits
+
+
+# jobs.status of a booked application → what the reviewer actually needs to
+# know. "already applied here" is not one fact but several: still waiting,
+# turned down, or never answered are three different re-apply decisions, and
+# rejections are the majority of booked rows.
+_OUTCOME_KEYS = {
+    "applied": "outcome_waiting", "interview_1": "outcome_interview",
+    "interview_2": "outcome_interview", "offer": "outcome_offer",
+    "rejected": "outcome_rejected", "ghosted": "outcome_ghosted",
+}
+
+
+def _outcome(status: str | None) -> str:
+    """Human label for a pipeline status; unknown values pass through raw."""
+    key = _OUTCOME_KEYS.get(status or "")
+    return T(key) if key else (status or "?")
 
 
 def _draft_card(conn, snap: dict, applied_idx: dict) -> None:
@@ -522,12 +550,22 @@ def _draft_card(conn, snap: dict, applied_idx: dict) -> None:
             st.rerun()
 
         if dup:
-            kind, hit = dup
+            kind, hit, hits = dup
             when = (hit.get("applied_at") or "")[:10]
+            outcome = _outcome(hit.get("status"))
             if kind == "job":
-                st.error(T("dup_same_job").format(when))
+                st.error(T("dup_same_job").format(when, outcome))
             else:
-                st.warning(T("dup_same_company").format(hit.get("title"), when))
+                st.warning(T("dup_same_company").format(
+                    hit.get("title"), when, outcome))
+            # one line per prior application: with several, the most recent
+            # one alone can hide the rejection that matters
+            if len(hits) > 1:
+                st.caption(T("dup_history").format(len(hits)) + " · " + " · ".join(
+                    f"{(h.get('applied_at') or '')[:10]} {h.get('title')}"
+                    f" ({_outcome(h.get('status'))})"
+                    for h in sorted(hits, key=lambda h: h.get("applied_at") or "",
+                                    reverse=True)))
 
         _liveness_caption(snap)
         _verifier_block(snap.get("verifier_report"))
