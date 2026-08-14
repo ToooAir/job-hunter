@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """ats_scan.py — resolve job URLs to the ATS that hosts the apply form.
 
-Scans the queue-eligible pool (Germany + Remote — EU, grade A or B>=65, status='scored'),
+Scans the queue-eligible pool (Germany, grade A or B>=65, status='scored'),
 follows each job URL plus one level of apply links, and detects which ATS
 the application actually lives on. WTTJ jobs are resolved via the public
 WTTJ API, which also yields liveness (status/archived_at) and apply_url.
@@ -131,7 +131,8 @@ WAD_HEADERS = {
 
 
 def fetch_jobs(limit=None):
-    """Queue-eligible pool: Germany (+ Remote — EU), grade A or B >= MIN_B_SCORE.
+    """Queue-eligible pool: Germany (+ REMOTE_ELIGIBLE_LOCATIONS, now empty),
+    grade A or B >= MIN_B_SCORE.
     Must mirror utils.apply_queue.fetch_candidates so scan pool == queue pool."""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
