@@ -32,7 +32,12 @@ arbeitnow:
     - "IT-Berater"
   locations: ["Hamburg", "Berlin", "Remote", "Germany"]
   remote_filter: true
-  max_pages: 5
+  # 175 jobs/page. Page 1 is the newest, so a daily run only needs enough depth
+  # to cover a day's postings — but 5 was cutting into live supply: pages 6-10
+  # still held 22 unseen on-target jobs (Heidelberg, Stuttgart, Frankfurt) when
+  # measured. They are new roles at companies already known, not new companies.
+  # Page 11+ started returning non-JSON (rate limit), so 10 is the safe ceiling.
+  max_pages: 10
 
 englishjobs:
   base_urls:
