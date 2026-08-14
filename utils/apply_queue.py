@@ -37,12 +37,19 @@ Dedup gate (per candidate, on normalized company name):
           staffing/consultancy employer already in the pipeline (each posting is
           a different end client); a genuinely different role at a company we
           applied to / are interviewing with; second job of the same company in
-          this batch; a different role at a company whose rejection cooled off;
+          this batch (see the per-company cap below, which defers it); a
+          different role at a company whose rejection cooled off;
           or a company we ghosted past the cooldown (re-applying is fine — but
           visibly)
 
 Budget: env APPLY_DAILY_BUDGET (default 35) caps the queue; the rest is
 reported as over_budget.
+
+Per-company cap: env APPLY_MAX_PER_COMPANY (default 1) is how many non-A live
+drafts one company may hold, plus one A-grade on top. The count includes drafts
+still pending from earlier batches, so a company cannot accumulate one draft per
+day. Overflow is deferred to over_budget even when the budget has room — it
+resurfaces once the company's live draft is submitted or abandoned.
 
 Dry run (zero writes):
     python -m utils.apply_queue [--top 30] [--budget N] [--db PATH]
@@ -118,6 +125,17 @@ def title_overreaches(title: str | None) -> bool:
     """True when the title is a seniority/leadership reach — kept, but ranked
     behind on-target roles in the queue."""
     return bool(QUEUE_OVERREACH_RE.search(title or ""))
+
+
+# Breadth over depth: getting seen by many employers beats stacking roles at one.
+# A company holds at most MAX_PER_COMPANY non-A live drafts plus ONE A-grade —
+# so a high-score role is never stuck behind a lower-graded draft at the same
+# company, but a company still cannot monopolize the review queue. The count
+# spans batches (drafts pending from earlier runs count), which is the whole
+# point: a per-batch-only guard let the same company accumulate one draft per
+# day. Overflow goes to over_budget — deferred, not dropped: it resurfaces once
+# the company's live draft is submitted or abandoned.
+MAX_PER_COMPANY = 1
 
 # A ghosted company never actually rejected us — after this cooldown a *new* role
 # there is fair game again. applied/interview/offer stay permanently
@@ -498,15 +516,22 @@ def build_queue(conn, budget: int | None = None, now: datetime | None = None,
     addressable_only = os.getenv("APPLY_ADDRESSABLE_ONLY", "0") == "1"
     min_score = int(os.getenv("APPLY_MIN_SCORE", "0"))
 
-    in_flight_job_ids = {
-        r["job_id"]
-        for r in conn.execute(
-            "SELECT job_id FROM application_snapshots WHERE status IN ({})".format(
-                ",".join("?" for _ in IN_FLIGHT_SNAPSHOT_STATUSES)
-            ),
-            IN_FLIGHT_SNAPSHOT_STATUSES,
-        )
-    }
+    # Live drafts, by job (skip re-queueing) and by company (the per-company cap
+    # below counts them, so the cap holds across batches and not just within one).
+    in_flight_job_ids: set[str] = set()
+    company_load: dict[str, dict[str, int]] = {}
+    for r in conn.execute(
+        "SELECT s.job_id, j.company, j.fit_grade FROM application_snapshots s"
+        " JOIN jobs j ON j.id = s.job_id WHERE s.status IN ({})".format(
+            ",".join("?" for _ in IN_FLIGHT_SNAPSHOT_STATUSES)
+        ),
+        IN_FLIGHT_SNAPSHOT_STATUSES,
+    ):
+        in_flight_job_ids.add(r["job_id"])
+        ckey = normalize_company(r["company"])
+        if ckey:
+            load = company_load.setdefault(ckey, {"a": 0, "other": 0})
+            load["a" if r["fit_grade"] == "A" else "other"] += 1
 
     eligible, needs_recheck, dead = [], [], []
     for job in fetch_candidates(conn):
@@ -529,9 +554,9 @@ def build_queue(conn, budget: int | None = None, now: datetime | None = None,
 
     eligible.sort(key=lambda j: sort_key(j, now, prefer_addressable))
 
-    queue, blocked = [], []
+    max_per_company = int(os.getenv("APPLY_MAX_PER_COMPANY", str(MAX_PER_COMPANY)))
+    queue, blocked, company_overflow = [], [], []
     ctx = DedupContext.from_db(conn, now=now)
-    seen_companies: set[str] = set()  # ④ first (best-ranked) queued job per company
     for job in eligible:
         verdict, reason = dedup_gate(job, ctx)
         job = {**job, "age_days": job_age_days(job["fetched_at"], now),
@@ -544,29 +569,44 @@ def build_queue(conn, budget: int | None = None, now: datetime | None = None,
             demote_reasons.append("seniority-reach")
         if form_unreachable(job) and job["fit_grade"] != "A":   # ③ known dead-end (A kept)
             demote_reasons.append("form-unreachable")
+        # ④ per-company cap (spans batches). A-grade gets one slot of its own so
+        # it is never stuck behind a lower-graded draft; everything else shares
+        # the base cap. eligible is best-first, so the first kept per company wins.
+        # A-grade and everything else hold independent slots, so the order the
+        # two arrive in doesn't change what the company ends up with.
         ckey = normalize_company(job.get("company"))
-        if verdict != "block" and ckey and ckey in seen_companies:  # ④ 2nd+ of a company
-            demote_reasons.append("same-company-in-batch")
+        slot = "a" if job["fit_grade"] == "A" else "other"
+        load = company_load.get(ckey) if ckey else None
+        over_cap = bool(load) and load[slot] >= (1 if slot == "a" else max_per_company)
+        if over_cap:
+            demote_reasons.append("company-cap")
         job["demote"] = bool(demote_reasons)
         job["demote_reasons"] = demote_reasons
         if verdict == "block":
             blocked.append(job)
+        elif over_cap:
+            # deferred past the budget cut regardless of headroom — an unused
+            # budget slot must not become a second draft at the same company
+            company_overflow.append(job)
         else:
             if ckey:
-                seen_companies.add(ckey)  # eligible is best-first → first kept wins
+                company_load.setdefault(ckey, {"a": 0, "other": 0})[slot] += 1
             queue.append(job)
 
     # Stable sort keeps the sort_key order within each group and floats demoted
     # jobs to the back, so the budget cut lands them in over_budget (still shown,
     # just behind on-target roles). A-grade is never dropped by this — only ranked.
     queue.sort(key=lambda j: 1 if j["demote"] else 0)
+    # company-capped jobs sit behind everything else: they are the ones we most
+    # want to defer, and they must never consume an in-budget slot
+    in_budget, over = queue[:budget], queue[budget:] + company_overflow
 
-    for rank, job in enumerate(queue, 1):
+    for rank, job in enumerate(in_budget + over, 1):
         job["rank"] = rank
 
     return {
-        "queue": queue[:budget],
-        "over_budget": queue[budget:],
+        "queue": in_budget,
+        "over_budget": over,
         "blocked": blocked,
         "needs_recheck": needs_recheck,
         "dead": dead,
@@ -578,11 +618,17 @@ def _print_queue(result: dict, top: int) -> None:
     print(header)
     print("-" * len(header))
     rows = result["queue"] + result["over_budget"]
-    budget = len(result["queue"])
+    queued = len(result["queue"])
     addr_n = sum(1 for j in result["queue"] if j.get("addressable"))
+    # the cut is the budget only when the budget is what bound it; with the
+    # per-company cap active the queue usually ends well short of the budget
+    capped = sum(1 for j in result["over_budget"]
+                 if "company-cap" in (j.get("demote_reasons") or []))
+    cut_label = (f"每家公司上限截斷（{capped} 筆延後）" if capped
+                 else f"預算截斷線（APPLY_DAILY_BUDGET={queued}）")
     for job in rows[:top]:
-        if job["rank"] == budget + 1:
-            print(f"--- 預算截斷線（APPLY_DAILY_BUDGET={budget}）---")
+        if job["rank"] == queued + 1:
+            print(f"--- {cut_label} ---")
         dedup = f"{job['dedup']}: {job['dedup_reason']}" if job["dedup"] != "ok" else ""
         age = f"{job['age_days']}d" if job["age_days"] is not None else "?"
         fill = "✓" if job.get("addressable") else "·"

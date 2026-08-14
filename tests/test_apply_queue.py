@@ -265,9 +265,9 @@ class AGradeLivenessWindowTest(QueueTestBase):
 
 
 class SameCompanyBatchTest(QueueTestBase):
-    """④ A 2nd+ role at the same company in one batch is ranked back (not
-    blocked): the best-ranked one keeps the in-budget slot, the rest go to
-    over_budget so one company can't monopolize the review queue."""
+    """④ Breadth over depth: a company holds at most one non-A live draft plus
+    one A-grade. Overflow is deferred to over_budget (kept, not blocked) so one
+    company can't monopolize the review queue."""
 
     def test_second_role_same_company_demoted_not_blocked(self):
         make_job(self.conn, "freenet-sr", company="freenet AG", grade="A",
@@ -278,8 +278,7 @@ class SameCompanyBatchTest(QueueTestBase):
         self.assertEqual(self.queue_ids(result), ["freenet-sr"])
         self.assertEqual([j["id"] for j in result["over_budget"]], ["freenet-jr"])
         self.assertEqual([j["id"] for j in result["blocked"]], [])   # kept, not blocked
-        self.assertIn("same-company-in-batch",
-                      result["over_budget"][0]["demote_reasons"])
+        self.assertIn("company-cap", result["over_budget"][0]["demote_reasons"])
 
     def test_distinct_companies_not_demoted(self):
         make_job(self.conn, "a", company="Acme", grade="A", score=80)
@@ -287,6 +286,57 @@ class SameCompanyBatchTest(QueueTestBase):
         result = build_queue(self.conn, budget=2, now=NOW)
         self.assertEqual(set(self.queue_ids(result)), {"a", "b"})
         self.assertTrue(all(j["demote_reasons"] == [] for j in result["queue"]))
+
+    def test_cap_defers_even_when_budget_has_room(self):
+        # The old guard only flagged the 2nd job and relied on the budget cut to
+        # act on it — with a slack budget every same-company role got through.
+        make_job(self.conn, "acme-1", company="Acme", grade="B", score=70,
+                 title="Backend Engineer")
+        make_job(self.conn, "acme-2", company="Acme", grade="B", score=68,
+                 title="Data Engineer")
+        make_job(self.conn, "acme-3", company="Acme", grade="B", score=66,
+                 title="Platform Engineer")
+        result = build_queue(self.conn, budget=30, now=NOW)
+        self.assertEqual(self.queue_ids(result), ["acme-1"])
+        self.assertEqual([j["id"] for j in result["over_budget"]],
+                         ["acme-2", "acme-3"])
+
+    def test_a_grade_gets_its_own_slot_behind_a_lower_graded_draft(self):
+        # A high-score role must not be stuck behind a B draft at the same
+        # company — but only one A rides along, not every A.
+        make_job(self.conn, "acme-b", company="Acme", grade="B", score=70,
+                 title="Backend Engineer")
+        make_job(self.conn, "acme-a1", company="Acme", grade="A", score=88,
+                 title="AI Engineer")
+        make_job(self.conn, "acme-a2", company="Acme", grade="A", score=85,
+                 title="ML Engineer")
+        result = build_queue(self.conn, budget=30, now=NOW)
+        # sort is best-first, so the A leads and the B takes the base slot
+        self.assertEqual(self.queue_ids(result), ["acme-a1", "acme-b"])
+        self.assertEqual([j["id"] for j in result["over_budget"]], ["acme-a2"])
+
+    def test_cap_counts_drafts_pending_from_earlier_batches(self):
+        # The accumulation bug: seen_companies was rebuilt per batch, so a
+        # company collected one more draft every day the pipeline ran.
+        make_job(self.conn, "acme-old", company="Acme", grade="B", score=70,
+                 title="Backend Engineer")
+        make_job(self.conn, "acme-new", company="Acme", grade="B", score=68,
+                 title="Data Engineer")
+        create_application_snapshot(self.conn, "acme-old", status="draft",
+                                    tier=2, channel="company-form")
+        result = build_queue(self.conn, budget=30, now=NOW)
+        self.assertEqual(self.queue_ids(result), [])
+        self.assertEqual([j["id"] for j in result["over_budget"]], ["acme-new"])
+        self.assertIn("company-cap", result["over_budget"][0]["demote_reasons"])
+
+    def test_cap_is_env_tunable(self):
+        make_job(self.conn, "acme-1", company="Acme", grade="B", score=70,
+                 title="Backend Engineer")
+        make_job(self.conn, "acme-2", company="Acme", grade="B", score=68,
+                 title="Data Engineer")
+        with mock.patch.dict(os.environ, {"APPLY_MAX_PER_COMPANY": "2"}):
+            result = build_queue(self.conn, budget=30, now=NOW)
+        self.assertEqual(self.queue_ids(result), ["acme-1", "acme-2"])
 
 
 class EligibilityTest(QueueTestBase):
@@ -412,11 +462,12 @@ class DedupGateTest(QueueTestBase):
         self.assertIn("same-title variant", result["blocked"][0]["dedup_reason"])
 
     def test_different_role_same_company_still_warns(self):
+        # kept (not blocked), but the per-company cap defers it to over_budget
         make_job(self.conn, "r1", company="Acme", score=90, title="Backend Engineer")
         make_job(self.conn, "r2", company="Acme", score=85, title="Data Engineer")
         result = build_queue(self.conn, now=NOW)
-        self.assertEqual(self.queue_ids(result), ["r1", "r2"])
-        second = next(j for j in result["queue"] if j["id"] == "r2")
+        self.assertEqual(self.queue_ids(result), ["r1"])
+        second = next(j for j in result["over_budget"] if j["id"] == "r2")
         self.assertEqual(second["dedup"], "warn")
 
     def test_block_company_in_pipeline(self):
@@ -560,9 +611,12 @@ class DedupGateTest(QueueTestBase):
         make_job(self.conn, "other", company="Beispiel", title="Data Engineer")
         create_application_snapshot(self.conn, "drafted", status="draft")
         result = build_queue(self.conn, now=NOW)
-        self.assertEqual(self.queue_ids(result), ["other"])
-        self.assertEqual(result["queue"][0]["dedup"], "warn")
-        self.assertIn("different role", result["queue"][0]["dedup_reason"])
+        # not blocked — but the live draft fills the company's slot, so the
+        # different role waits in over_budget instead of stacking up
+        self.assertEqual(self.queue_ids(result), [])
+        self.assertEqual([j["id"] for j in result["over_budget"]], ["other"])
+        self.assertEqual(result["over_budget"][0]["dedup"], "warn")
+        self.assertIn("different role", result["over_budget"][0]["dedup_reason"])
 
     def test_warn_jd_hash_applied_elsewhere(self):
         make_job(self.conn, "via-board", company="Recruiter AG", status="applied",
@@ -577,10 +631,11 @@ class DedupGateTest(QueueTestBase):
         make_job(self.conn, "first", company="Dupli GmbH", score=90)
         make_job(self.conn, "second", company="Dupli", score=80)
         result = build_queue(self.conn, now=NOW)
-        self.assertEqual(self.queue_ids(result), ["first", "second"])
+        self.assertEqual(self.queue_ids(result), ["first"])
         self.assertEqual(result["queue"][0]["dedup"], "ok")
-        self.assertEqual(result["queue"][1]["dedup"], "warn")
-        self.assertIn("batch", result["queue"][1]["dedup_reason"])
+        self.assertEqual([j["id"] for j in result["over_budget"]], ["second"])
+        self.assertEqual(result["over_budget"][0]["dedup"], "warn")
+        self.assertIn("batch", result["over_budget"][0]["dedup_reason"])
 
     def test_gate_unit_block_beats_warn(self):
         ctx = DedupContext({"acme": "applied"}, {}, {"h1": "other"})
