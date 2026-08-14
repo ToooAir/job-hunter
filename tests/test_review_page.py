@@ -178,6 +178,50 @@ class ReviewPageTest(unittest.TestCase):
         self.assertIn("Zeugnisse", notice)
         self.assertIn("Anschreiben", notice)
 
+    def _book(self, job_id, status, applied_at):
+        self.conn.execute("UPDATE jobs SET status = ?, applied_at = ? WHERE id = ?",
+                          (status, applied_at, job_id))
+        self.conn.commit()
+
+    def test_company_dup_warning_names_the_prior_outcome(self):
+        # "already applied here" is ambiguous on its own — a rejection and an
+        # open thread are different re-apply decisions, so the banner must say
+        # which one the prior application ended in.
+        self._book("job-b", "rejected", "2026-07-21T16:52:53")
+        self._draft("job-a", tier=2)
+        at = self._run()
+        banner = "".join(str(w.value) for w in at.warning)
+        self.assertIn("同公司已投過", banner)
+        self.assertIn("2026-07-21", banner)
+        self.assertIn("已被拒", banner)
+
+    def test_company_dup_history_lists_every_prior_application(self):
+        # The most recent application alone can hide the rejection that
+        # matters, so every booked row at this company is listed.
+        self.conn.execute(
+            "INSERT INTO jobs (id, company, title, url, source, raw_jd_text,"
+            " fetched_at, status, match_score, fit_grade)"
+            " VALUES ('job-c', 'Mustermann GmbH', 'Data Engineer',"
+            " 'https://example.com/job-c', 'test', 'jd c', '2026-06-12T08:00:00',"
+            " 'scored', 80, 'A')")
+        self.conn.commit()
+        self._book("job-b", "rejected", "2026-05-01T09:00:00")
+        self._book("job-c", "applied", "2026-07-21T16:52:53")
+        self._draft("job-a", tier=2)
+        at = self._run()
+        history = "".join(str(c.value) for c in at.caption)
+        self.assertIn("2 筆", history)
+        self.assertIn("已被拒", history)     # the older rejection is not dropped
+        self.assertIn("等回覆中", history)
+
+    def test_same_job_dup_error_names_the_outcome(self):
+        self._book("job-a", "ghosted", "2026-07-21T16:52:53")
+        self._draft("job-a", tier=2)
+        at = self._run()
+        banner = "".join(str(e.value) for e in at.error)
+        self.assertIn("重複投遞", banner)
+        self.assertIn("無回音", banner)
+
 
 if __name__ == "__main__":
     unittest.main()
