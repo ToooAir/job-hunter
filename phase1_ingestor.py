@@ -1947,8 +1947,18 @@ def scrape_personio(
 
 # ── Welcome to the Jungle (WTTJ) ──────────────────────────────────────────────
 # Algolia-backed public search API (credentials embedded in HTML, no auth wall).
-# Filters: language:en AND (remote:fulltime OR offices.country_code:DE)
-# Gives EU startup remote jobs + German office roles in English.
+# Filters: language:en AND offices.country_code:DE — German offices only.
+# The "remote:fulltime" arm used to ride along to catch EU startup remote, and
+# it dominated the intake: 4992 of the 5466 wttj jobs ingested under it were
+# non-German ("Remote / New York", "Remote / Madrid", "Remote / San Francisco"),
+# and across all of them exactly 2 were ever applied to and none reached an
+# interview, against 53 applications from the 474 German-office ones. Global
+# remote at a non-German employer also cannot produce the German work permit
+# this search exists to get (same reasoning as apply_queue's empty
+# REMOTE_ELIGIBLE_LOCATIONS). Dropping it costs ~2 applications of historical
+# supply and saves ~91% of this source's ingest, scoring and triage spend.
+# language:en stays but does almost nothing (1918 vs 1975 hits) — the index is
+# already English; keeping it avoids re-testing that on every filter edit.
 # API key is scoped to search-only reads; safe to embed here.
 
 _WTTJ_APP_ID  = "CSEKHVMS53"
@@ -1965,7 +1975,7 @@ _WTTJ_HEADERS = {
     "Content-Type":             "application/json",
     "User-Agent":               HEADERS["User-Agent"],
 }
-_WTTJ_FILTERS = "language:en AND (remote:fulltime OR offices.country_code:DE)"
+_WTTJ_FILTERS = "language:en AND offices.country_code:DE"
 
 
 def scrape_wttj(
