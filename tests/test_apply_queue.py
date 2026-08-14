@@ -371,14 +371,17 @@ class EligibilityTest(QueueTestBase):
         result = build_queue(self.conn, now=NOW)
         self.assertEqual(self.queue_ids(result), ["de"])
 
-    def test_remote_eu_admitted_other_remote_excluded(self):
-        # Chancenkarte → EU-remote is workable; the other triage labels are not.
+    def test_only_german_remote_admitted(self):
+        # The goal is a German job that converts to a Blue Card, so EU-wide
+        # remote at a non-German employer is out along with the other labels;
+        # only remote tied to Germany qualifies.
+        make_job(self.conn, "de", company="C0", location="Remote — Germany")
         make_job(self.conn, "eu", company="C1", location="Remote — EU")
         make_job(self.conn, "non-eu", company="C2", location="Remote — non-EU")
         make_job(self.conn, "bare", company="C3", location="Remote")
         make_job(self.conn, "unclear", company="C4", location="Remote — unclear")
         result = build_queue(self.conn, now=NOW)
-        self.assertEqual(self.queue_ids(result), ["eu"])
+        self.assertEqual(self.queue_ids(result), ["de"])
 
     def test_dead_ats_excluded(self):
         make_job(self.conn, "alive", company="C1", ats="ashby")

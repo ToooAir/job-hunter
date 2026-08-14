@@ -4,7 +4,8 @@ Pure Python over the jobs/application_snapshots tables; no LLM, no network.
 
 Eligibility (all must hold):
   * status = 'scored'  (pipeline/skipped/expired/error are therefore out)
-  * located in Germany, or a Germany-eligible remote label (Remote — EU)
+  * located in Germany ("Remote — Germany" counts; EU-wide remote does not —
+    see REMOTE_ELIGIBLE_LOCATIONS)
   * fit_grade A, or B with match_score >= MIN_B_SCORE (65)
   * no in-flight snapshot for the job itself (draft/approved/submitted)
   * liveness: ats_checked_at <= LIVENESS_MAX_AGE_DAYS and ats not in DEAD_ATS;
@@ -86,10 +87,18 @@ DEAD_ATS = ("gone", "fetch-error")
 # (verified not a source-bonus artifact) to feed the supply-starved queue.
 MIN_B_SCORE = 65
 
-# Geo-triage remote labels we can actually apply to (Chancenkarte → EU-remote is
-# workable). "Remote — Germany" already matches GERMANY_KEYWORDS via "German";
-# "Remote — non-EU" / "Remote — unclear" are deliberately excluded.
-REMOTE_ELIGIBLE_LOCATIONS = ("Remote — EU",)
+# Geo-triage remote labels we can apply to on top of GERMANY_KEYWORDS — now
+# none. "Remote — EU" was admitted on the reasoning that the Chancenkarte makes
+# EU-wide remote workable, but the goal is a German job that converts to a Blue
+# Card, and an EU-remote role at a non-German employer yields no German work
+# permit. The reviewer's verdicts agreed long before the rule did: 9 of 9 such
+# drafts from new companies in the last 30 days were abandoned as
+# "wrong-location" (Spanish, Italian and French employers hiring EU-wide), and
+# only 1 of 121 "Remote — EU" postings all-time was ever applied to.
+# "Remote — Germany" is unaffected — it matches GERMANY_KEYWORDS via "German" —
+# so remote roles at German employers still qualify. Kept as an extension point
+# rather than deleted: ats_scan imports it to mirror the queue-eligible pool.
+REMOTE_ELIGIBLE_LOCATIONS: tuple[str, ...] = ()
 
 # Student/intern roles can never be applied to (experienced-hire search) — the
 # scorer let a "Internship/Master Thesis" posting through to a Tier-3 draft
