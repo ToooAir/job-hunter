@@ -36,6 +36,7 @@ QDRANT_PATH = os.getenv("QDRANT_PATH", "./qdrant_data")
 from utils.llm import make_client, chat_model, emb_model, LLM_PROVIDER, NO_STRUCTURED_OUTPUT_PROVIDERS, rate_limit  # noqa: E402
 from utils.apply_queue import title_excluded  # noqa: E402
 from utils.geo_de import has_non_de_marker  # noqa: E402
+from utils.voice import append_voice  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -325,6 +326,8 @@ def check_kb_fresh(qdrant_path: str, kb_dir: str = "./candidate_kb") -> None:
 
     stale_files = []
     for md_file in Path(kb_dir).glob("*.md"):
+        if md_file.name == "voice.md":
+            continue  # never indexed (see kb_loader) — editing it needs no rebuild
         mtime = datetime.fromtimestamp(md_file.stat().st_mtime, tz=timezone.utc)
         if mtime > kb_built_at:
             stale_files.append((md_file.name, mtime.strftime("%Y-%m-%dT%H:%M:%S")))
@@ -349,7 +352,13 @@ _KB_SCORE_THRESHOLD = 0.60  # Cosine similarity floor for KB chunk retrieval.
 
 
 def _qdrant_query(qdrant, vector: list[float], top_k: int) -> str:
-    """Query Qdrant with a pre-computed vector and return formatted context."""
+    """Query Qdrant with a pre-computed vector and return formatted context.
+
+    Every KB context string in the system is built here — batch scoring,
+    single-job regeneration, and the Stage-1 verifier's retrieval all land in
+    this function. That makes it the one place to append voice.md so the
+    generator and the verifier can never see different source material.
+    """
     result = qdrant.query_points(
         collection_name=COLLECTION,
         query=vector,
@@ -358,13 +367,13 @@ def _qdrant_query(qdrant, vector: list[float], top_k: int) -> str:
     hits = [h for h in result.points if (h.score or 0) >= _KB_SCORE_THRESHOLD]
     if not hits:
         log.debug("_qdrant_query: all hits below threshold %.2f — returning fallback", _KB_SCORE_THRESHOLD)
-        return "[No relevant experience found in KB]"
+        return append_voice("[No relevant experience found in KB]")
     parts = []
     for hit in hits:
         source = hit.payload.get("source", "unknown")
         text = hit.payload.get("text", "")
         parts.append(f"[來源: {source}]\n{text}")
-    return "\n---\n".join(parts)
+    return append_voice("\n---\n".join(parts))
 
 
 def _batch_embed(texts: list[str], client, batch_size: int = 16) -> list[list[float]]:
@@ -804,8 +813,22 @@ def regenerate_cover_letter(
 Write a cover letter (English, 200–400 words, end on a complete sentence) for the candidate below.
 {tone_instruction}
 Para 1 (2–3 sentences): role applied + core motivation.
-Para 2 (3–4 sentences): 1–2 relevant technical achievements with concrete results.
-Para 3 (1–2 sentences): company interest + polite close.
+Para 2 (3–4 sentences): 1–2 relevant technical achievements with concrete results,
+then what that outcome changed for the team or the users.
+Para 3 (1–2 sentences): what the candidate wants to work on or get better at here.
+End on substance — no thank-you line, no "I look forward to hearing from you".
+When the candidate background contains a [來源: voice.md] block, that is the
+candidate's OWN words about motivation, working preferences, and what past results
+meant in practice. Take Para 1's motivation and Para 3's forward-looking sentence
+from there, in that register — not from the JD. Use it as raw material, not a
+template: rephrase for this role rather than reusing the same sentences everywhere.
+Reasoning about a fact the background contains is grounded and wanted — what an
+achievement changed, why a problem was hard. Asserting a NEW fact is not.
+Register: vary sentence length; do not open consecutive sentences with "I". Banned
+stock phrases: "aligns with", "I bring expertise in", "demonstrates a commitment
+to", "eager to contribute", "I am confident that", "resonates with", "proven track
+record", "leverage". Do not stack skills into a three-item list ("Python, GCP, and
+SQL") — name a skill where it did something.
 Ground every claim in the candidate background above — no invented facts, numbers, or
 achievements it does not support. State a concrete result ONLY when the background
 contains it; otherwise describe the achievement without a fabricated metric. No
@@ -822,12 +845,13 @@ Vocabulary scoping, per paragraph:
   terms allowed here, describing THEIR work). End with what the candidate brings,
   drawn ONLY from the background — no JD term in that sentence.
 - Para 2: background material only. No JD vocabulary at all.
-- Para 3: one sentence of company interest (JD terms allowed), one polite close.
-  Do not attach candidate experience to JD terms.
+- Para 3: one sentence naming what the candidate wants to work on next (JD terms
+  allowed for the company's domain). Do not attach candidate experience to JD terms.
 Final check before answering: scan every sentence containing "my", "I have", "I
 bring", "experience", "expertise", "background", "foundation" — remove any
 technology, scale, or domain word in those sentences that the candidate background
-does not contain.
+does not contain. The voice.md block IS part of the candidate background: a
+preference or motivation stated there survives this check.
 Avoid clichés like "I am a passionate developer". Output the letter text only — no subject line, no date."""
 
     user_prompt = f"""## Candidate Background
