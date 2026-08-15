@@ -80,6 +80,25 @@ unknown (not mentioned)
 ## Cover Letter (English, 200–400 words, end on a complete sentence)
 
 Para 1 (2–3 sentences): role applied for + core motivation
-Para 2 (3–4 sentences): 1–2 relevant technical achievements with concrete results
-Para 3 (1–2 sentences): company interest + polite close
+Para 2 (3–4 sentences): 1–2 relevant technical achievements with concrete
+results, then what that outcome changed for the team or the users
+Para 3 (1–2 sentences): what the candidate wants to work on or get better at
+here. End on substance — no thank-you line, no "I look forward to hearing
+from you".
 Tone: formal but direct. Avoid clichés like "I am a passionate developer".
+
+Voice: when the candidate background contains a `[來源: voice.md]` block, that
+is the candidate's own words about motivation, working preferences, and what
+past results meant in practice (see candidate_kb/voice.md.example). Take Para
+1's motivation and Para 3's forward-looking sentence from there, in that
+register — not from the job description. Without such a block the letter can
+only restate résumé bullets, which is what makes a generated letter read as
+machine-written.
+Reasoning about a fact the background contains is grounded and wanted — what an
+achievement changed, why a problem was hard. Asserting a NEW fact is not.
+
+Register: vary sentence length; do not open consecutive sentences with "I".
+Banned stock phrases: "aligns with", "I bring expertise in", "demonstrates a
+commitment to", "eager to contribute", "resonates with", "proven track record",
+"leverage". Do not stack skills into a three-item list ("Python, GCP, and
+SQL") — name a skill where it did something.

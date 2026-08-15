@@ -1,0 +1,63 @@
+# Voice
+
+Copy this file to `voice.md` and replace every line with your own words.
+
+This is the only file in `candidate_kb/` that is NOT about what you achieved.
+`resume_bullets.md` and `projects.md` already hold the achievements, and a cover
+letter written from those alone reads as a restatement of your CV — metric,
+metric, metric — which is exactly what an AI-written letter reads like.
+
+What a human letter adds is here: why this kind of work, what a number actually
+meant day to day, which problems you enjoy. The generator cannot invent any of
+that without fabricating, and the verifier will flag it if it tries. Writing it
+down is what makes personal texture *grounded*.
+
+Rules of thumb:
+- Write in the first person, in your normal speaking voice. Fragments are fine.
+- Be specific and slightly unflattering. "I get impatient with systems nobody
+  can explain" is usable; "I am a passionate team player" is not.
+- Never invent. If a claim is not true of you, the verifier catching it is the
+  system working.
+- Unlike the other KB files, this one is NOT indexed into Qdrant — it is
+  appended to every generation, so no rebuild is needed after editing it.
+
+---
+
+## Why this kind of work
+
+I keep coming back to backend and data plumbing. I like taking something slow,
+manual, or hard to trust and making it boring to run.
+
+The part I enjoy is not the framework — it is the moment a process nobody wanted
+to touch becomes something you can hand to someone else.
+
+## What the numbers actually meant
+
+When I halved the database at Musterfirma, the storage bill was not the point.
+It meant the nightly job stopped paging people at 3am.
+
+The 40 hours a month of reporting I automated were 40 hours the team had been
+spending on work they resented.
+
+## Problems I like
+
+Messy inputs. Sources that disagree with each other, data that changes shape
+without warning, services that answer slowly instead of failing outright.
+
+Deciding what a user should see when the system is not sure. I would rather show
+an honest "I do not know" than a confident wrong answer.
+
+## What I want next
+
+I want to work closer to the data infrastructure rather than only consuming it.
+I have operated these systems in production; I want to design them.
+
+I would like to be somewhere with people who are better at this than I am. Most
+of what I know I learned from code review, not documentation.
+
+## How I work with people
+
+I write things down. If a decision only exists in someone's head, it will be
+re-litigated in three months.
+
+I would rather ship something small that works and iterate than plan for a year.

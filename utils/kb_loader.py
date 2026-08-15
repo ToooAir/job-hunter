@@ -32,8 +32,14 @@ def build_kb(
     qdrant = QdrantClient(path=qdrant_path)
 
     # ── 1. Read and chunk all .md files ───────────────────────────────────────
+    # voice.md is deliberately excluded: it is appended to every context
+    # unconditionally (utils/voice.py), so indexing it would both double-inject
+    # it and let a "why I like this work" chunk displace a relevant project from
+    # the handful of retrieval slots. It is semantically far from any JD anyway.
     chunks: list[dict] = []
     for md_file in sorted(Path(kb_dir).glob("*.md")):
+        if md_file.name == "voice.md":
+            continue
         text = md_file.read_text(encoding="utf-8")
         h1 = ""
         h2 = ""
