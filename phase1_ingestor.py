@@ -4,6 +4,7 @@ Scrapes arbeitnow, englishjobs.de, and germantechjobs.de,
 then upserts raw job listings into the SQLite database.
 """
 
+import base64
 import hashlib
 import json
 import logging
@@ -602,33 +603,42 @@ def scrape_germantechjobs(
 
 # ── Source 4: Bundesagentur für Arbeit ────────────────────────────────────────
 
-BA_API = "https://api.arbeitsagentur.de/jobsuche/v2"
+# The old host (api.arbeitsagentur.de/jobsuche/v2) is decommissioned: it answers
+# every request with an HTML maintenance page ("Wartungsarbeiten") under HTTP
+# 200, so raise_for_status passes and the call dies in .json(). That is why this
+# source produced 13,083 failed calls and zero rows between 2026-04 and 2026-08.
+#
+# The live endpoint is the one the public job search SPA itself calls — read off
+# https://www.arbeitsagentur.de/jobsuche/config/config.js. Note it is v6, and the
+# key matters: 'jobboerse-jobsuche' returns 200, 'jobboerse' and no key both 403.
+BA_API = "https://rest.arbeitsagentur.de/jobboerse/jobsuche-service"
+BA_SEARCH = f"{BA_API}/pc/v6/jobs"
+BA_DETAIL = f"{BA_API}/pc/v4/jobdetails"
 BA_HEADERS = {
-    "User-Agent": "Jobsuche/3.0 (https://api.arbeitsagentur.de)",
-    "X-API-Key": "jobboerse",
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/126 Safari/537.36"
+    ),
+    "Accept": "application/json",
+    "X-API-Key": "jobboerse-jobsuche",
 }
 
-
-# api.arbeitsagentur.de answers every request with an HTML maintenance page
-# ("Wartungsarbeiten", HTTP 200) instead of JSON. Measured 2026-08-17: 13,083
-# calls across the whole log history, zero successes, zero rows in the corpus —
-# the source has never worked in this project's lifetime. Not a client problem:
-# both known X-API-Key values behave identically, the whole host serves the same
-# page, rest.arbeitsagentur.de 403s at its root, and egress is a German
-# residential IP, so geo-blocking is ruled out.
-#
-# Left in place rather than deleted: the code is correct and revives the source
-# by itself if the endpoint ever answers again. What is NOT acceptable is
-# spending 5m32s of every daily run rediscovering the outage — hence the
-# circuit breaker below.
+# Give up on a run after this many consecutive failures rather than walking the
+# whole keyword × location matrix to rediscover an outage. The dead v2 host cost
+# 5m32s of every daily run to learn what request 3 already proved.
 BA_MAX_CONSECUTIVE_FAILURES = 3
+
+# Most BA listings hide the employer's contact details behind a Bundesagentur
+# account (the /bewerbung endpoint 403s without a login), and only ~20% carry an
+# externeURL. Those walled listings are ingested anyway, on the user's call: a JD
+# that reveals a company not yet in the corpus is worth chasing by hand, and new
+# companies are the actual bottleneck. For them apply_url falls back to the
+# public BA detail page, so `apply_url == url` marks a walled posting.
 
 
 def _ba_safe_get(url: str, params: dict) -> dict | None:
     try:
-        import urllib3
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-        resp = requests.get(url, params=params, headers=BA_HEADERS, timeout=10, verify=False)
+        resp = requests.get(url, params=params, headers=BA_HEADERS, timeout=15)
         resp.raise_for_status()
         if not resp.content:
             log.warning("BA GET empty body (status=%d): %s %s", resp.status_code, url, params)
@@ -639,20 +649,30 @@ def _ba_safe_get(url: str, params: dict) -> dict | None:
             log.warning("BA is serving its maintenance page (HTTP 200, HTML) — endpoint down")
             return None
         data = resp.json()
-        time.sleep(1.5)  # politeness delay between *working* calls only
+        time.sleep(0.4)  # politeness delay between *working* calls only
         return data
     except Exception as exc:
         log.warning("BA GET failed: %s %s — %s", url, params, exc)
         return None
 
 
-def _ba_detail(hash_id: str) -> str:
-    """Fetch full job description from Bundesagentur detail endpoint."""
-    data = _ba_safe_get(f"{BA_API}/jobs/{hash_id}", {})
-    if not data:
-        return ""
-    angebot = data.get("stellenangebot", {})
-    return angebot.get("stellenbeschreibung", "") or ""
+def _ba_detail(refnr: str) -> dict | None:
+    """Full posting for a Referenznummer.
+
+    The detail endpoint keys on the base64 of the reference number, not the
+    number itself (the raw form 404s), and the description field is
+    'stellenangebotsBeschreibung' — v2's 'stellenbeschreibung' no longer exists,
+    so the old code would have returned an empty JD even on a live v2 host.
+    """
+    encoded = base64.b64encode(refnr.encode("utf-8")).decode("ascii")
+    return _ba_safe_get(f"{BA_DETAIL}/{encoded}", {})
+
+
+def _ba_location(entry: dict) -> str:
+    """"Hamburg, DEUTSCHLAND" from the first of the posting's locations."""
+    lokationen = entry.get("stellenlokationen") or []
+    adresse = (lokationen[0] or {}).get("adresse", {}) if lokationen else {}
+    return ", ".join(filter(None, [adresse.get("ort"), adresse.get("land")]))
 
 
 def scrape_bundesagentur(
@@ -681,9 +701,9 @@ def scrape_bundesagentur(
                 "wo": wo,
                 "umkreis": radius_km if wo != "Homeoffice" else 0,
                 "size": size,
-                "page": 0,
+                "page": 1,  # v6 pages are 1-based; page=0 returns nothing
             }
-            data = _ba_safe_get(f"{BA_API}/jobs", params)
+            data = _ba_safe_get(BA_SEARCH, params)
             attempted += 1
             if not data:
                 consecutive_failures += 1
@@ -698,37 +718,50 @@ def scrape_bundesagentur(
                 continue
             consecutive_failures = 0
 
-            jobs = data.get("stellenangebote") or []
-            log.info("bundesagentur kw=%r wo=%r: %d Treffer", keyword, wo, len(jobs))
+            jobs = data.get("ergebnisliste") or []
+            log.info(
+                "bundesagentur kw=%r wo=%r: %d von %s Treffern",
+                keyword, wo, len(jobs), data.get("maxErgebnisse", "?"),
+            )
 
             for job in jobs:
-                refnr = job.get("refnr", "")
+                refnr = job.get("referenznummer", "")
                 if not refnr or refnr in seen_refnr:
                     skipped += 1
                     continue
                 seen_refnr.add(refnr)
 
                 job_url = f"https://www.arbeitsagentur.de/jobsuche/jobdetail/{refnr}"
-                hash_id = job.get("hashId", "")
-                raw_jd = _ba_detail(hash_id) if hash_id else ""
+                # One detail call per posting is the expensive half of this
+                # source, and only ~13% of what the search returns was published
+                # in the last week — so never pay it for a posting already known.
+                if _url_in_db(conn, job_url):
+                    skipped += 1
+                    continue
 
-                arbeitsort = job.get("arbeitsort") or {}
-                location_str = ", ".join(
-                    filter(None, [arbeitsort.get("ort"), arbeitsort.get("land")])
-                )
+                detail = _ba_detail(refnr) or {}
+                raw_jd = detail.get("stellenangebotsBeschreibung") or ""
+                external = (job.get("externeURL")
+                            or detail.get("allianzpartnerUrl") or "").strip()
 
                 record = {
                     "id":          make_id(job_url),
-                    "company":     job.get("arbeitgeber", ""),
-                    "title":       job.get("titel", ""),
+                    "company":     job.get("firma", ""),
+                    "title":       job.get("stellenangebotsTitel", ""),
                     "url":         job_url,
                     "source":      "bundesagentur",
                     "source_tier": "auto",
-                    "location":    location_str,
-                    "raw_jd_text": clean_html(raw_jd) if raw_jd else job.get("titel", ""),
+                    "location":    _ba_location(job) or _ba_location(detail),
+                    "raw_jd_text": clean_html(raw_jd) if raw_jd else job.get("stellenangebotsTitel", ""),
                     "fetched_at":  utcnow(),
                     "expires_at":  expiry(45),
                     "status":      "un-scored",
+                    # An external URL is a real apply channel; without one the
+                    # human still gets the public BA page to chase manually.
+                    # apply_url == url is therefore the "walled" marker — no new
+                    # state, and it keeps out of `notes`, which belongs to the
+                    # user (interview impressions, contacts, abandon reasons).
+                    "apply_url":   external or job_url,
                 }
 
                 _warn_empty_jd(record)
