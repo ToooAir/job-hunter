@@ -609,17 +609,38 @@ BA_HEADERS = {
 }
 
 
+# api.arbeitsagentur.de answers every request with an HTML maintenance page
+# ("Wartungsarbeiten", HTTP 200) instead of JSON. Measured 2026-08-17: 13,083
+# calls across the whole log history, zero successes, zero rows in the corpus —
+# the source has never worked in this project's lifetime. Not a client problem:
+# both known X-API-Key values behave identically, the whole host serves the same
+# page, rest.arbeitsagentur.de 403s at its root, and egress is a German
+# residential IP, so geo-blocking is ruled out.
+#
+# Left in place rather than deleted: the code is correct and revives the source
+# by itself if the endpoint ever answers again. What is NOT acceptable is
+# spending 5m32s of every daily run rediscovering the outage — hence the
+# circuit breaker below.
+BA_MAX_CONSECUTIVE_FAILURES = 3
+
+
 def _ba_safe_get(url: str, params: dict) -> dict | None:
     try:
         import urllib3
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         resp = requests.get(url, params=params, headers=BA_HEADERS, timeout=10, verify=False)
         resp.raise_for_status()
-        time.sleep(1.5)
         if not resp.content:
             log.warning("BA GET empty body (status=%d): %s %s", resp.status_code, url, params)
             return None
-        return resp.json()
+        # A maintenance page is a 200 with HTML, so raise_for_status never fires
+        # and .json() fails with an opaque "Expecting value: line 1 column 1".
+        if b"Wartungsarbeiten" in resp.content[:600]:
+            log.warning("BA is serving its maintenance page (HTTP 200, HTML) — endpoint down")
+            return None
+        data = resp.json()
+        time.sleep(1.5)  # politeness delay between *working* calls only
+        return data
     except Exception as exc:
         log.warning("BA GET failed: %s %s — %s", url, params, exc)
         return None
@@ -649,6 +670,10 @@ def scrape_bundesagentur(
     if include_remote and "Homeoffice" not in search_locations:
         search_locations.append("Homeoffice")
 
+    total_queries = len(search_locations) * len(keywords)
+    attempted = 0
+    consecutive_failures = 0
+
     for wo in search_locations:
         for keyword in keywords:
             params = {
@@ -659,8 +684,19 @@ def scrape_bundesagentur(
                 "page": 0,
             }
             data = _ba_safe_get(f"{BA_API}/jobs", params)
+            attempted += 1
             if not data:
+                consecutive_failures += 1
+                if consecutive_failures >= BA_MAX_CONSECUTIVE_FAILURES:
+                    log.warning(
+                        "bundesagentur: %d consecutive failures — abandoning this run after "
+                        "%d of %d queries. The endpoint looks down; the source revives on its "
+                        "own once it answers again.",
+                        consecutive_failures, attempted, total_queries,
+                    )
+                    return added, skipped
                 continue
+            consecutive_failures = 0
 
             jobs = data.get("stellenangebote") or []
             log.info("bundesagentur kw=%r wo=%r: %d Treffer", keyword, wo, len(jobs))
