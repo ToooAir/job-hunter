@@ -59,6 +59,67 @@ def extract_ats_slug(ats: str, apply_url: str | None, url: str | None = None) ->
     return slug if _SLUG_OK.match(slug) else None
 
 
+# A company that EMBEDS its Greenhouse board on its own site leaves only the
+# loader script in the host page's HTML (…/embed/job_board/js?for=<slug>) — a
+# .js asset, not a form, so ats_scan resolved a link that opens as source code
+# (draft #531, funded.club). The loader's own Grnhse.Settings name the pages it
+# would have drawn, and those are plain HTML:
+#   form (needs the posting id):  …/embed/job_app?for=<slug>&token=<gh_jid>
+#   whole board (no id known):    …/embed/job_board?for=<slug>
+# The greenhouse-hosted /<slug>/jobs/<gh_jid> URL is NOT an option here: on an
+# embedded board it 301s back to the host page, which has no form at all.
+_GH_EMBED_JS_RE = re.compile(r"greenhouse\.io/embed/job_board/js\b", re.I)
+_GH_EMBED_BASE = "https://job-boards.greenhouse.io/embed"
+
+
+def greenhouse_embed_apply_url(slug: str, job_id: str | None = None) -> str:
+    """The HTML page an embedded Greenhouse board draws: the posting's own
+    application form when the id is known, else the whole board."""
+    if job_id and str(job_id).isdigit():
+        return f"{_GH_EMBED_BASE}/job_app?for={slug}&token={job_id}"
+    return f"{_GH_EMBED_BASE}/job_board?for={slug}"
+
+
+def normalize_greenhouse_apply_url(apply_url: str | None,
+                                   url: str | None = None) -> str | None:
+    """Rewrite a Greenhouse embed-LOADER url into a page a human can apply on.
+
+    Anything else (including a non-Greenhouse url) is returned untouched, so
+    this is safe to call on every apply_url. `url` is the job's own listing
+    url — the embedded board carries the posting id there as ?gh_jid=.
+    """
+    if not apply_url or not _GH_EMBED_JS_RE.search(apply_url):
+        return apply_url
+    slug = (parse_qs(urlparse(apply_url).query).get("for") or [""])[0].strip()
+    if not slug or slug.lower() in _NON_TENANT or not _SLUG_OK.match(slug):
+        return apply_url  # unparseable: leave it for the asset guard to reject
+    return greenhouse_embed_apply_url(slug, greenhouse_job_id(apply_url, url))
+
+
+def greenhouse_job_id(*urls: str | None) -> str | None:
+    """The Greenhouse posting id a url carries, in any of its three spellings:
+    ?gh_jid= (embedded board), ?token= (the embed job_app form this module
+    builds), or /<slug>/jobs/<id> (greenhouse-hosted). First hit wins.
+
+    ?token= is only read on a greenhouse.io host — elsewhere it is somebody
+    else's auth token.
+    """
+    for u in urls:
+        if not u:
+            continue
+        p = urlparse(u)
+        q = parse_qs(p.query)
+        on_gh = "greenhouse.io" in p.netloc.lower()
+        for key in ("gh_jid", "token") if on_gh else ("gh_jid",):
+            jid = (q.get(key) or [""])[0].strip()
+            if jid.isdigit():
+                return jid
+        segs = [seg for seg in p.path.split("/") if seg]
+        if on_gh and len(segs) >= 3 and segs[-2] == "jobs" and segs[-1].isdigit():
+            return segs[-1]
+    return None
+
+
 def harvest_ats_seeds(conn, geo_gate: bool = True) -> dict[str, list[str]]:
     """{ats: [tenant slugs]} mined from the corpus for the wired ATSes.
 

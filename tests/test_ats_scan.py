@@ -14,6 +14,7 @@ try:  # ats_scan needs requests/bs4 — present in the container, not the host
     from ats_scan import (
         _evidence_to_apply_url,
         plausible_apply_url,
+        resolve_greenhouse,
         resolve_one,
         resolve_wad,
         scan_text_for_ats,
@@ -41,6 +42,8 @@ class PlausibleApplyUrlTest(unittest.TestCase):
             "ui/extlib/jquery_3.5.1/jquery.js",
             "https://example.com/assets/app.css",
             "https://example.com/logo.svg",
+            # extensionless asset path — greenhouse's board loader script
+            "https://boards.greenhouse.io/embed/job_board/js?for=fundedclub",
         ):
             self.assertFalse(plausible_apply_url(url), url)
 
@@ -72,6 +75,17 @@ class PlausibleApplyUrlTest(unittest.TestCase):
             _evidence_to_apply_url("  https://join.com/companies/x/1-dev  "),
             "https://join.com/companies/x/1-dev")
         self.assertIsNone(_evidence_to_apply_url("native form, 4 schema fields"))
+
+    def test_greenhouse_embed_loader_is_repaired_not_dropped(self):
+        loader = "https://boards.greenhouse.io/embed/job_board/js?for=fundedclub"
+        self.assertEqual(
+            _evidence_to_apply_url(loader, "https://funded.club/jobs.html?gh_jid=7665743003"),
+            "https://job-boards.greenhouse.io/embed/job_app"
+            "?for=fundedclub&token=7665743003")
+        # no posting id to recover → the board page, never the .js loader
+        self.assertEqual(
+            _evidence_to_apply_url(loader, "https://funded.club/jobs.html"),
+            "https://job-boards.greenhouse.io/embed/job_board?for=fundedclub")
 
 
 @unittest.skipUnless(HAS_DEPS, "ats_scan deps not installed on this host")
@@ -182,6 +196,106 @@ class ResolveWadTest(unittest.TestCase):
         _, res = self._resolve(503)
         self.assertEqual(res["ats"], "fetch-error")
 
+
+
+@unittest.skipUnless(HAS_DEPS, "ats_scan deps not installed on this host")
+class ResolveGreenhouseTest(unittest.TestCase):
+    """An embedded Greenhouse board serves the same 200 full-board shell for a
+    live and a dead posting, so liveness has to come from the board API, whose
+    listing contains exactly the OPEN jobs."""
+
+    EMBEDDED = {"id": "j1", "source": "greenhouse", "company": "fundedclub",
+                "title": "T", "fit_grade": "B", "match_score": 70,
+                "url": "https://funded.club/jobs.html?gh_jid=7665743003",
+                "apply_url": None}
+    HOSTED = {"id": "j2", "source": "arbeitnow", "company": "Cresta",
+              "title": "T", "fit_grade": "A", "match_score": 80,
+              "url": "https://job-boards.greenhouse.io/cresta/jobs/4668107008",
+              "apply_url": None}
+
+    def setUp(self):
+        import ats_scan
+        ats_scan._gh_open_postings.cache_clear()
+
+    def _resolve(self, job, status=200, payload=None):
+        from unittest import mock
+        fake = mock.Mock(status_code=status)
+        fake.json.return_value = payload if payload is not None else {}
+        result = {"ats": "unknown", "evidence": ""}
+        with mock.patch("ats_scan.requests.get", return_value=fake) as get:
+            handled = resolve_greenhouse(dict(job), result)
+        return handled, result, get
+
+    @staticmethod
+    def _board(*jobs):
+        return {"jobs": list(jobs), "meta": {"total": len(jobs)}}
+
+    def test_posting_absent_from_the_board_is_gone(self):
+        handled, res, _ = self._resolve(
+            self.EMBEDDED, payload=self._board({"id": 7818931003, "absolute_url": "x"}))
+        self.assertTrue(handled)
+        self.assertEqual(res["ats"], "gone")
+        self.assertIn("7665743003", res["evidence"])
+
+    def test_live_embedded_posting_gets_the_embed_form(self):
+        # absolute_url on an embedded board points back at the JS-only host page
+        _, res, _ = self._resolve(self.EMBEDDED, payload=self._board(
+            {"id": 7665743003,
+             "absolute_url": "https://funded.club/jobs.html?gh_jid=7665743003"}))
+        self.assertEqual(res["ats"], "greenhouse")
+        self.assertEqual(
+            res["evidence"],
+            "https://job-boards.greenhouse.io/embed/job_app"
+            "?for=fundedclub&token=7665743003")
+
+    def test_live_hosted_posting_keeps_its_own_url(self):
+        absolute = "https://job-boards.greenhouse.io/cresta/jobs/4668107008"
+        _, res, _ = self._resolve(
+            self.HOSTED, payload=self._board({"id": 4668107008, "absolute_url": absolute}))
+        self.assertEqual(res["ats"], "greenhouse")
+        self.assertEqual(res["evidence"], absolute)
+
+    def test_unreadable_board_never_condemns_the_posting(self):
+        # a wrong slug (404) or a flaky API must fall through, not mark gone
+        for status in (404, 500):
+            handled, res, _ = self._resolve(self.EMBEDDED, status=status)
+            self.assertFalse(handled, status)
+            self.assertEqual(res["ats"], "unknown")
+
+    def test_truncated_board_response_is_refused(self):
+        # meta.total > len(jobs) → judging absence would invent takedowns
+        handled, res, _ = self._resolve(self.EMBEDDED, payload={
+            "jobs": [{"id": 1, "absolute_url": "x"}], "meta": {"total": 400}})
+        self.assertFalse(handled)
+        self.assertEqual(res["ats"], "unknown")
+
+    def test_board_is_fetched_once_across_jobs(self):
+        from unittest import mock
+        fake = mock.Mock(status_code=200)
+        fake.json.return_value = self._board({"id": 7665743003, "absolute_url": "x"})
+        with mock.patch("ats_scan.requests.get", return_value=fake) as get:
+            for _ in range(3):
+                resolve_greenhouse(dict(self.EMBEDDED), {"ats": "unknown", "evidence": ""})
+            self.assertEqual(get.call_count, 1)
+
+    def test_slug_from_a_resolved_apply_url(self):
+        # aggregator-sourced job: company is a display name, not a board slug
+        job = {"id": "j3", "source": "arbeitnow", "company": "Moonfare", "title": "T",
+               "fit_grade": "B", "match_score": 70,
+               "url": "https://www.arbeitnow.com/jobs/companies/moonfare/data-engineer",
+               "apply_url": "https://job-boards.greenhouse.io/embed/job_app"
+                            "?for=moonfare&token=7773348003"}
+        _, res, get = self._resolve(job, payload=self._board({"id": 7773348003}))
+        self.assertIn("boards/moonfare/jobs", get.call_args[0][0])
+        self.assertEqual(res["ats"], "greenhouse")
+
+    def test_non_greenhouse_job_is_not_handled(self):
+        job = {"id": "j4", "source": "heise", "company": "Acme", "title": "T",
+               "fit_grade": "B", "match_score": 70,
+               "url": "https://jobs.heise.de/job?id=123", "apply_url": None}
+        handled, _, get = self._resolve(job)
+        self.assertFalse(handled)
+        get.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()
