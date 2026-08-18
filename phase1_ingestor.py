@@ -12,13 +12,14 @@ import os
 import re
 import time
 from datetime import datetime, timezone, timedelta
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import requests
 import yaml
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
+from utils.apply_url import plausible_apply_url
 from utils.ats_harvest import merged_companies, persist_seeds
 from utils.db import init_db, upsert_job
 
@@ -675,6 +676,30 @@ def _ba_location(entry: dict) -> str:
     return ", ".join(filter(None, [adresse.get("ort"), adresse.get("land")]))
 
 
+def _ba_apply_url(external: str, job_url: str) -> str:
+    """The apply link to store for a BA posting.
+
+    BA always answers the externeURL/allianzpartnerUrl field with *something*,
+    but two rows in three it is not an apply channel: a scheme-less bare host
+    ("www.zalando.de", which does not even open as a link), or a self-reference
+    to arbeitsagentur.de meaning "apply through us". Measured over 2,155 rows:
+    68% junk, and the junk correlated 100% with a failed Stage 1 probe
+    (bare host → nav-error 11/11, self-reference → no-form 15/15).
+
+    Falling back to the posting's own BA page keeps the human on a page that at
+    least shows the job, and restores the intended walled marker: apply_url ==
+    url means "no external channel, apply by hand". The detail API carries no
+    second candidate — no contact email, no Bewerbungs-URL — so there is
+    nothing better to reach for.
+    """
+    ext = (external or "").strip()
+    if not plausible_apply_url(ext):
+        return job_url
+    if "arbeitsagentur.de" in urlparse(ext).netloc.lower():
+        return job_url
+    return ext
+
+
 def scrape_bundesagentur(
     conn,
     keywords: list[str],
@@ -756,12 +781,14 @@ def scrape_bundesagentur(
                     "fetched_at":  utcnow(),
                     "expires_at":  expiry(45),
                     "status":      "un-scored",
-                    # An external URL is a real apply channel; without one the
-                    # human still gets the public BA page to chase manually.
-                    # apply_url == url is therefore the "walled" marker — no new
-                    # state, and it keeps out of `notes`, which belongs to the
-                    # user (interview impressions, contacts, abandon reasons).
-                    "apply_url":   external or job_url,
+                    # A USABLE external URL is a real apply channel; anything
+                    # else (and BA answers with junk two rows in three) falls
+                    # back to the public BA page for the human to chase
+                    # manually. apply_url == url is therefore the "walled"
+                    # marker — no new state, and it keeps out of `notes`, which
+                    # belongs to the user (interview impressions, contacts,
+                    # abandon reasons). See _ba_apply_url.
+                    "apply_url":   _ba_apply_url(external, job_url),
                 }
 
                 _warn_empty_jd(record)

@@ -232,6 +232,32 @@ class ApplyChannelTest(unittest.TestCase):
         self.assertEqual(rec["apply_url"], rec["url"])
         self.assertIn("arbeitsagentur.de/jobsuche/jobdetail/", rec["apply_url"])
 
+    def test_a_bare_host_is_not_an_apply_channel(self):
+        """Measured over 2,155 rows: 33% of externeURL values are a scheme-less
+        bare host. It is the employer's homepage, it does not even open as a
+        link from the draft card, and it drove nav-error 11/11 in Stage 1."""
+        for junk in ("www.zalando.de", "www.plusyou.de", "www.aero-hp.com"):
+            rec = self._rec(_listing(extern=junk), _detail())
+            self.assertEqual(rec["apply_url"], rec["url"], junk)
+
+    def test_a_self_reference_to_ba_is_not_an_apply_channel(self):
+        """34% of them say http://www.arbeitsagentur.de — "apply through us".
+        Storing that sends the human to a search homepage, not the posting."""
+        rec = self._rec(_listing(extern="http://www.arbeitsagentur.de"), _detail())
+        self.assertEqual(rec["apply_url"], rec["url"])
+        self.assertIn("/jobsuche/jobdetail/", rec["apply_url"])
+
+    def test_a_partner_board_deep_link_survives_the_gate(self):
+        # the 32% that are real: don't let the gate eat them
+        rec = self._rec(_listing(), _detail(allianz="https://www.get-in-it.de/jobsuche/stelle/9"))
+        self.assertEqual(rec["apply_url"], "https://www.get-in-it.de/jobsuche/stelle/9")
+
+    def test_the_gate_is_idempotent_on_an_already_repaired_row(self):
+        # the backfill re-derives from the stored value; a BA page must stay put
+        job_url = "https://www.arbeitsagentur.de/jobsuche/jobdetail/13644-299674-S"
+        self.assertEqual(ing._ba_apply_url(job_url, job_url), job_url)
+        self.assertEqual(ing._ba_apply_url("https://x.de/jobs/1", "u"), "https://x.de/jobs/1")
+
     def test_the_walled_marker_does_not_touch_the_user_owned_notes_field(self):
         """`notes` holds interview impressions and abandon reasons the user
         writes and saves; an ingest-time marker there would be clobbered."""
