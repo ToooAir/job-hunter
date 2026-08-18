@@ -29,6 +29,7 @@ from html import unescape as html_unescape
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
@@ -37,6 +38,12 @@ from bs4 import BeautifulSoup
 
 sys.path.insert(0, str(Path(__file__).parent))
 from utils.apply_queue import MIN_B_SCORE, REMOTE_ELIGIBLE_LOCATIONS  # noqa: E402
+from utils.ats_harvest import (  # noqa: E402
+    extract_ats_slug,
+    greenhouse_embed_apply_url,
+    greenhouse_job_id,
+    normalize_greenhouse_apply_url,
+)
 from utils.db import expire_gone_scored_jobs, init_db, set_job_ats  # noqa: E402
 from utils.gone_text import redirect_off_posting, soft_gone  # noqa: E402
 
@@ -140,7 +147,7 @@ def fetch_jobs(limit=None):
     loc_terms += [f"location = '{loc}'" for loc in REMOTE_ELIGIBLE_LOCATIONS]
     loc_clause = " OR ".join(loc_terms)
     sql = (
-        "SELECT id, source, company, title, url, fit_grade, match_score FROM jobs "
+        "SELECT id, source, company, title, url, apply_url, fit_grade, match_score FROM jobs "
         "WHERE status='scored' "
         f"AND (fit_grade='A' OR (fit_grade='B' AND match_score >= {MIN_B_SCORE})) "
         f"AND ({loc_clause}) "
@@ -276,6 +283,83 @@ def resolve_wad(url, result):
     return True
 
 
+# A Greenhouse board a company EMBEDS on its own site hides liveness: the host
+# page (funded.club/jobs.html?gh_jid=…) serves the SAME 200 full-board shell
+# whether the posting is open or long gone — the board is drawn client-side, so
+# neither soft_gone wording nor a redirect ever appears. Same blind spot the
+# WTTJ/WAD resolvers above fix, same cure: ask the ATS. Greenhouse's public
+# board API lists exactly the OPEN postings, so membership IS the verdict.
+# One request per board (cached), not per job.
+GH_BOARD_API = "https://boards-api.greenhouse.io/v1/boards/{slug}/jobs"
+
+
+@lru_cache(maxsize=256)
+def _gh_open_postings(slug):
+    """{posting id: absolute_url} for a board's open jobs, or None if the board
+    itself could not be read. None means "don't know" — never "gone": a wrong
+    slug or a flaky API must not condemn a live posting."""
+    try:
+        r = requests.get(GH_BOARD_API.format(slug=slug), headers=HEADERS,
+                         timeout=TIMEOUT)
+    except requests.RequestException:
+        return None
+    if r.status_code != 200:
+        return None
+    try:
+        data = r.json() or {}
+    except ValueError:
+        return None
+    jobs = data.get("jobs") or []
+    # meta.total is the board's own count; a short list would mean the response
+    # was truncated/paginated, and judging absence against half a board would
+    # invent takedowns. Refuse to judge instead.
+    total = (data.get("meta") or {}).get("total")
+    if total is not None and len(jobs) != total:
+        return None
+    return {str(j.get("id")): (j.get("absolute_url") or "") for j in jobs}
+
+
+def _greenhouse_ref(job):
+    """(board slug, posting id) for a Greenhouse-backed job, else None.
+
+    The slug comes from the url or a previously resolved apply_url; for jobs the
+    greenhouse scraper itself ingested, `company` IS the board slug (phase1
+    stores it that way), which is the only handle an embedded board leaves.
+    """
+    url, apply_url = job.get("url") or "", job.get("apply_url") or ""
+    slug = (extract_ats_slug("greenhouse", url)
+            or extract_ats_slug("greenhouse", apply_url))
+    if not slug and job.get("source") == "greenhouse":
+        slug = (job.get("company") or "").strip()
+    jid = greenhouse_job_id(url, apply_url)
+    return (slug, jid) if slug and jid else None
+
+
+def resolve_greenhouse(job, result):
+    """Settle a Greenhouse posting against the board API. Returns True if
+    handled; False falls through to the generic HTTP path."""
+    ref = _greenhouse_ref(job)
+    if not ref:
+        return False
+    slug, jid = ref
+    postings = _gh_open_postings(slug)
+    if postings is None:
+        return False  # board unreadable — the generic path may still learn something
+    if jid not in postings:
+        result.update(ats="gone",
+                      evidence=f"greenhouse board {slug}: posting {jid} not open")
+        return True
+    # An embedded board's absolute_url points back at the company's own JS-only
+    # page, which has no form — send the human to the embed form instead.
+    absolute = postings[jid]
+    result.update(
+        ats="greenhouse",
+        evidence=(absolute if "greenhouse.io" in urlparse(absolute).netloc.lower()
+                  else greenhouse_embed_apply_url(slug, jid)),
+    )
+    return True
+
+
 def resolve_one(job):
     url = job["url"]
     result = {
@@ -287,6 +371,8 @@ def resolve_one(job):
     if resolve_wttj(url, result):
         return result
     if resolve_wad(url, result):
+        return result
+    if resolve_greenhouse(job, result):
         return result
     try:
         r = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
@@ -377,6 +463,9 @@ def load_results_from_csv(csv_path):
 # but must never be stored as the apply link.
 _STATIC_ASSET_EXTS = (".js", ".css", ".map", ".json", ".png", ".jpg", ".jpeg",
                       ".gif", ".svg", ".ico", ".woff", ".woff2", ".ttf")
+# …and the extensionless form: Greenhouse serves its board loader as the PATH
+# /embed/job_board/js, which endswith(".js") never catches.
+_ASSET_TAIL_RE = re.compile(r"/(js|css)$", re.I)
 _JUNK_PATH_RE = re.compile(
     r"/(terms|privacy(-policy)?|legal|imprint|impressum|datenschutz|agb|"
     r"cookies?|cookie-richtlinie)(/|$|\?)", re.I)
@@ -396,13 +485,18 @@ def plausible_apply_url(url):
         return False
     if path.rstrip("/").lower().endswith(_STATIC_ASSET_EXTS):
         return False
+    if _ASSET_TAIL_RE.search(path.rstrip("/")):
+        return False
     if _JUNK_PATH_RE.search(path):
         return False
     return True
 
 
-def _evidence_to_apply_url(evidence):
-    ev = (evidence or "").strip()
+def _evidence_to_apply_url(evidence, url=None):
+    """Evidence → a storable apply link, or None. Rewrites the shapes we know
+    how to repair (Greenhouse's embed loader) BEFORE the plausibility guard —
+    otherwise a recoverable link is thrown away as a static asset."""
+    ev = normalize_greenhouse_apply_url((evidence or "").strip(), url)
     return ev if plausible_apply_url(ev) else None
 
 
@@ -413,7 +507,7 @@ def write_results_to_db(results, checked_at, db_path=DB_PATH):
     for r in results:
         ok = set_job_ats(
             conn, r["job_id"], r["ats"],
-            apply_url=_evidence_to_apply_url(r.get("evidence")),
+            apply_url=_evidence_to_apply_url(r.get("evidence"), r.get("url")),
             checked_at=checked_at,
         )
         updated += ok
