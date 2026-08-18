@@ -38,6 +38,7 @@ from bs4 import BeautifulSoup
 
 sys.path.insert(0, str(Path(__file__).parent))
 from utils.apply_queue import MIN_B_SCORE, REMOTE_ELIGIBLE_LOCATIONS  # noqa: E402
+from utils.apply_url import plausible_apply_url  # noqa: E402,F401
 from utils.ats_harvest import (  # noqa: E402
     extract_ats_slug,
     greenhouse_embed_apply_url,
@@ -455,41 +456,6 @@ def load_results_from_csv(csv_path):
                 n_overlaid += 1
         print(f"覆寫 {n_overlaid} 筆 indeed CDP 解析結果（{INDEED_RESOLVE_JSON.name}）")
     return results
-
-
-# scan_text_for_ats matches ATS domains anywhere in raw HTML, so evidence
-# can be a script src (…successfactors.eu/…/jquery.js) or a footer link
-# (join.com/terms). Such evidence still proves WHICH ats hosts the job,
-# but must never be stored as the apply link.
-_STATIC_ASSET_EXTS = (".js", ".css", ".map", ".json", ".png", ".jpg", ".jpeg",
-                      ".gif", ".svg", ".ico", ".woff", ".woff2", ".ttf")
-# …and the extensionless form: Greenhouse serves its board loader as the PATH
-# /embed/job_board/js, which endswith(".js") never catches.
-_ASSET_TAIL_RE = re.compile(r"/(js|css)$", re.I)
-_JUNK_PATH_RE = re.compile(
-    r"/(terms|privacy(-policy)?|legal|imprint|impressum|datenschutz|agb|"
-    r"cookies?|cookie-richtlinie)(/|$|\?)", re.I)
-_LOCALE_ONLY_PATH_RE = re.compile(r"^/?[a-z]{2}([_-][a-z]{2})?/?$", re.I)
-
-
-def plausible_apply_url(url):
-    """True when the URL could be a real apply page — rejects static assets,
-    terms/privacy pages, and bare (or locale-only) homepages."""
-    u = (url or "").strip()
-    if u.startswith("mailto:"):
-        return True
-    if not u.startswith(("http://", "https://")):
-        return False
-    path = urlparse(u).path
-    if path in ("", "/") or _LOCALE_ONLY_PATH_RE.match(path):
-        return False
-    if path.rstrip("/").lower().endswith(_STATIC_ASSET_EXTS):
-        return False
-    if _ASSET_TAIL_RE.search(path.rstrip("/")):
-        return False
-    if _JUNK_PATH_RE.search(path):
-        return False
-    return True
 
 
 def _evidence_to_apply_url(evidence, url=None):
