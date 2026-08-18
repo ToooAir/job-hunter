@@ -14,6 +14,7 @@ try:  # ats_scan needs requests/bs4 — present in the container, not the host
     from ats_scan import (
         _evidence_to_apply_url,
         plausible_apply_url,
+        resolve_bundesagentur,
         resolve_greenhouse,
         resolve_one,
         resolve_wad,
@@ -293,6 +294,76 @@ class ResolveGreenhouseTest(unittest.TestCase):
         job = {"id": "j4", "source": "heise", "company": "Acme", "title": "T",
                "fit_grade": "B", "match_score": 70,
                "url": "https://jobs.heise.de/job?id=123", "apply_url": None}
+        handled, _, get = self._resolve(job)
+        self.assertFalse(handled)
+        get.assert_not_called()
+
+
+@unittest.skipUnless(HAS_DEPS, "ats_scan deps not installed on this host")
+class ResolveBundesagenturTest(unittest.TestCase):
+    """The BA job page is a client-rendered SPA: a withdrawn posting and a live
+    one return the same 200 shell. 68% of BA rows are walled (apply_url == url),
+    so there is no downstream ATS page to check instead — the detail API is the
+    only witness."""
+
+    WALLED = {"id": "b1", "source": "bundesagentur", "company": "Acme", "title": "T",
+              "fit_grade": "B", "match_score": 70,
+              "url": "https://www.arbeitsagentur.de/jobsuche/jobdetail/13644-299674-S",
+              "apply_url": "https://www.arbeitsagentur.de/jobsuche/jobdetail/13644-299674-S"}
+    EXTERNAL = {**WALLED, "id": "b2",
+                "apply_url": "https://jobs.lever.co/acme/45b0fae3/apply"}
+
+    _UNSET = object()
+
+    def _resolve(self, job, status=200, payload=_UNSET, body=b"{}"):
+        from unittest import mock
+        fake = mock.Mock(status_code=status, content=body)
+        if payload is self._UNSET:
+            fake.json.return_value = {"stellenangebotsTitel": "T"}
+        elif payload is None:
+            fake.json.side_effect = ValueError("not json")  # HTML maintenance page
+        else:
+            fake.json.return_value = payload
+        result = {"ats": "unknown", "evidence": ""}
+        with mock.patch("ats_scan.requests.get", return_value=fake) as get:
+            handled = resolve_bundesagentur(dict(job), result)
+        return handled, result, get
+
+    def test_404_marks_the_posting_gone(self):
+        handled, res, _ = self._resolve(self.WALLED, status=404)
+        self.assertTrue(handled)
+        self.assertEqual(res["ats"], "gone")
+        self.assertIn("13644-299674-S", res["evidence"])
+
+    def test_the_detail_call_is_keyed_on_the_base64_refnr(self):
+        import base64
+        _, _, get = self._resolve(self.WALLED)
+        self.assertIn(base64.b64encode(b"13644-299674-S").decode(), get.call_args[0][0])
+
+    def test_a_live_walled_posting_keeps_the_ba_page_as_the_channel(self):
+        _, res, _ = self._resolve(self.WALLED)
+        self.assertEqual(res["ats"], "unknown")
+        self.assertEqual(res["evidence"], self.WALLED["url"])
+
+    def test_a_live_posting_with_an_external_link_is_classified(self):
+        _, res, _ = self._resolve(self.EXTERNAL)
+        self.assertEqual(res["ats"], "lever")
+        self.assertEqual(res["evidence"], self.EXTERNAL["apply_url"])
+
+    def test_the_maintenance_page_is_never_read_as_a_takedown(self):
+        # HTML under HTTP 200 — the failure mode that hid this source's death
+        # for four months. Must fall through to the generic path, not judge.
+        handled, res, _ = self._resolve(self.WALLED, payload=None,
+                                        body=b"<html>Wartungsarbeiten</html>")
+        self.assertFalse(handled)
+        self.assertNotEqual(res["ats"], "gone")
+
+    def test_5xx_is_fetch_error_not_gone(self):
+        _, res, _ = self._resolve(self.WALLED, status=503)
+        self.assertEqual(res["ats"], "fetch-error")
+
+    def test_a_non_ba_url_is_not_handled(self):
+        job = {**self.WALLED, "url": "https://jobs.heise.de/job?id=1"}
         handled, _, get = self._resolve(job)
         self.assertFalse(handled)
         get.assert_not_called()

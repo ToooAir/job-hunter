@@ -48,6 +48,7 @@ SCHEMA_COLUMNS = [
     ("company_research",   "TEXT"),
     ("company_aliases",    "TEXT"),   # brand / trade names mined from the JD (company_alias.py)
     ("form_verdict",       "TEXT"),   # last stage1 probe verdict (captcha/no-form/…) for queue ranking
+    ("staffing",           "INTEGER"),  # 1 = agency/recruiter, not the employer (utils/staffing.py)
     ("salary_estimate",    "TEXT"),
     ("visa_analysis",      "TEXT"),
     ("translated_jd_text", "TEXT"),
@@ -102,6 +103,10 @@ SNAPSHOT_STATUSES = ("draft", "submitted", "abandoned")
 IN_FLIGHT_SNAPSHOT_STATUSES = ("draft", "submitted")
 
 
+# A URL nobody has re-seen in this long is worth one fetch to re-check.
+_SEEN_TTL_DAYS = 120
+
+
 PIPELINE_RUN_COLUMNS = [
     ("id",           "INTEGER PRIMARY KEY AUTOINCREMENT"),
     ("started_at",   "TEXT NOT NULL"),
@@ -132,6 +137,22 @@ def init_db(db_path: str) -> sqlite3.Connection:
     conn.execute(f"CREATE TABLE IF NOT EXISTS application_snapshots (\n    {snap_defs}\n);")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_snapshots_job_id ON application_snapshots(job_id)"
+    )
+    # Postings a source showed us and we deliberately did NOT store (bundesagentur
+    # republishes the same job under fresh Referenznummern, so ~20% of every
+    # day's search hits are url-new but jd_hash duplicates). Without this ledger
+    # each one costs a detail fetch every single run to be rediscovered and
+    # thrown away — measured at 700-1,200 wasted calls a day.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS seen_not_stored ("
+        " url TEXT PRIMARY KEY, source TEXT, seen_at TEXT NOT NULL)"
+    )
+    # Age the ledger here rather than on every read: a URL nobody has seen in
+    # four months is worth one fetch to re-check rather than blocked forever.
+    conn.execute(
+        "DELETE FROM seen_not_stored WHERE seen_at < ?",
+        ((datetime.now() - timedelta(days=_SEEN_TTL_DAYS))
+         .strftime("%Y-%m-%dT%H:%M:%S"),),
     )
     # Generic one-row-per-key state (e.g. the dashboard's apply focus —
     # see extension/ANSWER_PANEL_PLAN.md).
@@ -600,6 +621,26 @@ def set_job_ats(
     )
     conn.commit()
     return cur.rowcount == 1
+
+
+# ── seen-but-not-stored ledger ────────────────────────────────────────────────
+
+def mark_seen_not_stored(conn: sqlite3.Connection, url: str, source: str) -> None:
+    """Remember a posting we fetched and rejected, so the next run can skip the
+    fetch. INSERT OR REPLACE refreshes seen_at, which keeps a still-live
+    republished posting from ageing out of the ledger."""
+    conn.execute(
+        "INSERT OR REPLACE INTO seen_not_stored (url, source, seen_at) VALUES (?, ?, ?)",
+        (url, source, _now_local_iso()),
+    )
+    conn.commit()
+
+
+def load_seen_not_stored(conn: sqlite3.Connection, source: str) -> set[str]:
+    """The ledger for one source, as a set for O(1) lookup in the scrape loop.
+    Read-only — ageing happens once per process in init_db."""
+    return {r[0] for r in conn.execute(
+        "SELECT url FROM seen_not_stored WHERE source = ?", (source,))}
 
 
 # ── Application snapshots (semi-auto apply, Step 2+) ───────────────────────────

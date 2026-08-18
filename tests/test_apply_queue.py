@@ -784,5 +784,33 @@ class ExperimentGateTest(QueueTestBase):
         self.assertEqual(self.queue_ids(result), ["cohort"])
 
 
+
+class StaffingDemoteTest(unittest.TestCase):
+    """Ranked back, never dropped: 0 of 49 agency applications reached an
+    interview, but under the direct-employer rate that has probability 0.45 —
+    the data cannot tell them apart, so a dry queue still gets the shots."""
+
+    def test_the_ba_flag_alone_is_enough(self):
+        from utils.staffing import is_staffing
+        # plusYou's name gives nothing away; BA's own flag does
+        self.assertFalse(is_staffing("plusYou GmbH"))
+        self.assertTrue(is_staffing("plusYou GmbH", 1))
+
+    def test_the_name_alone_is_enough(self):
+        from utils.staffing import is_staffing
+        self.assertTrue(is_staffing("Hays Professional Solutions GmbH"))
+        self.assertTrue(is_staffing("FERCHAU GmbH", 0))
+
+    def test_brand_names_need_a_word_boundary(self):
+        from utils.staffing import is_staffing_employer
+        self.assertTrue(is_staffing_employer("Hays"))
+        self.assertFalse(is_staffing_employer("Hayspark Software GmbH"))
+
+    def test_a_direct_employer_is_untouched(self):
+        from utils.staffing import is_staffing
+        for name in ("Google Germany GmbH", "Zalando SE", "JetBrains GmbH"):
+            self.assertFalse(is_staffing(name), name)
+
+
 if __name__ == "__main__":
     unittest.main()

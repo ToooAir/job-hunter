@@ -39,6 +39,7 @@ from bs4 import BeautifulSoup
 sys.path.insert(0, str(Path(__file__).parent))
 from utils.apply_queue import MIN_B_SCORE, REMOTE_ELIGIBLE_LOCATIONS  # noqa: E402
 from utils.apply_url import plausible_apply_url  # noqa: E402,F401
+from utils.ba_api import BA_HEADERS, ba_detail_url, ba_refnr_from_url  # noqa: E402
 from utils.ats_harvest import (  # noqa: E402
     extract_ats_slug,
     greenhouse_embed_apply_url,
@@ -361,6 +362,49 @@ def resolve_greenhouse(job, result):
     return True
 
 
+# A Bundesagentur posting is the third instance of the same blind spot: its
+# public page is a client-rendered SPA, so a withdrawn job and a live one return
+# the same 200 shell and neither soft_gone wording nor a redirect appears. It is
+# the worst case of the three, because 68% of BA rows are walled (apply_url ==
+# url) — there is no downstream ATS page to check instead. The detail API is the
+# only witness, and the daily ingest already talks to it. Measured on a sample
+# of 45 A/B postings, 3 had 404'd within a day of ingest.
+#
+# Only a clean 404 condemns a posting. The maintenance page — HTML under HTTP
+# 200, the failure mode that hid this source's death for four months — must fall
+# through, never be read as a takedown.
+def resolve_bundesagentur(job, result):
+    """Settle a BA posting against its detail API. True if handled."""
+    url = job.get("url") or ""
+    refnr = ba_refnr_from_url(url)
+    if not refnr:
+        return False
+    try:
+        r = requests.get(ba_detail_url(refnr), headers=BA_HEADERS, timeout=TIMEOUT)
+    except requests.RequestException as e:
+        result.update(ats="fetch-error", evidence=f"BA detail API: {str(e)[:180]}")
+        return True
+    if r.status_code in (404, 410):
+        result.update(ats="gone",
+                      evidence=f"BA detail API HTTP {r.status_code}: {refnr} withdrawn")
+        return True
+    if r.status_code != 200:
+        result.update(ats="fetch-error", evidence=f"BA detail API HTTP {r.status_code}")
+        return True
+    try:
+        r.json()
+    except ValueError:
+        return False  # maintenance page (HTML under 200) — refuse to judge
+    apply_url = (job.get("apply_url") or "").strip()
+    if not apply_url or apply_url == url:
+        # walled: the BA page IS the channel, applied to by hand
+        result.update(ats="unknown", evidence=url)
+        return True
+    ats = classify_url(apply_url)
+    result.update(ats=ats or "unknown-external", evidence=apply_url)
+    return True
+
+
 def resolve_one(job):
     url = job["url"]
     result = {
@@ -374,6 +418,8 @@ def resolve_one(job):
     if resolve_wad(url, result):
         return result
     if resolve_greenhouse(job, result):
+        return result
+    if resolve_bundesagentur(job, result):
         return result
     try:
         r = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
