@@ -66,6 +66,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from utils.db import IN_FLIGHT_SNAPSHOT_STATUSES, init_db  # noqa: E402
+from utils.staffing import is_staffing, is_staffing_employer  # noqa: E402,F401
 
 DEFAULT_DB_PATH = str(Path(__file__).resolve().parents[1] / "data" / "jobs.db")
 DEFAULT_BUDGET = 35
@@ -205,28 +206,9 @@ def form_unreachable(job: dict) -> bool:
     return (job.get("form_verdict") or "").lower() in UNREACHABLE_VERDICTS
 
 
-# Recruitment agencies / consultancies post many distinct end-client roles under
-# one legal name, so the company-level dedup ("one live application per company")
-# over-blocks them: applying to one ABALON/Hays role should not hide every other
-# client role there. Name-matched (the queue has no JD text loaded), high-precision
-# phrases only — a product company that merely "consults stakeholders" must not
-# match, so the bare word "consult" is never used alone. Shares intent with
-# salary_estimator._CONSULTANCY_MARKERS but stays local (apply_queue is stdlib-only).
-_STAFFING_RE = re.compile(
-    r"recruit|personaldienst|personalvermittl|personalberatung|zeitarbeit|"
-    r"arbeitnehmer(ü|ue)berlassung|staffing|"
-    r"consulting|consultanc|unternehmensberatung|it-beratung|"
-    r"professional (solutions|services)",
-    re.I,
-)
-
-
-def is_staffing_employer(company: str | None) -> bool:
-    """True when the company name reads as a recruitment/consultancy/staffing
-    firm — one legal entity fronting many different end clients. Such an employer
-    is exempt from the company-level pipeline block: a second posting there is a
-    different client, not a re-application, so it is surfaced as a warn."""
-    return bool(_STAFFING_RE.search(company or ""))
+# is_staffing_employer / is_staffing live in utils/staffing.py — the ingest side
+# needs the same notion to persist bundesagentur's own Arbeitnehmerüberlassung
+# flag, and one definition beats two that drift.
 
 # Same notion of "in the pipeline" as the dashboard: once a company has any of
 # these, a new application there needs a human decision first.
@@ -483,7 +465,7 @@ def fetch_candidates(conn) -> list[dict]:
     loc_clause = " OR ".join(loc_terms)
     rows = conn.execute(
         "SELECT id, source, company, title, url, location, fit_grade, match_score, "
-        "       fetched_at, jd_hash, ats, apply_url, ats_checked_at, form_verdict "
+        "       fetched_at, jd_hash, ats, apply_url, ats_checked_at, form_verdict, staffing "
         "FROM jobs "
         "WHERE status = 'scored' "
         f"  AND (fit_grade = 'A' OR (fit_grade = 'B' AND match_score >= {MIN_B_SCORE})) "
@@ -578,6 +560,12 @@ def build_queue(conn, budget: int | None = None, now: datetime | None = None,
             demote_reasons.append("seniority-reach")
         if form_unreachable(job) and job["fit_grade"] != "A":   # ③ known dead-end (A kept)
             demote_reasons.append("form-unreachable")
+        # ⑤ agency/recruiter rather than the employer. Ranked back, never
+        # dropped: 0 of 49 such applications reached an interview, but under
+        # the direct-employer rate that outcome has probability 0.45 — the data
+        # cannot tell them apart, so keep the shots available for a dry queue.
+        if is_staffing(job.get("company"), job.get("staffing")):
+            demote_reasons.append("staffing")
         # ④ per-company cap (spans batches). A-grade gets one slot of its own so
         # it is never stuck behind a lower-graded draft; everything else shares
         # the base cap. eligible is best-first, so the first kept per company wins.

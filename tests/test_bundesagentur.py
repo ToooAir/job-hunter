@@ -82,14 +82,25 @@ class _Resp:
 
 
 class _FakeConn:
-    """Stands in for the sqlite connection: records upserts, answers _url_in_db."""
+    """Stands in for the sqlite connection: answers _url_in_db, serves the
+    seen-not-stored ledger, and records what the scraper writes into it."""
 
-    def __init__(self, known_urls=()):
+    def __init__(self, known_urls=(), ledger=()):
         self.known = set(known_urls)
+        self.ledger = set(ledger)      # what a previous run rejected
+        self.marked = []               # what THIS run adds to the ledger
         self.rows = []
+
+    def commit(self):
+        pass
 
     def execute(self, sql, params=()):
         conn = self
+        if "seen_not_stored" in sql:
+            if sql.lstrip().upper().startswith("INSERT"):
+                conn.marked.append(params[0])
+                return iter(())
+            return iter((u,) for u in conn.ledger)   # SELECT url ...
 
         class _Cur:
             def fetchone(self):
@@ -308,6 +319,81 @@ class DetailCallCostTest(unittest.TestCase):
                 radius_km=50, include_remote=False, size=10,
             )
         self.assertEqual(len(detail_calls), 1)
+
+
+class SeenNotStoredLedgerTest(unittest.TestCase):
+    """BA republishes the same job under fresh Referenznummern, so ~20% of every
+    day's search hits are url-new but jd_hash duplicates. Rediscovering them
+    costs one detail call each — measured at 700-1,200 wasted calls a day."""
+
+    def _run(self, conn, upsert_ok=False):
+        calls = []
+
+        def _get(url, **kwargs):
+            calls.append(url)
+            if "/jobdetails/" in url:
+                return _Resp(b"{}", json_data=_detail())
+            return _Resp(b"{}", json_data=_search_page([_listing()]))
+
+        with mock.patch.object(ing.requests, "get", side_effect=_get), \
+             mock.patch.object(ing.time, "sleep"), \
+             mock.patch.object(ing, "upsert_job", return_value=upsert_ok):
+            ing.scrape_bundesagentur(
+                conn=conn, keywords=["AI Engineer"], locations=["Hamburg"],
+                radius_km=50, include_remote=False, size=10,
+            )
+        return calls
+
+    def test_a_ledgered_posting_costs_no_detail_call(self):
+        url = ing.ba_job_url(REFNR)
+        calls = self._run(_FakeConn(ledger={url}))
+        self.assertEqual([c for c in calls if "/jobdetails/" in c], [])
+
+    def test_a_rejected_posting_is_written_to_the_ledger(self):
+        conn = _FakeConn()
+        self._run(conn, upsert_ok=False)   # upsert_job False = jd_hash duplicate
+        self.assertEqual(conn.marked, [ing.ba_job_url(REFNR)])
+
+    def test_an_ingested_posting_is_not_ledgered(self):
+        conn = _FakeConn()
+        self._run(conn, upsert_ok=True)
+        self.assertEqual(conn.marked, [])
+
+
+class StaffingFlagTest(unittest.TestCase):
+    """BA is the only source that states this outright. Neither the flag nor the
+    name test is complete alone (45-posting sample: the name test missed
+    plusYou / hyrUP / AERO, the flags missed Franklin Fitch)."""
+
+    def _rec(self, detail):
+        captured = []
+
+        def _get(url, **kwargs):
+            if "/jobdetails/" in url:
+                return _Resp(b"{}", json_data=detail)
+            return _Resp(b"{}", json_data=_search_page([_listing(firma="plusYou GmbH")]))
+
+        with mock.patch.object(ing.requests, "get", side_effect=_get), \
+             mock.patch.object(ing.time, "sleep"), \
+             mock.patch.object(ing, "upsert_job",
+                               side_effect=lambda c, rec: captured.append(rec) or True):
+            ing.scrape_bundesagentur(
+                conn=_FakeConn(), keywords=["AI Engineer"], locations=["Hamburg"],
+                radius_km=50, include_remote=False, size=10,
+            )
+        return captured[0]
+
+    def test_arbeitnehmerueberlassung_is_persisted(self):
+        rec = self._rec({**_detail(), "istArbeitnehmerUeberlassung": True})
+        self.assertEqual(rec["staffing"], 1)
+
+    def test_private_vermittlung_is_persisted(self):
+        rec = self._rec({**_detail(), "istPrivateArbeitsvermittlung": True})
+        self.assertEqual(rec["staffing"], 1)
+
+    def test_a_plain_employer_is_not_flagged(self):
+        # plusYou's name gives nothing away — without the flag it must stay 0
+        self.assertEqual(self._rec(_detail())["staffing"], 0)
 
 
 class PagingTest(unittest.TestCase):
