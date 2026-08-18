@@ -14,7 +14,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from utils.ats_harvest import (  # noqa: E402
     extract_ats_slug,
     harvest_ats_seeds,
+    greenhouse_job_id,
     merged_companies,
+    normalize_greenhouse_apply_url,
 )
 
 
@@ -63,6 +65,86 @@ class ExtractSlugTest(unittest.TestCase):
         # recruitee junk that leaked into apply_url must not parse as lever/etc
         self.assertIsNone(extract_ats_slug(
             "workable", "https://careers-analytics.recruitee.com&quot;,&quot;app"))
+
+
+class NormalizeGreenhouseApplyUrlTest(unittest.TestCase):
+    LOADER = "https://boards.greenhouse.io/embed/job_board/js?for=fundedclub"
+
+    def test_posting_id_from_the_listing_url_becomes_the_form(self):
+        self.assertEqual(
+            normalize_greenhouse_apply_url(
+                self.LOADER, "https://funded.club/jobs.html?gh_jid=7665743003"),
+            "https://job-boards.greenhouse.io/embed/job_app"
+            "?for=fundedclub&token=7665743003")
+
+    def test_posting_id_on_the_loader_itself_is_used(self):
+        self.assertEqual(
+            normalize_greenhouse_apply_url(
+                "https://boards.greenhouse.io/embed/job_board/js"
+                "?for=moonfare&gh_jid=7773348003"),
+            "https://job-boards.greenhouse.io/embed/job_app"
+            "?for=moonfare&token=7773348003")
+
+    def test_without_a_posting_id_falls_back_to_the_board(self):
+        # still an HTML page, unlike the loader script
+        self.assertEqual(
+            normalize_greenhouse_apply_url(self.LOADER, "https://funded.club/jobs.html"),
+            "https://job-boards.greenhouse.io/embed/job_board?for=fundedclub")
+        self.assertEqual(
+            normalize_greenhouse_apply_url(self.LOADER, None),
+            "https://job-boards.greenhouse.io/embed/job_board?for=fundedclub")
+
+    def test_non_numeric_gh_jid_is_ignored(self):
+        self.assertEqual(
+            normalize_greenhouse_apply_url(self.LOADER, "https://x.de/j?gh_jid=abc"),
+            "https://job-boards.greenhouse.io/embed/job_board?for=fundedclub")
+
+    def test_everything_else_passes_through_untouched(self):
+        for url in (
+            "https://job-boards.greenhouse.io/cresta/jobs/4668107008",
+            "https://boards.greenhouse.io/embed/job_board?for=fundedclub",
+            "https://jobs.lever.co/example/45b0fae3/apply",
+            "",
+            None,
+        ):
+            self.assertEqual(normalize_greenhouse_apply_url(url), url)
+
+    def test_loader_without_a_usable_slug_is_left_alone(self):
+        # nothing to build from → hand it back so the asset guard rejects it
+        for url in ("https://boards.greenhouse.io/embed/job_board/js",
+                    "https://boards.greenhouse.io/embed/job_board/js?for="):
+            self.assertEqual(normalize_greenhouse_apply_url(url), url)
+
+
+class GreenhouseJobIdTest(unittest.TestCase):
+    def test_gh_jid_query_param(self):
+        self.assertEqual(
+            greenhouse_job_id("https://funded.club/jobs.html?gh_jid=7665743003"),
+            "7665743003")
+
+    def test_greenhouse_hosted_path(self):
+        self.assertEqual(
+            greenhouse_job_id("https://job-boards.greenhouse.io/cresta/jobs/4668107008"),
+            "4668107008")
+        self.assertEqual(
+            greenhouse_job_id("https://job-boards.eu.greenhouse.io/charles/jobs/487510"),
+            "487510")
+
+    def test_token_param_only_counts_on_greenhouse(self):
+        # the embed form this module builds spells the id as ?token=
+        self.assertEqual(greenhouse_job_id(
+            "https://job-boards.greenhouse.io/embed/job_app?for=moonfare&token=7773348003"),
+            "7773348003")
+        # …elsewhere ?token= is somebody else's auth token, not a posting id
+        self.assertIsNone(greenhouse_job_id("https://acme.de/apply?token=12345"))
+
+    def test_first_hit_wins_and_none_when_absent(self):
+        self.assertEqual(
+            greenhouse_job_id(None, "https://x.de/j?gh_jid=42"), "42")
+        self.assertIsNone(greenhouse_job_id("https://x.de/careers/engineer", None))
+        # a /jobs/<slug> path on a non-greenhouse host is not a posting id
+        self.assertIsNone(greenhouse_job_id("https://x.de/jobs/engineer"))
+        self.assertIsNone(greenhouse_job_id())
 
 
 class HarvestSeedsTest(unittest.TestCase):
