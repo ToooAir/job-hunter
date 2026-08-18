@@ -4,7 +4,6 @@ Scrapes arbeitnow, englishjobs.de, and germantechjobs.de,
 then upserts raw job listings into the SQLite database.
 """
 
-import base64
 import hashlib
 import json
 import logging
@@ -20,8 +19,14 @@ from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
 from utils.apply_url import plausible_apply_url
+from utils.ba_api import (
+    BA_HEADERS, BA_SEARCH, ba_detail_url, ba_job_url,
+)
 from utils.ats_harvest import merged_companies, persist_seeds
-from utils.db import init_db, upsert_job
+from utils.db import (
+    init_db, load_seen_not_stored, mark_seen_not_stored, upsert_job,
+)
+from utils.staffing import is_staffing
 
 # ── Setup ──────────────────────────────────────────────────────────────────────
 
@@ -612,17 +617,7 @@ def scrape_germantechjobs(
 # The live endpoint is the one the public job search SPA itself calls — read off
 # https://www.arbeitsagentur.de/jobsuche/config/config.js. Note it is v6, and the
 # key matters: 'jobboerse-jobsuche' returns 200, 'jobboerse' and no key both 403.
-BA_API = "https://rest.arbeitsagentur.de/jobboerse/jobsuche-service"
-BA_SEARCH = f"{BA_API}/pc/v6/jobs"
-BA_DETAIL = f"{BA_API}/pc/v4/jobdetails"
-BA_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/126 Safari/537.36"
-    ),
-    "Accept": "application/json",
-    "X-API-Key": "jobboerse-jobsuche",
-}
+# Endpoint facts live in utils/ba_api.py — ats_scan probes the same API.
 
 # Give up on a run after this many consecutive failures rather than walking the
 # whole keyword × location matrix to rediscover an outage. The dead v2 host cost
@@ -665,8 +660,7 @@ def _ba_detail(refnr: str) -> dict | None:
     'stellenangebotsBeschreibung' — v2's 'stellenbeschreibung' no longer exists,
     so the old code would have returned an empty JD even on a live v2 host.
     """
-    encoded = base64.b64encode(refnr.encode("utf-8")).decode("ascii")
-    return _ba_safe_get(f"{BA_DETAIL}/{encoded}", {})
+    return _ba_safe_get(ba_detail_url(refnr), {})
 
 
 def _ba_location(entry: dict) -> str:
@@ -710,6 +704,11 @@ def scrape_bundesagentur(
 ) -> tuple[int, int]:
     added = skipped = 0
     seen_refnr: set[str] = set()
+    # postings a previous run fetched and rejected as jd_hash duplicates. BA
+    # republishes the same job under fresh Referenznummern, so without this
+    # ledger ~20% of every day's hits look url-new and each costs a detail call
+    # to rediscover and throw away.
+    ledger = load_seen_not_stored(conn, "bundesagentur")
 
     search_locations = list(locations)
     if include_remote and "Homeoffice" not in search_locations:
@@ -756,11 +755,12 @@ def scrape_bundesagentur(
                     continue
                 seen_refnr.add(refnr)
 
-                job_url = f"https://www.arbeitsagentur.de/jobsuche/jobdetail/{refnr}"
+                job_url = ba_job_url(refnr)
                 # One detail call per posting is the expensive half of this
                 # source, and only ~13% of what the search returns was published
-                # in the last week — so never pay it for a posting already known.
-                if _url_in_db(conn, job_url):
+                # in the last week — so never pay it for a posting already known,
+                # nor for one an earlier run already fetched and rejected.
+                if job_url in ledger or _url_in_db(conn, job_url):
                     skipped += 1
                     continue
 
@@ -789,12 +789,24 @@ def scrape_bundesagentur(
                     # belongs to the user (interview impressions, contacts,
                     # abandon reasons). See _ba_apply_url.
                     "apply_url":   _ba_apply_url(external, job_url),
+                    # BA is the one source that says so outright. Neither half
+                    # of the detection is complete on its own (see
+                    # utils/staffing.py), so persist the authoritative flag and
+                    # let the name test cover what it misses.
+                    "staffing":    int(is_staffing(
+                        job.get("firma", ""),
+                        detail.get("istArbeitnehmerUeberlassung")
+                        or detail.get("istPrivateArbeitsvermittlung"))),
                 }
 
                 _warn_empty_jd(record)
                 if upsert_job(conn, record):
                     added += 1
                 else:
+                    # rejected as a jd_hash duplicate: remember it so the next
+                    # run skips the detail call instead of relearning this
+                    mark_seen_not_stored(conn, job_url, "bundesagentur")
+                    ledger.add(job_url)
                     skipped += 1
 
     return added, skipped
