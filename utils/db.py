@@ -546,6 +546,53 @@ def _now_local_iso() -> str:
     return datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 
 
+# ── Local-clock day windows ────────────────────────────────────────────────────
+# applied_at is stamped in naive container-local time (TZ=Europe/Berlin), so any
+# "today" / "this week" window must be computed on the same clock. Deriving the
+# window from UTC silently dropped applications booked between local midnight
+# and 02:00 CEST: their day string was one day *past* the UTC-derived upper
+# bound, so they fell outside the range instead of landing in today's bucket.
+
+PIPELINE_STATUSES = ('applied', 'interview_1', 'interview_2', 'offer', 'rejected', 'ghosted')
+
+
+def today_local_iso(now: datetime | None = None) -> str:
+    """Today's date on the local clock (YYYY-MM-DD)."""
+    return (now or datetime.now()).strftime("%Y-%m-%d")
+
+
+def week_ago_local_iso(now: datetime | None = None) -> str:
+    """Local timestamp 7 days ago — comparable against applied_at."""
+    return ((now or datetime.now()) - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def daily_applied_counts(conn: sqlite3.Connection, now: datetime | None = None) -> list[dict]:
+    """Applications per day for the current week (Monday → today), local clock.
+
+    Days with no applications are filled with 0 so the chart and the "today"
+    metric read off the same, gap-free series (today = last element).
+    """
+    today = (now or datetime.now()).date()
+    week_start = today - timedelta(days=today.weekday())  # Monday
+    rows = conn.execute(
+        f"""SELECT strftime('%Y-%m-%d', applied_at) AS day, COUNT(*) AS cnt
+              FROM jobs
+             WHERE status IN {PIPELINE_STATUSES}
+               AND applied_at IS NOT NULL
+               AND strftime('%Y-%m-%d', applied_at) >= ?
+               AND strftime('%Y-%m-%d', applied_at) <= ?
+             GROUP BY day
+             ORDER BY day""",
+        (week_start.isoformat(), today.isoformat()),
+    ).fetchall()
+    counts = {r["day"]: r["cnt"] for r in rows}
+    days, d = [], week_start
+    while d <= today:
+        days.append({"day": d.isoformat(), "cnt": counts.get(d.isoformat(), 0)})
+        d += timedelta(days=1)
+    return days
+
+
 def get_open_pipeline_run(conn: sqlite3.Connection) -> dict | None:
     """Latest run still in progress (status='running'), or None."""
     row = conn.execute(
