@@ -19,6 +19,8 @@ from utils.db import (
     add_interview_record, get_interview_records, delete_interview_record,
     get_company_applications, auto_expire_stale_jobs, auto_ghost_stale_applications,
     get_focus, set_focus,
+    PIPELINE_STATUSES, daily_applied_counts, today_local_iso, week_ago_local_iso,
+    _now_local_iso as now_local_iso,
 )
 
 # ── Page config ────────────────────────────────────────────────────────────────
@@ -589,7 +591,8 @@ def utcnow_iso() -> str:
 
 
 def week_ago_iso() -> str:
-    return (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%S")
+    # local clock: compared against applied_at, which is stamped locally
+    return week_ago_local_iso()
 
 
 def get_conn():
@@ -607,10 +610,8 @@ def load_config():
 
 
 def today_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-
-PIPELINE_STATUSES = ('applied', 'interview_1', 'interview_2', 'offer', 'rejected', 'ghosted')
+    # local clock — see utils.db.today_local_iso for why UTC is wrong here
+    return today_local_iso()
 
 # Sources with no geographic filtering capability; excluded from default view
 REMOTE_GLOBAL_SOURCES = ["remotive", "jobicy", "weworkremotely"]
@@ -849,27 +850,8 @@ def fetch_stats(_conn) -> dict:
     """).fetchall()
     week_df = pd.DataFrame([dict(r) for r in week_rows]).set_index("week").sort_index() if week_rows else pd.DataFrame()
 
-    # Daily breakdown — current Mon → today
-    today = datetime.now(timezone.utc).date()
-    week_start = today - timedelta(days=today.weekday())  # Monday
-    daily_rows = _conn.execute(f"""
-        SELECT strftime('%Y-%m-%d', applied_at) AS day, COUNT(*) AS cnt
-        FROM jobs
-        WHERE status IN {PIPELINE_STATUSES}
-          AND applied_at IS NOT NULL
-          AND strftime('%Y-%m-%d', applied_at) >= ?
-          AND strftime('%Y-%m-%d', applied_at) <= ?
-        GROUP BY day
-        ORDER BY day
-    """, (week_start.isoformat(), today.isoformat())).fetchall()
-    # Ensure every day Mon→today appears (fill 0 for missing days)
-    daily_counts = {r["day"]: r["cnt"] for r in daily_rows}
-    days = []
-    d = week_start
-    while d <= today:
-        days.append({"day": d.isoformat(), "cnt": daily_counts.get(d.isoformat(), 0)})
-        d += timedelta(days=1)
-    daily_df = pd.DataFrame(days).set_index("day")
+    # Daily breakdown — current Mon → today, zero-filled (local clock)
+    daily_df = pd.DataFrame(daily_applied_counts(_conn)).set_index("day")
 
     return {
         "grade_df":  grade_df,
@@ -1419,7 +1401,7 @@ with right:
                     if not iso:
                         return ""
                     try:
-                        days = (datetime.now(timezone.utc) - datetime.fromisoformat(iso).replace(tzinfo=timezone.utc)).days
+                        days = (datetime.now() - datetime.fromisoformat(iso).replace(tzinfo=None)).days
                         if days < 30:
                             return f"{days}d ago"
                         elif days < 365:
@@ -1543,13 +1525,13 @@ with right:
                 with btn_cols[2]:
                     if st.button(T("apply_btn"), use_container_width=True, type="primary", key=f"apply_{job['id']}"):
                         from utils.snapshot_io import reconcile_applied_job
-                        update_status(conn, job["id"], "applied", applied_at=utcnow_iso())
+                        update_status(conn, job["id"], "applied", applied_at=now_local_iso())
                         # this booking path bypasses mark_submitted, so it must
                         # clean the review queue itself or same-company drafts
                         # linger there inviting a duplicate submit
                         reconcile_applied_job(conn, job["id"])
                         set_follow_up(conn, job["id"],
-                            (datetime.now(timezone.utc) + timedelta(days=7)).strftime("%Y-%m-%d"))
+                            (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d"))
                         st.session_state.pop("selected_idx", None)
                         st.cache_data.clear()
                         st.rerun()
@@ -1954,7 +1936,7 @@ with right:
                         )
                         ir_col1, ir_col2 = st.columns(2)
                         with ir_col1:
-                            ir_date = st.date_input(T("ir_date_label"), value=datetime.now(timezone.utc).date())
+                            ir_date = st.date_input(T("ir_date_label"), value=datetime.now().date())
                         with ir_col2:
                             ir_format = st.selectbox(
                                 T("ir_format_label"),
@@ -2005,7 +1987,7 @@ with right:
                 default_date = (
                     datetime.fromisoformat(current_date).date()
                     if current_date
-                    else (datetime.now(timezone.utc) + timedelta(days=7)).date()
+                    else (datetime.now() + timedelta(days=7)).date()
                 )
 
                 fu_col1, fu_col2 = st.columns([3, 1])
@@ -2029,6 +2011,6 @@ with right:
                     else:
                         days_left = (
                             datetime.fromisoformat(current_date).date()
-                            - datetime.now(timezone.utc).date()
+                            - datetime.now().date()
                         ).days
                         st.caption(T("followup_days_left").format(n=days_left, date=current_date))
