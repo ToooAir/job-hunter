@@ -10,7 +10,7 @@ import logging
 import os
 import re
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
 from urllib.parse import urlencode, urlparse
 
 import requests
@@ -991,6 +991,23 @@ def scrape_jobware(
 WAD_SITE = "https://www.wearedevelopers.com"
 WAD_MD_HEADERS = {"Accept": "text/markdown"}
 WAD_PAGE_SIZE = 24   # fixed by the site; per_page is not honoured any more
+# WAD /ext/ listings are aggregated from indeed/adzuna/careerjet and can be
+# months old on the day we first see them (sampled 2026-09-03: 33% of 144
+# listings were older than 45 days). Age them from their own Published date,
+# not from fetched_at, and do not ingest what is already past the TTL.
+WAD_MAX_AGE_DAYS = 45
+
+
+def _wad_today() -> date:
+    return datetime.now(timezone.utc).date()
+
+
+def _wad_published_date(text: str | None) -> date | None:
+    """'July 9, 2026' → date; None when absent or in another shape."""
+    try:
+        return datetime.strptime((text or "").strip(), "%B %d, %Y").date()
+    except ValueError:
+        return None
 
 _WAD_FIELD_RE = re.compile(r"^- \*\*(?P<key>[A-Za-z ]+):\*\*\s*(?P<val>.+?)\s*$", re.M)
 _WAD_LINK_RE = re.compile(r"\[(?P<label>View job|Apply)\]\((?P<url>[^)\s]+)\)")
@@ -1060,9 +1077,13 @@ def scrape_wearedevelopers(
     keywords: list[str],
     max_pages: int,
 ) -> tuple[int, int]:
-    added = skipped = 0
+    added = skipped = stale = 0
     seen_urls: set[str] = set()
     kw_lower = [k.lower() for k in keywords]
+    # postings an earlier run fetched and rejected as jd_hash duplicates
+    # (cross-source reposts): skip the detail call, same ledger BA uses
+    ledger = load_seen_not_stored(conn, "wearedevelopers")
+    today = _wad_today()
 
     for keyword in keywords:
         for page in range(1, max(1, max_pages) + 1):
@@ -1086,8 +1107,12 @@ def scrape_wearedevelopers(
                 # discipline the old API pass had
                 if not any(kw in title.lower() for kw in kw_lower):
                     continue
+                published = _wad_published_date(job["published"])
+                if published and (today - published).days > WAD_MAX_AGE_DAYS:
+                    stale += 1
+                    continue
                 # already known → no detail fetch (the expensive half)
-                if _url_in_db(conn, job_url):
+                if job_url in ledger or _url_in_db(conn, job_url):
                     skipped += 1
                     continue
 
@@ -1107,7 +1132,11 @@ def scrape_wearedevelopers(
                     "location":    loc or job["location"],
                     "raw_jd_text": raw_jd,
                     "fetched_at":  utcnow(),
-                    "expires_at":  expiry(45),
+                    "expires_at":  (
+                        (datetime.combine(published, datetime.min.time(), tzinfo=timezone.utc)
+                         + timedelta(days=WAD_MAX_AGE_DAYS)).strftime("%Y-%m-%dT%H:%M:%S")
+                        if published else expiry(WAD_MAX_AGE_DAYS)
+                    ),
                     "status":      "un-scored",
                 }
                 # url stays the WAD page (stable dedup key + liveness); the
@@ -1120,10 +1149,12 @@ def scrape_wearedevelopers(
                     added += 1
                     page_added += 1
                 else:
+                    mark_seen_not_stored(conn, job_url, "wearedevelopers")
+                    ledger.add(job_url)
                     skipped += 1
 
-            log.info("wearedevelopers kw=%r page=%d: %d listings, added=%d skipped=%d",
-                     keyword, page, len(jobs), added, skipped)
+            log.info("wearedevelopers kw=%r page=%d: %d listings, added=%d skipped=%d stale=%d",
+                     keyword, page, len(jobs), added, skipped, stale)
             if len(jobs) < WAD_PAGE_SIZE:
                 break  # last page
 
