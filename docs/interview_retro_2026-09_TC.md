@@ -1,0 +1,47 @@
+# 一面覆盤（2026-09-02）— 為什麼 9 場一面 0 場二面
+
+資料：9 筆 peak_stage=interview_1（8 筆已拒、U-Glow 進行中），5 筆有面試紀錄
+（Scalable Capital、neural frames、Evernest、Mindpeak、Atira）。
+
+## 共同樣態
+
+| 面向 | 觀察 | 出處 |
+|---|---|---|
+| 公司型態 | 小型新創或 scale-up，工程團隊 4–20 人，扁平、無流程、要 high agency | neural frames、Scalable、Mindpeak |
+| 技術段落 | 反饋好（"Nice work, man. That's amazing."）、自評 4–5；反問環節被評為最精華 | Evernest、Scalable、Mindpeak |
+| 非技術題 | 每場都問：為什麼來德國、簽證與德語進度、住哪／搬遷、end-to-end 獨立負責經驗、衝突經驗 | 全部 |
+| 自陳失誤 | 看稿被抓包；回答 ownership 時說「台灣公司多半接單辦事、近期沒這種經驗」；對不熟技術過度自謙（K8s、舊 Django、ML） | neural frames、Mindpeak |
+| 結果 | 技術段落強、行為與定位段落弱 → 全部一面止步 | |
+
+判讀：一面淘汰不是技術能力，是**敘事**。三個地方每次都在流血：
+1. 「為什麼德國 / 簽證 / 德語」沒有一個能讓面試官安心的固定答案。
+2. Ownership 題把 Axiom 的經驗講成反面（接單）而不是正面（無流程下獨立扛下整個後端）。
+3. 不熟的技術用「我不會」收尾，而不是「我用什麼取代、多久能補上」。
+
+## 關鍵字地圖（不寫逐字稿，只記錨點）
+
+**為什麼德國、簽證、德語**
+- 已在漢堡、持 Chancenkarte、免搬遷、免 sponsorship；簽約後境內轉藍卡或 §18b，雇主只簽一份標準聲明。
+- 德語 A2，正在學；工作語言英語沒問題；德語是為了生活與長期留下，不是為了通過面試的說法。
+- 為什麼德國：TODO（voice.md 同一個缺口，用自己的話填）。
+
+**End-to-end ownership**
+- Axiom：唯一後端、沒有既有系統、沒有流程、四週 deadline → 設計 Node.js 服務、建交付、準時上線、零回滾。
+- 跨團隊：API 是我跟前端、行動端、設計之間的合約；難的是跟客戶把需求邊界談定並守住。
+- 個人專案：job-hunter 與 VisaBot 都是從抓資料到部署一個人做完。
+
+**衝突經驗**
+- 用 Axiom 需求邊界的案例：客戶中途加需求 → 我怎麼談、怎麼拆、最後交付了什麼。
+
+**不熟的技術**
+- 格式固定：「我用過的等價物是 X，差異在 Y，上手需要 Z」。例：Terraform ↔ 我用 Docker/Compose + GCP 部署；K8s ↔ 我做過容器化與 CI/CD，還沒營運過叢集。
+- 不主動列自己的弱點清單。
+
+**薪資**
+- 不先報價；被逼問就給區間（見 candidate_profile.yaml salary_expectation）。Mindpeak 透露 60–98k。
+
+## 下一步（人做）
+
+- 把「為什麼德國」用自己的話寫進 candidate_kb/voice.md 的 TODO，那一句 CL 每封都在用。
+- 下次一面前用本文關鍵字地圖口頭練三題：為什麼德國、ownership、衝突。
+- U-Glow 進行中：面試後補 interview_records，把非技術題的回答原文記下來，之後才有資料判斷敘事有沒有改善。

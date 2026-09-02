@@ -18,6 +18,7 @@ import yaml
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
+from utils.geo_de import is_germany_location
 from utils.apply_url import plausible_apply_url
 from utils.ba_api import (
     BA_HEADERS, BA_SEARCH, ba_detail_url, ba_job_url,
@@ -138,6 +139,26 @@ def expiry(days: int) -> str:
 # ── Source 1: Arbeitnow ────────────────────────────────────────────────────────
 
 
+def _arbeitnow_location_ok(
+    location: str, is_remote: bool, loc_lower: list[str], remote_filter: bool,
+) -> bool:
+    """Free (no extra request) location filter for the arbeitnow feed.
+
+    The configured substring list only knows ~19 big cities, so a non-remote
+    posting in Aachen, Ulm or Münster never entered the DB even though the
+    search is nationwide (2026-09-02). is_germany_location knows the same
+    German geography the dashboard and the queue use; the substring list is
+    kept as an OR so recall can only widen ("Remote" and other legacy entries
+    still pass), and the remote flag is unchanged.
+    """
+    low = (location or "").lower()
+    if remote_filter and is_remote:
+        return True
+    if any(loc in low for loc in loc_lower):
+        return True
+    return is_germany_location(location)
+
+
 def scrape_arbeitnow(
     conn,
     keywords: list[str],
@@ -166,12 +187,10 @@ def scrape_arbeitnow(
             is_remote = job.get("remote", False)
 
             title_match = any(kw in title.lower() for kw in kw_lower)
-            loc_match = any(loc in location.lower() for loc in loc_lower)
-            remote_match = remote_filter and is_remote
 
             if not title_match:
                 continue
-            if not (loc_match or remote_match):
+            if not _arbeitnow_location_ok(location, is_remote, loc_lower, remote_filter):
                 continue
 
             job_url = job.get("url", "")
@@ -701,6 +720,8 @@ def scrape_bundesagentur(
     radius_km: int,
     include_remote: bool,
     size: int,
+    nationwide: bool = False,
+    max_pages: int = 1,
 ) -> tuple[int, int]:
     added = skipped = 0
     seen_refnr: set[str] = set()
@@ -710,104 +731,117 @@ def scrape_bundesagentur(
     # to rediscover and throw away.
     ledger = load_seen_not_stored(conn, "bundesagentur")
 
-    search_locations = list(locations)
+    # Nationwide = no `wo` at all (2026-09-02 probe: omitting the parameter
+    # searches all of Germany — "Software Engineer" 1,314 hits vs 84 for
+    # Hamburg+50km — while wo="" is a 400). City mode is kept for the yaml that
+    # still lists cities. `None` is the nationwide sentinel below.
+    search_locations: list[str | None] = [None] if nationwide else list(locations)
     if include_remote and "Homeoffice" not in search_locations:
         search_locations.append("Homeoffice")
 
-    total_queries = len(search_locations) * len(keywords)
+    total_queries = len(search_locations) * len(keywords) * max(1, max_pages)
     attempted = 0
     consecutive_failures = 0
 
     for wo in search_locations:
         for keyword in keywords:
-            params = {
-                "was": keyword,
-                "wo": wo,
-                "umkreis": radius_km if wo != "Homeoffice" else 0,
-                "size": size,
-                "page": 1,  # v6 pages are 1-based; page=0 returns nothing
-            }
-            data = _ba_safe_get(BA_SEARCH, params)
-            attempted += 1
-            if not data:
-                consecutive_failures += 1
-                if consecutive_failures >= BA_MAX_CONSECUTIVE_FAILURES:
-                    log.warning(
-                        "bundesagentur: %d consecutive failures — abandoning this run after "
-                        "%d of %d queries. The endpoint looks down; the source revives on its "
-                        "own once it answers again.",
-                        consecutive_failures, attempted, total_queries,
-                    )
-                    return added, skipped
-                continue
-            consecutive_failures = 0
-
-            jobs = data.get("ergebnisliste") or []
-            log.info(
-                "bundesagentur kw=%r wo=%r: %d von %s Treffern",
-                keyword, wo, len(jobs), data.get("maxErgebnisse", "?"),
-            )
-
-            for job in jobs:
-                refnr = job.get("referenznummer", "")
-                if not refnr or refnr in seen_refnr:
-                    skipped += 1
-                    continue
-                seen_refnr.add(refnr)
-
-                job_url = ba_job_url(refnr)
-                # One detail call per posting is the expensive half of this
-                # source, and only ~13% of what the search returns was published
-                # in the last week — so never pay it for a posting already known,
-                # nor for one an earlier run already fetched and rejected.
-                if job_url in ledger or _url_in_db(conn, job_url):
-                    skipped += 1
-                    continue
-
-                detail = _ba_detail(refnr) or {}
-                raw_jd = detail.get("stellenangebotsBeschreibung") or ""
-                external = (job.get("externeURL")
-                            or detail.get("allianzpartnerUrl") or "").strip()
-
-                record = {
-                    "id":          make_id(job_url),
-                    "company":     job.get("firma", ""),
-                    "title":       job.get("stellenangebotsTitel", ""),
-                    "url":         job_url,
-                    "source":      "bundesagentur",
-                    "source_tier": "auto",
-                    "location":    _ba_location(job) or _ba_location(detail),
-                    "raw_jd_text": clean_html(raw_jd) if raw_jd else job.get("stellenangebotsTitel", ""),
-                    "fetched_at":  utcnow(),
-                    "expires_at":  expiry(45),
-                    "status":      "un-scored",
-                    # A USABLE external URL is a real apply channel; anything
-                    # else (and BA answers with junk two rows in three) falls
-                    # back to the public BA page for the human to chase
-                    # manually. apply_url == url is therefore the "walled"
-                    # marker — no new state, and it keeps out of `notes`, which
-                    # belongs to the user (interview impressions, contacts,
-                    # abandon reasons). See _ba_apply_url.
-                    "apply_url":   _ba_apply_url(external, job_url),
-                    # BA is the one source that says so outright. Neither half
-                    # of the detection is complete on its own (see
-                    # utils/staffing.py), so persist the authoritative flag and
-                    # let the name test cover what it misses.
-                    "staffing":    int(is_staffing(
-                        job.get("firma", ""),
-                        detail.get("istArbeitnehmerUeberlassung")
-                        or detail.get("istPrivateArbeitsvermittlung"))),
+            for page in range(1, max(1, max_pages) + 1):
+                params = {
+                    "was": keyword,
+                    "size": size,
+                    "page": page,  # v6 pages are 1-based; page=0 returns nothing
                 }
+                if wo is not None:
+                    params["wo"] = wo
+                    params["umkreis"] = radius_km if wo != "Homeoffice" else 0
+                data = _ba_safe_get(BA_SEARCH, params)
+                attempted += 1
+                if not data:
+                    consecutive_failures += 1
+                    if consecutive_failures >= BA_MAX_CONSECUTIVE_FAILURES:
+                        log.warning(
+                            "bundesagentur: %d consecutive failures — abandoning this run after "
+                            "%d of %d queries. The endpoint looks down; the source revives on its "
+                            "own once it answers again.",
+                            consecutive_failures, attempted, total_queries,
+                        )
+                        return added, skipped
+                    break  # next keyword; deeper pages of a failing query are pointless
+                consecutive_failures = 0
 
-                _warn_empty_jd(record)
-                if upsert_job(conn, record):
-                    added += 1
-                else:
-                    # rejected as a jd_hash duplicate: remember it so the next
-                    # run skips the detail call instead of relearning this
-                    mark_seen_not_stored(conn, job_url, "bundesagentur")
-                    ledger.add(job_url)
-                    skipped += 1
+                jobs = data.get("ergebnisliste") or []
+                total_hits = data.get("maxErgebnisse")
+                log.info(
+                    "bundesagentur kw=%r wo=%r page=%d: %d von %s Treffern",
+                    keyword, wo if wo is not None else "bundesweit", page,
+                    len(jobs), total_hits if total_hits is not None else "?",
+                )
+                last_page = (not jobs or len(jobs) < size
+                             or (isinstance(total_hits, int) and page * size >= total_hits))
+
+                for job in jobs:
+                    refnr = job.get("referenznummer", "")
+                    if not refnr or refnr in seen_refnr:
+                        skipped += 1
+                        continue
+                    seen_refnr.add(refnr)
+
+                    job_url = ba_job_url(refnr)
+                    # One detail call per posting is the expensive half of this
+                    # source, and only ~13% of what the search returns was published
+                    # in the last week — so never pay it for a posting already known,
+                    # nor for one an earlier run already fetched and rejected.
+                    if job_url in ledger or _url_in_db(conn, job_url):
+                        skipped += 1
+                        continue
+
+                    detail = _ba_detail(refnr) or {}
+                    raw_jd = detail.get("stellenangebotsBeschreibung") or ""
+                    external = (job.get("externeURL")
+                                or detail.get("allianzpartnerUrl") or "").strip()
+
+                    record = {
+                        "id":          make_id(job_url),
+                        "company":     job.get("firma", ""),
+                        "title":       job.get("stellenangebotsTitel", ""),
+                        "url":         job_url,
+                        "source":      "bundesagentur",
+                        "source_tier": "auto",
+                        "location":    _ba_location(job) or _ba_location(detail),
+                        "raw_jd_text": clean_html(raw_jd) if raw_jd else job.get("stellenangebotsTitel", ""),
+                        "fetched_at":  utcnow(),
+                        "expires_at":  expiry(45),
+                        "status":      "un-scored",
+                        # A USABLE external URL is a real apply channel; anything
+                        # else (and BA answers with junk two rows in three) falls
+                        # back to the public BA page for the human to chase
+                        # manually. apply_url == url is therefore the "walled"
+                        # marker — no new state, and it keeps out of `notes`, which
+                        # belongs to the user (interview impressions, contacts,
+                        # abandon reasons). See _ba_apply_url.
+                        "apply_url":   _ba_apply_url(external, job_url),
+                        # BA is the one source that says so outright. Neither half
+                        # of the detection is complete on its own (see
+                        # utils/staffing.py), so persist the authoritative flag and
+                        # let the name test cover what it misses.
+                        "staffing":    int(is_staffing(
+                            job.get("firma", ""),
+                            detail.get("istArbeitnehmerUeberlassung")
+                            or detail.get("istPrivateArbeitsvermittlung"))),
+                    }
+
+                    _warn_empty_jd(record)
+                    if upsert_job(conn, record):
+                        added += 1
+                    else:
+                        # rejected as a jd_hash duplicate: remember it so the next
+                        # run skips the detail call instead of relearning this
+                        mark_seen_not_stored(conn, job_url, "bundesagentur")
+                        ledger.add(job_url)
+                        skipped += 1
+
+                if last_page:
+                    break
 
     return added, skipped
 
@@ -939,220 +973,158 @@ def scrape_jobware(
 
 # ── Source 6: WeAreDevelopers ─────────────────────────────────────────────────
 #
-# Private (undocumented) REST API discovered via browser devtools.
-# GET https://wad-api.wearedevelopers.com/api/v2/jobs/search
-#   ?q=<keyword>&per_page=100&page=N          → Germany-located jobs
-#   ?q=<keyword>&remote=true&per_page=100&page=N → remote jobs
-# Max per_page = 200; 500 returns empty.
-# Detail endpoint: /v2/jobs/details?job_id=ID&job_slug=SLUG[&external=true]
-# job_type="job-listing" → external aggregated job (use external=true for detail)
-# job_type="job"         → WAD-native listing (detail needs company_id; skip detail)
+# 2026-09-02 rewrite. The private wad-api /v2/jobs/search went silent on
+# 2026-08-17 — HTTP 200 with data=[] for every query, so the log said
+# "新增 0 筆，略過 0 筆" for 16 days and nobody noticed the best-converting
+# source (6 of 9 first interviews) had stopped. The site is now a Hotwire SSR
+# app and, per https://www.wearedevelopers.com/agents.md, every page has a
+# Markdown twin — "append .md to any URL":
+#   GET /jobs.md?country=DE&q=<kw>&page=N   → 24 listings per page, each with
+#                                             title / company / location /
+#                                             published / View job / Apply
+#   GET /jobs/ext/<id>-<slug>.md            → the same header plus the full JD
+# The old /v2/jobs/details endpoint still answers for OLD numeric ids (ats_scan
+# uses it for liveness of rows ingested before this date) but 404s for the new
+# 7-digit ids, so the detail page's .md is the JD source now.
 
-WAD_API = "https://wad-api.wearedevelopers.com/api"
-WAD_HEADERS = {
-    **HEADERS,
-    "Origin": "https://www.wearedevelopers.com",
-    "Referer": "https://www.wearedevelopers.com/",
-}
+WAD_SITE = "https://www.wearedevelopers.com"
+WAD_MD_HEADERS = {"Accept": "text/markdown"}
+WAD_PAGE_SIZE = 24   # fixed by the site; per_page is not honoured any more
 
-# Post-filter: keep only jobs whose location mentions one of these
-WAD_DE_TERMS = [
-    "germany", "deutschland", "hamburg", "berlin", "munich", "münchen",
-    "frankfurt", "cologne", "köln", "düsseldorf", "stuttgart", "hannover",
-    "leipzig", "dresden", "nuremberg", "nürnberg", "dortmund", "essen",
-    "bremen", "heidelberg", "mannheim", "karlsruhe", "bonn",
-]
+_WAD_FIELD_RE = re.compile(r"^- \*\*(?P<key>[A-Za-z ]+):\*\*\s*(?P<val>.+?)\s*$", re.M)
+_WAD_LINK_RE = re.compile(r"\[(?P<label>View job|Apply)\]\((?P<url>[^)\s]+)\)")
 
 
-def _wad_safe_get(path: str, params: dict) -> dict | None:
-    try:
-        resp = requests.get(
-            WAD_API + path, params=params, headers=WAD_HEADERS, timeout=10
-        )
-        resp.raise_for_status()
-        time.sleep(0.8)
-        return resp.json()
-    except Exception as exc:
-        log.warning("WAD GET failed: %s %s — %s", path, params, exc)
+def _wad_parse_listing(md: str) -> list[dict]:
+    """Job blocks of a /jobs.md page → [{title, company, location, published,
+    url, apply_url}]. Every job is a `## <title>` section carrying a
+    `[View job](…)` link; sections without one (page header, related content)
+    are not jobs."""
+    jobs: list[dict] = []
+    for block in re.split(r"^## ", md, flags=re.M)[1:]:
+        title, _, body = block.partition("\n")
+        links = {m.group("label"): m.group("url") for m in _WAD_LINK_RE.finditer(body)}
+        view = links.get("View job")
+        if not view:
+            continue
+        fields = {m.group("key").lower(): m.group("val") for m in _WAD_FIELD_RE.finditer(body)}
+        jobs.append({
+            "title":     title.strip(),
+            "company":   fields.get("company", "").strip(),
+            "location":  fields.get("location", "").strip(),
+            "published": fields.get("published", "").strip(),
+            "url":       view.strip(),
+            "apply_url": (links.get("Apply") or "").strip(),
+        })
+    return jobs
+
+
+def _wad_parse_detail(md: str) -> tuple[str, str, str]:
+    """A /jobs/ext/<id>-<slug>.md page → (jd_text, apply_url, location).
+
+    The JD is every `## ` section whose body is prose; sections that are only
+    link lists (related articles, salary guides) are dropped. The header field
+    list above the first section is not part of the JD."""
+    fields = {m.group("key").lower(): m.group("val") for m in _WAD_FIELD_RE.finditer(md)}
+    sections = re.split(r"^## ", md, flags=re.M)[1:]
+    kept: list[str] = []
+    for sec in sections:
+        heading, _, body = sec.partition("\n")
+        lines = [ln.strip() for ln in body.splitlines() if ln.strip()]
+        if not lines:
+            continue
+        # greedy label: titles like "[Salary in Germany [2023]](…)" nest brackets
+        link_lines = sum(1 for ln in lines if re.match(r"^-?\s*\[.*\]\(https?://[^)]+\)\s*$", ln))
+        if link_lines >= max(1, len(lines) * 0.8):
+            continue  # navigation / related-content block, not the JD
+        kept.append(f"{heading.strip()}\n{body.strip()}")
+    return "\n\n".join(kept).strip(), fields.get("apply", "").strip(), fields.get("location", "").strip()
+
+
+def _wad_md(path_or_url: str, params: dict | None = None) -> str | None:
+    url = path_or_url if path_or_url.startswith("http") else WAD_SITE + path_or_url
+    resp = safe_get(url, log_404=False, extra_headers=WAD_MD_HEADERS, params=params)
+    if resp is None:
         return None
-
-
-def _wad_jd(job_id: int, slug: str, external: bool) -> tuple[str, str]:
-    """Fetch the full JD and real apply URL from the detail endpoint.
-
-    Returns (jd_text, apply_url). For external ("job-listing") jobs the WAD
-    /jobs/ext/… page is only a landing page that links out to the true host
-    (e.g. workingnomads.com); the detail API exposes that target as
-    `apply_url`, so we store it and skip the extra manual hop. apply_url is
-    "" when the API gives none (native WAD-hosted jobs apply on WAD itself).
-
-    Native jobs (external=False): first call returns HTTP 301 with body
-    {"company_id": N, "company_slug": "..."} — use those to make a second call.
-    """
-    params: dict = {"job_id": job_id, "job_slug": slug}
-    if external:
-        params["external"] = "true"
-
-    try:
-        resp = requests.get(
-            WAD_API + "/v2/jobs/details",
-            params=params,
-            headers=WAD_HEADERS,
-            timeout=10,
-            allow_redirects=False,
-        )
-        time.sleep(0.8)
-
-        if resp.status_code == 301 and not external:
-            # Body contains company_id/company_slug needed for the real request
-            redirect_info = resp.json()
-            company_id = redirect_info.get("company_id")
-            company_slug = redirect_info.get("company_slug")
-            if not company_id or not company_slug:
-                return "", ""
-            resp = requests.get(
-                WAD_API + "/v2/jobs/details",
-                params={**params, "company_id": company_id, "company_slug": company_slug},
-                headers=WAD_HEADERS,
-                timeout=10,
-                allow_redirects=False,
-            )
-            time.sleep(0.8)
-
-        if resp.status_code != 200:
-            return "", ""
-        data = resp.json()
-    except Exception as exc:
-        log.warning("WAD JD fetch failed job_id=%s — %s", job_id, exc)
-        return "", ""
-
-    parts = [
-        data.get("description") or "",
-        data.get("candidate_description") or "",
-        data.get("conditions_description") or "",
-    ]
-    apply_url = str(data.get("apply_url") or "").strip()
-    return clean_html("\n".join(p for p in parts if p)), apply_url
+    if "markdown" not in (resp.headers.get("content-type") or "") and \
+            "text/plain" not in (resp.headers.get("content-type") or ""):
+        log.warning("wearedevelopers: %s did not answer with markdown (%s)",
+                    url, resp.headers.get("content-type"))
+        return None
+    return resp.text
 
 
 def scrape_wearedevelopers(
     conn,
     keywords: list[str],
     max_pages: int,
-    per_page: int,
 ) -> tuple[int, int]:
     added = skipped = 0
-    seen_ids: set[int] = set()
+    seen_urls: set[str] = set()
     kw_lower = [k.lower() for k in keywords]
 
-    # Two passes: Germany-located jobs + remote jobs
-    passes = [
-        {"location": "Germany"},
-        {"remote": "true"},
-    ]
+    for keyword in keywords:
+        for page in range(1, max(1, max_pages) + 1):
+            md = _wad_md("/jobs.md", {"country": "DE", "q": keyword, "page": page})
+            if md is None:
+                break
+            jobs = _wad_parse_listing(md)
+            if not jobs:
+                break
 
-    for base_params in passes:
-        pass_label = "Germany" if "location" in base_params else "remote"
+            page_added = 0
+            for job in jobs:
+                job_url = job["url"]
+                if job_url in seen_urls:
+                    skipped += 1
+                    continue
+                seen_urls.add(job_url)
 
-        for keyword in keywords:
-            for page in range(1, max_pages + 1):
-                params = {
-                    "q": keyword,
-                    "per_page": per_page,
-                    "page": page,
-                    **base_params,
+                title = job["title"]
+                # q= also matches skills and company names; keep the title
+                # discipline the old API pass had
+                if not any(kw in title.lower() for kw in kw_lower):
+                    continue
+                # already known → no detail fetch (the expensive half)
+                if _url_in_db(conn, job_url):
+                    skipped += 1
+                    continue
+
+                detail = _wad_md(job_url + ".md")
+                raw_jd, apply_url, loc = _wad_parse_detail(detail) if detail else ("", "", "")
+                if not raw_jd:
+                    raw_jd = title
+                apply_url = apply_url or job["apply_url"]
+
+                record = {
+                    "id":          make_id(job_url),
+                    "company":     job["company"],
+                    "title":       title,
+                    "url":         job_url,
+                    "source":      "wearedevelopers",
+                    "source_tier": "auto",
+                    "location":    loc or job["location"],
+                    "raw_jd_text": raw_jd,
+                    "fetched_at":  utcnow(),
+                    "expires_at":  expiry(45),
+                    "status":      "un-scored",
                 }
-                data = _wad_safe_get("/v2/jobs/search", params)
-                if not data:
-                    break
+                # url stays the WAD page (stable dedup key + liveness); the
+                # external target is where the apply flow should go
+                if apply_url and apply_url != job_url and plausible_apply_url(apply_url):
+                    record["apply_url"] = apply_url
 
-                jobs = data.get("data", [])
-                if not jobs:
-                    break
+                _warn_empty_jd(record)
+                if upsert_job(conn, record):
+                    added += 1
+                    page_added += 1
+                else:
+                    skipped += 1
 
-                page_added = 0
-                for job in jobs:
-                    job_id: int = job.get("id", 0)
-                    if not job_id or job_id in seen_ids:
-                        skipped += 1
-                        continue
-                    seen_ids.add(job_id)
-
-                    title: str = job.get("title", "")
-                    location: str = job.get("location") or ""
-                    is_remote: bool = job.get("remote", False)
-
-                    # Post-filter: must be remote OR in a German city
-                    loc_lower = location.lower()
-                    if not is_remote and not any(t in loc_lower for t in WAD_DE_TERMS):
-                        continue
-
-                    # Title must match at least one keyword
-                    if not any(kw in title.lower() for kw in kw_lower):
-                        continue
-
-                    external = job.get("job_type") == "job-listing"
-                    slug: str = job.get("slug", "")
-
-                    # Canonical WAD URL (used as unique key)
-                    if external:
-                        job_url = f"https://www.wearedevelopers.com/en/jobs/ext/{job_id}/{slug}"
-                    else:
-                        job_url = f"https://www.wearedevelopers.com/en/jobs/{job_id}/{slug}"
-
-                    # Skip if already in DB — saves external detail API call on daily runs
-                    if _url_in_db(conn, job_url):
-                        skipped += 1
-                        continue
-
-                    # Fetch full JD + real apply URL — native jobs use the
-                    # two-step 301 flow in _wad_jd
-                    raw_jd, apply_url = _wad_jd(job_id, slug, external=external)
-                    if not raw_jd:
-                        # Fallback: combine skills list as minimal context
-                        skills = job.get("skills", [])
-                        raw_jd = f"{title}\n" + " ".join(skills) if skills else title
-
-                    company: str = job.get("company_name", "").strip()
-
-                    record = {
-                        "id":          make_id(job_url),
-                        "company":     company,
-                        "title":       title,
-                        "url":         job_url,
-                        "source":      "wearedevelopers",
-                        "source_tier": "auto",
-                        "location":    location or ("Remote" if is_remote else ""),
-                        "raw_jd_text": raw_jd,
-                        "fetched_at":  utcnow(),
-                        "expires_at":  expiry(45),
-                        "status":      "un-scored",
-                    }
-                    # url stays the WAD canonical page (stable dedup key); the
-                    # external target is where the apply flow should actually go
-                    if apply_url and apply_url != job_url:
-                        record["apply_url"] = apply_url
-
-                    _warn_empty_jd(record)
-                    if upsert_job(conn, record):
-                        added += 1
-                        page_added += 1
-                    else:
-                        skipped += 1
-
-                log.info(
-                    "wearedevelopers kw=%r pass=%s page=%d: added=%d skipped=%d",
-                    keyword, pass_label, page, added, skipped,
-                )
-
-                # Early exit: results are newest-first; 0 new on this page → nothing newer ahead
-                if page_added == 0:
-                    break
-
-                # No more pages
-                pagination = data.get("pagination", {})
-                if page >= (pagination.get("last_page") or 1):
-                    break
+            log.info("wearedevelopers kw=%r page=%d: %d listings, added=%d skipped=%d",
+                     keyword, page, len(jobs), added, skipped)
+            if len(jobs) < WAD_PAGE_SIZE:
+                break  # last page
 
     return added, skipped
 
@@ -2329,8 +2301,7 @@ if __name__ == "__main__":
         results["wearedevelopers"] = scrape_wearedevelopers(
             conn,
             keywords=wad["keywords"],
-            max_pages=wad.get("max_pages", 3),
-            per_page=wad.get("per_page", 100),
+            max_pages=wad.get("max_pages", 5),
         )
     else:
         log.info("wearedevelopers: not configured — skipping")
@@ -2369,6 +2340,8 @@ if __name__ == "__main__":
         radius_km=ba.get("radius_km", 50),
         include_remote=ba.get("include_remote", True),
         size=ba.get("size", 100),
+        nationwide=bool(ba.get("nationwide", False)),
+        max_pages=int(ba.get("max_pages", 1)),
     )
 
     # ── Jobware ──

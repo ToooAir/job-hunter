@@ -35,6 +35,7 @@ QDRANT_PATH = os.getenv("QDRANT_PATH", "./qdrant_data")
 
 from utils.llm import make_client, chat_model, emb_model, LLM_PROVIDER, NO_STRUCTURED_OUTPUT_PROVIDERS, rate_limit  # noqa: E402
 from utils.apply_queue import title_excluded  # noqa: E402
+from utils.lang_req import german_required  # noqa: E402
 from utils.geo_de import has_non_de_marker  # noqa: E402
 from utils.voice import append_voice  # noqa: E402
 
@@ -413,7 +414,9 @@ def retrieve_context(
 SOURCE_BONUS: dict[str, int] = {
     "greenhouse":    5,  # direct ATS posting — company is actively hiring
     "lever":         5,  # direct ATS posting — company is actively hiring
-    "bundesagentur": 5,  # official DE listing — higher visa-sponsorship rate
+    # bundesagentur +5 removed 2026-09-02: the "higher visa-sponsorship rate"
+    # premise never had data behind it, and the first cohort (37 applied,
+    # 19 rejected within 12 days, 0 interviews) argued the other way.
 }
 
 # Seniority-overreach penalty: titles that demand far more than the candidate's
@@ -528,6 +531,7 @@ def score_jobs(
     short_jobs: list[tuple[str, int]] = []   # (job_id, jd_len)
     n_foreign = 0
     n_student = 0
+    n_german = 0
     for job in jobs:
         exp = job.get("expires_at")
         if exp and exp < now_str:
@@ -549,6 +553,22 @@ def score_jobs(
             short_jobs.append((job["id"], jd_len))
             log.info("short JD: %s (%s @ %s, %d chars)", job["id"], job["title"], job["company"], jd_len)
             continue
+        phrase = german_required(job.get("raw_jd_text"))
+        if phrase:
+            # A hard German requirement is grade C by construction (see
+            # derive_grade), so translation + scoring would be pure spend.
+            # Written as scored so the row leaves the un-scored pool and is
+            # auditable: top_3_reasons names the phrase (grep "rule-gated").
+            n_german += 1
+            update_score(conn, job["id"], {
+                "match_score": 0, "fit_grade": "C",
+                "top_3_reasons": [f"rule-gated: German required — {phrase[:80]}"],
+                "cover_letter_draft": "", "jd_language_req": "de_required",
+                "visa_restriction": "unclear", "salary_range": "",
+                "contract_type": "unknown",
+                "scored_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"),
+            })
+            continue
         valid_jobs.append(job)
 
     if expired_ids:
@@ -559,6 +579,8 @@ def score_jobs(
     if short_jobs:
         log.info("標記 %d 筆 JD 過短職缺為 error", len(short_jobs))
 
+    if n_german:
+        log.info("德語硬需求規則閘：%d 筆直接判 C（未翻譯、未評分）", n_german)
     jobs = valid_jobs
     if not jobs:
         log.info("過濾後無待評分職缺")
@@ -566,8 +588,9 @@ def score_jobs(
         return []
 
     log.info("開始評分 %d 筆職缺（已過濾 %d 過期、%d JD 過短、%d 明確境外、"
-             "%d 學生/實習職不評分）",
-             len(jobs), len(expired_ids), len(short_jobs), n_foreign, n_student)
+             "%d 學生/實習職、%d 德語硬需求規則判 C 不評分）",
+             len(jobs), len(expired_ids), len(short_jobs), n_foreign, n_student,
+             n_german)
 
     kb_ready = check_kb_ready(qdrant_path)
     if kb_ready:
@@ -840,6 +863,11 @@ the company or the role — never the candidate. Where the JD demands something 
 background lacks, express interest or name an adjacent strength from the background;
 never assert experience the background does not show. This applies to every paragraph
 — motivation and closing included, not just the achievements.
+Residence: when the background states where the candidate lives and that no
+sponsorship or relocation is needed, say so in ONE clause (Para 1's closing
+sentence or Para 3) — already in Germany, can start immediately, no visa
+sponsorship required. It is a fact from the background, not a JD term; never
+invent permit details beyond what the background states.
 Vocabulary scoping, per paragraph:
 - Para 1: name the role, then why the company's domain interests the candidate (JD
   terms allowed here, describing THEIR work). End with what the candidate brings,
