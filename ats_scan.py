@@ -130,6 +130,11 @@ WTTJ_API = "https://api.welcometothejungle.com/api/v1/organizations/{org}/jobs/{
 # source of truth — 404 "Job not found" = gone, 200 exposes the real downstream
 # apply_url (the /ext/ page only ever links out to the true host). Mirrors WTTJ.
 WAD_JOB_RE = re.compile(r"wearedevelopers\.com/[^/]+/jobs/ext/(\d+)/([^/?#]+)")
+# 2026-09 format (/jobs/ext/<7-digit id>-<slug>, no language prefix). The
+# detail API 404s for these ids; the site's Markdown twin is the source of
+# truth instead — 404 = gone, 200 carries "- **Apply:** <downstream url>".
+WAD_MD_RE = re.compile(r"wearedevelopers\.com/jobs/ext/\d+-[^/?#]+")
+WAD_MD_APPLY_RE = re.compile(r"^- \*\*Apply:\*\*\s*(\S+)", re.M)
 WAD_API_DETAIL = "https://wad-api.wearedevelopers.com/api/v2/jobs/details"
 WAD_HEADERS = {
     **HEADERS,
@@ -255,7 +260,7 @@ def resolve_wad(url, result):
     form itself). A raw GET of the /ext/ page can't do this — see WAD_JOB_RE."""
     m = WAD_JOB_RE.search(url)
     if not m:
-        return False
+        return _resolve_wad_md(url, result)
     params = {"job_id": m.group(1), "job_slug": m.group(2), "external": "true"}
     try:
         r = requests.get(WAD_API_DETAIL, params=params, headers=WAD_HEADERS,
@@ -282,6 +287,40 @@ def resolve_wad(url, result):
         result.update(ats="unknown-external", evidence=apply_url)
     else:
         result.update(ats="unknown", evidence="WAD detail: no external apply_url")
+    return True
+
+
+def _classify_wad_apply(apply_url, result, label):
+    ats = classify_url(apply_url) if apply_url else None
+    if ats:
+        result.update(ats=ats, evidence=apply_url)
+    elif apply_url:
+        result.update(ats="unknown-external", evidence=apply_url)
+    else:
+        result.update(ats="unknown", evidence=f"{label}: no external apply_url")
+
+
+def _resolve_wad_md(url, result):
+    """New-format WAD posting → GET its .md twin. Same verdicts as resolve_wad:
+    404/410 gone, 200 classifies the downstream apply link, 5xx fetch-error.
+    The HTML page is a zombie shell for dead postings, so this is the only
+    liveness signal for rows ingested after 2026-09-02."""
+    if not WAD_MD_RE.search(url):
+        return False
+    try:
+        r = requests.get(url.split("?")[0] + ".md",
+                         headers={**HEADERS, "Accept": "text/markdown"}, timeout=TIMEOUT)
+    except requests.RequestException as e:
+        result.update(ats="fetch-error", evidence=f"WAD .md: {str(e)[:180]}")
+        return True
+    if r.status_code in (404, 410):
+        result.update(ats="gone", evidence=f"WAD .md HTTP {r.status_code}: job not found")
+        return True
+    if r.status_code != 200:
+        result.update(ats="fetch-error", evidence=f"WAD .md HTTP {r.status_code}")
+        return True
+    m = WAD_MD_APPLY_RE.search(r.text or "")
+    _classify_wad_apply(m.group(1).strip() if m else "", result, "WAD .md")
     return True
 
 

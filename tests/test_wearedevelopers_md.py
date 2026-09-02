@@ -4,6 +4,7 @@ phase1_ingestor imports requests/yaml at module level — run inside the contain
     docker exec job-hunter-pipeline-1 python3 -m unittest tests.test_wearedevelopers_md -v
 """
 
+import datetime as dt
 import sys
 import unittest
 from pathlib import Path
@@ -117,9 +118,19 @@ class _Resp:
             raise RuntimeError(f"HTTP {self.status_code}")
 
 
+class PublishedDateTest(unittest.TestCase):
+    def test_parses_the_listing_shape(self):
+        self.assertEqual(ing._wad_published_date("July 9, 2026"), dt.date(2026, 7, 9))
+        self.assertIsNone(ing._wad_published_date("2026-07-09"))
+        self.assertIsNone(ing._wad_published_date(""))
+        self.assertIsNone(ing._wad_published_date(None))
+
+
 class ScrapeTest(unittest.TestCase):
-    def _run(self, known_urls=(), max_pages=3):
-        captured, calls = [], []
+    TODAY = dt.date(2026, 8, 15)   # July 9 listing is 37 days old → still within the 45-day TTL
+
+    def _run(self, known_urls=(), max_pages=3, today=None, ledger=()):
+        captured, calls, marked = [], [], []
 
         def _get(url, **kwargs):
             calls.append((url, dict(kwargs.get("params") or {})))
@@ -132,10 +143,19 @@ class ScrapeTest(unittest.TestCase):
 
         with mock.patch.object(ing.requests, "get", side_effect=_get), \
              mock.patch.object(ing.time, "sleep"), \
+             mock.patch.object(ing, "_wad_today", return_value=today or self.TODAY), \
+             mock.patch.object(ing, "load_seen_not_stored", return_value=set(ledger)), \
+             mock.patch.object(ing, "mark_seen_not_stored",
+                               side_effect=lambda c, u, s: marked.append(u)), \
              mock.patch.object(ing, "_url_in_db", side_effect=lambda c, u: u in known_urls), \
-             mock.patch.object(ing, "upsert_job", side_effect=lambda c, rec: captured.append(rec) or True):
+             mock.patch.object(ing, "upsert_job",
+                               side_effect=lambda c, rec: captured.append(rec) or
+                               rec["url"] not in self.dup_urls):
             added, skipped = ing.scrape_wearedevelopers(conn=None, keywords=["Python"], max_pages=max_pages)
+        self.marked = marked
         return added, skipped, captured, calls
+
+    dup_urls: tuple = ()
 
     def test_listing_markdown_is_requested_for_germany(self):
         _, _, _, calls = self._run()
@@ -160,6 +180,33 @@ class ScrapeTest(unittest.TestCase):
         detail_urls = [u for u, _ in calls if "/jobs/ext/" in u]
         self.assertEqual(len(detail_urls), 1)
         self.assertNotIn(known[0] + ".md", detail_urls)
+
+    def test_expires_at_is_aged_from_the_published_date(self):
+        _, _, captured, _ = self._run()
+        # "July 9, 2026" + 45 days = 2026-08-23
+        self.assertEqual(captured[0]["expires_at"], "2026-08-23T00:00:00")
+
+    def test_listings_older_than_the_ttl_are_not_ingested(self):
+        # on 2026-09-03 the July 9 listing is 56 days old → skipped before any
+        # detail fetch; the August 23 one is 11 days old → ingested
+        added, _, captured, calls = self._run(today=dt.date(2026, 9, 3))
+        self.assertEqual(added, 1)
+        self.assertEqual(captured[0]["url"],
+                         "https://www.wearedevelopers.com/jobs/ext/2194785-software-development-engineer-python-packaging")
+        self.assertNotIn("https://www.wearedevelopers.com/jobs/ext/1210076-python-developer.md",
+                         [u for u, _ in calls])
+
+    def test_jd_hash_duplicates_enter_the_seen_ledger_and_skip_next_time(self):
+        self.dup_urls = ("https://www.wearedevelopers.com/jobs/ext/1210076-python-developer",)
+        try:
+            added, skipped, _, _ = self._run()
+            self.assertEqual((added, skipped), (1, 1))
+            self.assertEqual(self.marked, list(self.dup_urls))
+            # next run: the ledger short-circuits before the detail fetch
+            _, _, _, calls = self._run(ledger=self.dup_urls)
+            self.assertNotIn(self.dup_urls[0] + ".md", [u for u, _ in calls])
+        finally:
+            self.dup_urls = ()
 
     def test_short_page_ends_pagination(self):
         # 2 listings < 24 per page → page 2 is never requested

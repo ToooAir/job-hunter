@@ -11,7 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from utils.db import init_db  # noqa: E402
-from utils.resume_stats import effectiveness  # noqa: E402
+from utils.resume_stats import effectiveness, quick_rejects  # noqa: E402
 
 
 def add(conn, job_id, *, status, peak_stage, grade="A", score=85,
@@ -106,3 +106,47 @@ class EffectivenessTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class QuickRejectsTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.conn = init_db(str(Path(self.tmp.name) / "jobs.db"))
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def _rej(self, job_id, applied, booked, source="heise", lang="en_required"):
+        add(self.conn, job_id, status="rejected", peak_stage="applied",
+            source=source, applied_at=f"{applied}T10:00:00")
+        self.conn.execute(
+            "UPDATE jobs SET notes = ?, jd_language_req = ? WHERE id = ?",
+            (f"\n[{booked}] rejected booked from pasted email (extension)", lang, job_id))
+        self.conn.commit()
+
+    def test_days_median_and_quick_share(self):
+        self._rej("a", "2026-08-01", "2026-08-03")            # 2 days
+        self._rej("b", "2026-08-01", "2026-08-08")            # 7 days (quick)
+        self._rej("c", "2026-08-01", "2026-08-20")            # 19 days
+        add(self.conn, "untimed", status="rejected", peak_stage="applied")  # no note
+        s = quick_rejects(self.conn)
+        self.assertEqual(s["overall"]["n"], 3)
+        self.assertEqual(s["untimed"], 1)
+        self.assertEqual(s["overall"]["median_days"], 7)
+        self.assertEqual(s["overall"]["quick"], 2)
+        self.assertEqual(s["overall"]["quick_share"], round(100 * 2 / 3, 1))
+
+    def test_grouped_by_source_and_language(self):
+        self._rej("a", "2026-08-01", "2026-08-02", source="bundesagentur", lang="de_plus")
+        self._rej("b", "2026-08-01", "2026-08-30", source="wttj", lang="en_required")
+        s = quick_rejects(self.conn)
+        self.assertEqual(s["by_source"]["bundesagentur"]["quick"], 1)
+        self.assertEqual(s["by_source"]["wttj"]["quick"], 0)
+        self.assertEqual(s["by_lang"]["de_plus"]["n"], 1)
+
+    def test_since_filters_on_applied_at(self):
+        self._rej("old", "2026-06-01", "2026-06-03")
+        self._rej("new", "2026-08-01", "2026-08-03")
+        self.assertEqual(quick_rejects(self.conn, since="2026-07-01")["overall"]["n"], 1)
+
