@@ -198,6 +198,51 @@ class ResolveWadTest(unittest.TestCase):
         self.assertEqual(res["ats"], "fetch-error")
 
 
+@unittest.skipUnless(HAS_DEPS, "ats_scan deps not installed on this host")
+class ResolveWadMdTest(unittest.TestCase):
+    """2026-09 URL format (/jobs/ext/<id>-<slug>): the detail API 404s for
+    these ids and the HTML page is a zombie shell, so liveness comes from the
+    site's Markdown twin (append .md)."""
+
+    URL = "https://www.wearedevelopers.com/jobs/ext/1164541-python-developer-in-germany"
+
+    def _resolve(self, status, text="", url=None):
+        from unittest import mock
+        fake = mock.Mock(status_code=status, text=text)
+        result = {"ats": "unknown", "evidence": ""}
+        with mock.patch("ats_scan.requests.get", return_value=fake) as get:
+            handled = resolve_wad(url or self.URL, result)
+        return handled, result, get
+
+    def test_fetches_the_markdown_twin(self):
+        _, _, get = self._resolve(200, "- **Apply:** https://x.example/apply\n")
+        self.assertEqual(get.call_args[0][0], self.URL + ".md")
+        self.assertEqual(get.call_args[1]["headers"]["Accept"], "text/markdown")
+
+    def test_404_marks_gone(self):
+        handled, res, _ = self._resolve(404)
+        self.assertTrue(handled)
+        self.assertEqual(res["ats"], "gone")
+
+    def test_apply_line_is_classified(self):
+        _, res, _ = self._resolve(200, "# Title\n\n- **Company:** Acme\n"
+                                       "- **Apply:** https://boards.greenhouse.io/acme/jobs/1\n")
+        self.assertEqual(res["ats"], "greenhouse")
+        self.assertEqual(res["evidence"], "https://boards.greenhouse.io/acme/jobs/1")
+
+    def test_non_ats_apply_is_unknown_external(self):
+        _, res, _ = self._resolve(200, "- **Apply:** https://uk.jobsora.com/job-47\n")
+        self.assertEqual(res["ats"], "unknown-external")
+
+    def test_missing_apply_stays_unknown(self):
+        _, res, _ = self._resolve(200, "# Title\n\n- **Company:** Acme\n")
+        self.assertEqual(res["ats"], "unknown")
+
+    def test_5xx_is_fetch_error(self):
+        _, res, _ = self._resolve(502)
+        self.assertEqual(res["ats"], "fetch-error")
+
+
 
 @unittest.skipUnless(HAS_DEPS, "ats_scan deps not installed on this host")
 class ResolveGreenhouseTest(unittest.TestCase):
