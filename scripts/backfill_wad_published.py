@@ -49,7 +49,7 @@ def main() -> None:
     ).fetchall()
     if args.limit:
         rows = rows[: args.limit]
-    print(f"{len(rows)} rows (dry_run={args.dry_run})")
+    print(f"{len(rows)} rows (dry_run={args.dry_run})", flush=True)
     today = datetime.now(timezone.utc).date()
     aged = expired = gone = unparsed = 0
     t0 = time.time()
@@ -76,8 +76,11 @@ def main() -> None:
                              (expires, r["id"]))
             else:
                 conn.execute("UPDATE jobs SET expires_at = ? WHERE id = ?", (expires, r["id"]))
-            if i % 25 == 0:
-                conn.commit()
+            # commit per row: each iteration waits ~1.2s on the network, and
+            # an open write transaction across 25 of them held the DB lock
+            # for 30s — long enough to fail init_db (5s busy_timeout) in
+            # the dashboard and resume_stats (observed 2026-09-03)
+            conn.commit()
         if i % 100 == 0:
             print(f"  {i}/{len(rows)} aged={aged} expired={expired} gone={gone} "
                   f"unparsed={unparsed} {time.time() - t0:.0f}s", flush=True)
