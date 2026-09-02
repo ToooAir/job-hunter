@@ -98,6 +98,10 @@ bundesagentur:
   radius_km: 50
   include_remote: true
   size: 100
+  # 2026-09-02 全德國：nationwide=true 時不送 wo（全國搜尋），locations 只在
+  # nationwide=false 時使用；max_pages 每個關鍵字翻幾頁（每頁 size 筆）
+  nationwide: true
+  max_pages: 3
 
 remotive:
   categories:

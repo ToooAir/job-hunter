@@ -460,3 +460,58 @@ class CircuitBreakerTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NationwidePaginationTest(unittest.TestCase):
+    """2026-09-02: nationwide = omit `wo` entirely (wo="" is a 400), and walk
+    pages until the listing is exhausted."""
+
+    def _run(self, total, size=2, max_pages=3, nationwide=True):
+        calls = []
+
+        def _get(url, **kwargs):
+            if "/jobdetails/" in url:
+                return _Resp(b"{}", json_data=_detail())
+            params = kwargs.get("params") or {}
+            calls.append(dict(params))
+            page = params["page"]
+            # `total` listings, `size` per page, distinct Referenznummern
+            start = (page - 1) * size
+            entries = [_listing(refnr=f"R{i}") for i in range(start, min(start + size, total))]
+            return _Resp(b"{}", json_data=_search_page(entries, total=total))
+
+        with mock.patch.object(ing.requests, "get", side_effect=_get), \
+             mock.patch.object(ing.time, "sleep"), \
+             mock.patch.object(ing, "upsert_job", return_value=True):
+            ing.scrape_bundesagentur(
+                conn=_FakeConn(), keywords=["AI Engineer"], locations=["Hamburg"],
+                radius_km=50, include_remote=False, size=size,
+                nationwide=nationwide, max_pages=max_pages,
+            )
+        return calls
+
+    def test_nationwide_sends_no_location_parameters(self):
+        calls = self._run(total=1)
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn("wo", calls[0])
+        self.assertNotIn("umkreis", calls[0])
+        self.assertEqual(calls[0]["was"], "AI Engineer")
+
+    def test_city_mode_is_unchanged(self):
+        calls = self._run(total=1, nationwide=False)
+        self.assertEqual(calls[0]["wo"], "Hamburg")
+        self.assertEqual(calls[0]["umkreis"], 50)
+
+    def test_walks_pages_until_the_listing_is_exhausted(self):
+        # 5 hits, 2 per page, cap 3 → pages 1, 2, 3 (page 3 holds the 5th)
+        calls = self._run(total=5, size=2, max_pages=3)
+        self.assertEqual([c["page"] for c in calls], [1, 2, 3])
+
+    def test_stops_early_when_total_is_covered(self):
+        # 3 hits, 2 per page → page 2 covers everything; page 3 never requested
+        calls = self._run(total=3, size=2, max_pages=3)
+        self.assertEqual([c["page"] for c in calls], [1, 2])
+
+    def test_max_pages_caps_the_walk(self):
+        calls = self._run(total=100, size=2, max_pages=2)
+        self.assertEqual([c["page"] for c in calls], [1, 2])
