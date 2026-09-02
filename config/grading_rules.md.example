@@ -9,13 +9,17 @@ en_required (English-only environment — prioritise these)
   → signals: English, English-speaking, no German required,
              office/working language is English, language: English
 
-de_plus (German is a bonus — still acceptable)
+de_plus (German is a bonus or a working level — still acceptable)
   → signals: German is a plus, German preferred, German nice to have,
-             Deutsch von Vorteil, Deutschkenntnisse von Vorteil
+             Deutsch von Vorteil, gute Deutschkenntnisse, German B1/B2,
+             Deutschkenntnisse without a stated level, Kundenkontakt,
+             "German or English"
 
-de_required (fluent German required — skip unless deliberately targeting)
+de_required (ONLY an explicit hard bar — skip unless deliberately targeting)
   → signals: C1, C2, fluent German, verhandlungssicher Deutsch,
-             fließend Deutsch, Kundenkontakt, auf Deutsch
+             fließend Deutsch, muttersprachlich / native German,
+             working language is German / Arbeitssprache Deutsch
+  Rule: unstated level or B2 and below → de_plus, never de_required.
 
 unknown (no language requirement mentioned)
 

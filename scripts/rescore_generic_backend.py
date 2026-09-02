@@ -20,6 +20,10 @@ run spends LLM calls; it is safe to re-run (a row is just scored again).
 
     docker exec job-hunter-pipeline-1 python3 scripts/rescore_generic_backend.py --dry-run
     docker exec job-hunter-pipeline-1 python3 scripts/rescore_generic_backend.py
+    docker exec job-hunter-pipeline-1 python3 scripts/rescore_generic_backend.py --cohort soft-german
+
+--cohort soft-german (2026-09-03): the de_required narrowing — see
+select_soft_german.
 """
 
 import argparse
@@ -32,14 +36,37 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from utils.apply_queue import GERMANY_KEYWORDS, title_excluded  # noqa: E402
+from utils.lang_req import german_required  # noqa: E402
 
 DB_PATH = "data/jobs.db"
 STACK_RE = re.compile(r"python|node\.?js|django|fastapi|typescript", re.I)
+SOFT_GERMAN_MIN_SCORE = 70
 
 
 def _in_germany(location: str | None) -> bool:
     low = (location or "").lower()
     return any(kw.lower() in low for kw in GERMANY_KEYWORDS)
+
+
+def select_soft_german(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Cohort 2 (2026-09-03): de_required rows whose JD does NOT state a hard
+    German bar. The LLM had been filing "gute Deutschkenntnisse", B1/B2 and
+    "Kundenkontakt" as de_required (grade C by construction); the narrowed
+    rules move those to de_plus. Rows the regex gate would catch anyway are
+    left out — a rescore would just re-gate them without an LLM call. Only
+    strong technical fits are worth the call."""
+    rows = conn.execute(
+        "SELECT id, title, company, location, match_score, jd_language_req, source, "
+        "       raw_jd_text FROM jobs "
+        "WHERE status = 'scored' AND jd_language_req = 'de_required' "
+        f"  AND match_score >= {SOFT_GERMAN_MIN_SCORE}"
+    ).fetchall()
+    return [
+        r for r in rows
+        if _in_germany(r["location"])
+        and not title_excluded(r["title"])
+        and german_required(r["raw_jd_text"]) is None
+    ]
 
 
 def select_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
@@ -63,6 +90,8 @@ def main() -> None:
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--db", default=DB_PATH)
     ap.add_argument("--limit", type=int, default=None)
+    ap.add_argument("--cohort", choices=("generic-backend", "soft-german"),
+                    default="generic-backend")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO,
@@ -71,7 +100,7 @@ def main() -> None:
     conn = sqlite3.connect(args.db)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout = 30000")
-    rows = select_rows(conn)
+    rows = select_soft_german(conn) if args.cohort == "soft-german" else select_rows(conn)
     if args.limit:
         rows = rows[: args.limit]
     print(f"{len(rows)} candidate rows (dry_run={args.dry_run})")
