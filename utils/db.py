@@ -305,7 +305,10 @@ def expire_gone_scored_jobs(conn: sqlite3.Connection) -> int:
 
 
 def get_unscored_jobs(conn: sqlite3.Connection) -> list[dict]:
-    cur = conn.execute("SELECT * FROM jobs WHERE status = 'un-scored'")
+    # Newest first: when a large backlog is cut short (rate-limit abort,
+    # container rebuild) the fresh supply must be the part that got scored.
+    cur = conn.execute("SELECT * FROM jobs WHERE status = 'un-scored' "
+                       "ORDER BY fetched_at DESC, rowid DESC")
     return [dict(row) for row in cur.fetchall()]
 
 
