@@ -27,6 +27,7 @@ from utils.ats_harvest import merged_companies, persist_seeds
 from utils.db import (
     init_db, load_seen_not_stored, mark_seen_not_stored, upsert_job,
 )
+from utils.source_health import warn_silent_sources
 from utils.staffing import is_staffing
 
 # ── Setup ──────────────────────────────────────────────────────────────────────
@@ -2503,6 +2504,10 @@ if __name__ == "__main__":
 
     for source, (added, skipped) in results.items():
         log.info("  %-16s 新增 %3d 筆，略過 %3d 筆（重複）", source, added, skipped)
+    # 0 added AND 0 skipped is the signature of a dead endpoint, not a quiet
+    # day — a live source always skips postings it already knows. Escalate
+    # once it repeats (see utils/source_health.py for the 16-day precedent).
+    warn_silent_sources(conn, results)
 
     total_added = sum(v[0] for v in results.values())
     total_skipped = sum(v[1] for v in results.values())
