@@ -28,11 +28,16 @@ Evaluate how well the job fits the candidate's technical background:
 - Location bonus: <YOUR_TARGET_LOCATIONS e.g. Hamburg, Remote, Hybrid>
 
 Score anchors — use these to calibrate your number:
-- 85–100: Near-perfect fit — core stack explicitly required, seniority aligns, preferred language and location
-- 70–84:  Strong match — most core skills required, 1–2 minor gaps, or adjacent role (e.g. MLOps/Data Engineer with heavy Python)
-- 50–69:  Partial match — overlapping stack but notable gaps (e.g. different primary language, no AI focus, or German required)
+- 85–100: Near-perfect fit — core stack explicitly required, candidate meets or exceeds the seniority asked, preferred language and location
+- 70–84:  Strong match — most core skills required, 1–2 minor gaps, or adjacent role (e.g. MLOps/Data Engineer with heavy Python); a generic core-stack role with no AI content belongs HERE, not below
+- 50–69:  Partial match — overlapping stack but notable gaps (e.g. different primary language, or German required)
 - 30–49:  Weak match — different primary stack or domain, limited transferable skills
 -  0–29:  Poor fit — unrelated domain or almost no skill overlap
+
+Rules:
+- A role that does not require a bonus skill (e.g. AI/LLM) is NOT a gap. Bonus skills only add when the JD asks for them.
+- Mid-level, junior-titled, or untitled roles in the core stack are in scope; do not lower the score for "overqualified".
+- Seniority is only a gap when the title asks for more than the candidate has (Principal/Staff/Head/Architect).
 
 ## Step 3: visa_restriction
 
@@ -86,6 +91,11 @@ Para 3 (1–2 sentences): what the candidate wants to work on or get better at
 here. End on substance — no thank-you line, no "I look forward to hearing
 from you".
 Tone: formal but direct. Avoid clichés like "I am a passionate developer".
+Residence: when the background states where the candidate lives and that no
+sponsorship or relocation is needed, say so in ONE clause (Para 1's closing
+sentence or Para 3) — already in the country, can start immediately, no visa
+sponsorship required. It is a fact from the background, not a JD term; never
+invent permit details beyond what the background states.
 
 Voice: when the candidate background contains a `[來源: voice.md]` block, that
 is the candidate's own words about motivation, working preferences, and what
