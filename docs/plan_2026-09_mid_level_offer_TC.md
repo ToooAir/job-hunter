@@ -137,3 +137,12 @@ offer 期望值 = 投遞數 × p(一面) × p(一面→二面) × p(二面→off
 - Remote — EU 納入（非德國雇主拿不到德國工作許可，9/9 放棄實證）。
 - 薪資過濾（中階後端市場價已高於門檻）。
 - 通用表單 matcher / 瀏覽器自動送出（已否決）。
+
+**2026-09-03 追加（審視後的五項）**
+- de_required 收窄（只剩 C1/C2/fluent/verhandlungssicher/fließend/muttersprachlich/Arbeitssprache Deutsch；
+  gute Deutschkenntnisse、B1/B2、Kundenkontakt 歸 de_plus）+ `--cohort soft-german` 重評 49 筆 → A 23 / B 9 / C 17。
+- ats_scan 認得新格式 WAD URL，走 `.md` 404 當 gone（`2b06db8`）。
+- WAD 依 Published 日期定 expires_at，超過 45 天不收；jd_hash 重複進 seen 帳本；評分改最新優先。
+- resume_stats 新增快拒統計（`quick_rejects`：中位天數、7 天內佔比、分來源／語言標籤）。
+- `scripts/backfill_wad_published.py` 對 09-02 夜間進的 1,866 筆回填 Published 老化。
+- 來源連續 3 輪 0/0 告警（`90cc748`）。全部已 ship：`008fb6f`、`90cc748`、`8536ebc`、`a956e01`、`24f5446`。
