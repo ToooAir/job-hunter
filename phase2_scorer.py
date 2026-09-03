@@ -33,7 +33,7 @@ load_dotenv()
 DB_PATH     = os.getenv("DB_PATH", "./data/jobs.db")
 QDRANT_PATH = os.getenv("QDRANT_PATH", "./qdrant_data")
 
-from utils.llm import make_client, chat_model, emb_model, LLM_PROVIDER, NO_STRUCTURED_OUTPUT_PROVIDERS, rate_limit  # noqa: E402
+from utils.llm import make_client, chat_model, translation_model, emb_model, LLM_PROVIDER, NO_STRUCTURED_OUTPUT_PROVIDERS, rate_limit  # noqa: E402
 from utils.apply_queue import title_excluded  # noqa: E402
 from utils.lang_req import german_required  # noqa: E402
 from utils.geo_de import has_non_de_marker  # noqa: E402
@@ -68,9 +68,13 @@ class ScoringResult(BaseModel):
     def derive_grade(self) -> "ScoringResult":
         score = self.match_score
         lang = self.jd_language_req
+        # A starts at 80, not at the 70–84 "strong match" band's midpoint:
+        # mistral-medium (scorer since 2026-09-04) hands out 75 as its default
+        # strong-match score, so a 75 cut collapsed B into A (A/B stratum
+        # 29:1 in the A/B run). 80 keeps B as a real tier.
         if lang == "de_required" or score < 60:
             self.fit_grade = "C"
-        elif score >= 75:
+        elif score >= 80:
             self.fit_grade = "A"
         else:
             self.fit_grade = "B"
@@ -187,7 +191,7 @@ def _translate_to_english(text: str, client) -> str | None:
         try:
             rate_limit()
             resp = client.chat.completions.create(
-                model=chat_model(),
+                model=translation_model(),
                 messages=[{
                     "role": "user",
                     "content": (
@@ -490,7 +494,7 @@ def score_jobs(
     reset_errors: bool = False,
     job_ids: list[str] | None = None,
 ) -> list[ScoringResult]:
-    log.info("LLM provider: %s | model: %s", LLM_PROVIDER, chat_model())
+    log.info("LLM provider: %s | model: %s | translation: %s", LLM_PROVIDER, chat_model(), translation_model())
     client = make_client()
     conn = init_db(db_path)
 
