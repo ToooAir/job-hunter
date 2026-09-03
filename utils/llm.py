@@ -6,7 +6,11 @@ Call rate_limit() before every API request to respect provider limits.
 Supported providers:
   openai   — OpenAI API (default)
   azure    — Azure OpenAI
-  mistral  — Mistral AI (1 RPS hard limit; JSON mode only, no Structured Outputs)
+  mistral  — Mistral AI (JSON mode only, no Structured Outputs). Free-tier quotas
+             are per model family (mistral-small / mistral-medium each 20k TPM,
+             10 RPM as of 2026-09), so TRANSLATION_MODEL can point the cheap
+             translation call at a different family than CHAT_MODEL to use two
+             buckets in parallel.
   custom   — Any OpenAI-compatible endpoint (LiteLLM, Ollama, vLLM, …)
 """
 
@@ -22,6 +26,7 @@ AZURE_CHAT_DEPLOYMENT = os.getenv("AZURE_CHAT_DEPLOYMENT", "gpt-4o")
 AZURE_EMB_DEPLOYMENT  = os.getenv("AZURE_EMB_DEPLOYMENT", "text-embedding-3-small")
 CUSTOM_BASE_URL       = os.getenv("CUSTOM_BASE_URL", "")
 CHAT_MODEL            = os.getenv("CHAT_MODEL", "gpt-4o")
+TRANSLATION_MODEL     = os.getenv("TRANSLATION_MODEL", "")   # empty → same as chat_model()
 EMB_MODEL             = os.getenv("EMB_MODEL", "text-embedding-3-small")
 MISTRAL_API_KEY       = os.getenv("MISTRAL_API_KEY", "")
 MISTRAL_BASE_URL      = "https://api.mistral.ai/v1"
@@ -101,6 +106,17 @@ def chat_model() -> str:
     if LLM_PROVIDER == "mistral":
         return CHAT_MODEL if CHAT_MODEL != "gpt-4o" else "mistral-small-2603"
     return CHAT_MODEL
+
+
+def translation_model() -> str:
+    """Model for the JD German→English translation call.
+
+    Translation is a low-stakes task; on Mistral's per-family rate buckets
+    routing it to a different family than the scorer (e.g. mistral-small
+    while CHAT_MODEL is mistral-medium) roughly halves the scorer's token
+    pressure. Falls back to chat_model() when TRANSLATION_MODEL is unset.
+    """
+    return TRANSLATION_MODEL or chat_model()
 
 
 def emb_model() -> str:

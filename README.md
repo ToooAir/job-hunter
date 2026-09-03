@@ -220,6 +220,7 @@ OPENAI_API_KEY=sk-...
 # LLM_PROVIDER=mistral
 # MISTRAL_API_KEY=your_key_here
 # CHAT_MODEL=mistral-small-2603
+# TRANSLATION_MODEL=mistral-small-2603   # optional: separate rate bucket for JD translation
 # EMB_MODEL=mistral-embed
 # MISTRAL_MAX_CONCURRENT=3   # concurrent scoring workers (default 3, tune by TPM tier)
 

@@ -24,6 +24,9 @@ run spends LLM calls; it is safe to re-run (a row is just scored again).
 
 --cohort soft-german (2026-09-03): the de_required narrowing — see
 select_soft_german.
+
+--cohort model-swap (2026-09-04): scorer moved from mistral-small-2603 to
+mistral-medium-latest and the A cut from 75 to 80 — see select_model_swap.
 """
 
 import argparse
@@ -69,6 +72,28 @@ def select_soft_german(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     ]
 
 
+def select_model_swap(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Cohort 3 (2026-09-04): every queue-eligible A/B row, re-scored by the
+    new scorer model so the apply queue ranks one model's opinion, not two.
+    The A/B run showed mistral-small mis-read hard gates both ways (C1 /
+    verhandlungssicher filed as de_plus, clearance-only roles graded A, and
+    de_required hallucinated on JDs with no language line), so the whole
+    A/B pool is suspect, not just a band. C rows are left alone: the C
+    stratum agreed 37/40 and re-scoring ~5k rows buys nothing. Newest first,
+    so an interrupted run has already covered the rows most likely to be
+    live."""
+    rows = conn.execute(
+        "SELECT id, title, company, location, match_score, jd_language_req, source, "
+        "       raw_jd_text FROM jobs "
+        "WHERE status = 'scored' AND fit_grade IN ('A', 'B') "
+        "ORDER BY fetched_at DESC, rowid DESC"
+    ).fetchall()
+    return [
+        r for r in rows
+        if _in_germany(r["location"]) and not title_excluded(r["title"])
+    ]
+
+
 def select_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     rows = conn.execute(
         "SELECT id, title, company, location, match_score, jd_language_req, source, "
@@ -90,7 +115,7 @@ def main() -> None:
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--db", default=DB_PATH)
     ap.add_argument("--limit", type=int, default=None)
-    ap.add_argument("--cohort", choices=("generic-backend", "soft-german"),
+    ap.add_argument("--cohort", choices=("generic-backend", "soft-german", "model-swap"),
                     default="generic-backend")
     args = ap.parse_args()
 
@@ -100,7 +125,10 @@ def main() -> None:
     conn = sqlite3.connect(args.db)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout = 30000")
-    rows = select_soft_german(conn) if args.cohort == "soft-german" else select_rows(conn)
+    rows = {
+        "soft-german": select_soft_german,
+        "model-swap": select_model_swap,
+    }.get(args.cohort, select_rows)(conn)
     if args.limit:
         rows = rows[: args.limit]
     print(f"{len(rows)} candidate rows (dry_run={args.dry_run})")
