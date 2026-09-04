@@ -220,6 +220,31 @@ class ScoreJobsNetworkSafetyTest(unittest.TestCase):
             self._statuses(), {"j1": "un-scored", "j2": "un-scored", "j3": "un-scored"}
         )
 
+    def test_rate_limit_exhaustion_keeps_jobs_unscored(self):
+        # 2026-09-04: the free-tier quota went to limit-req-minute 0 for hours;
+        # three 429s a minute apart must abort the run, not mark jobs error.
+        req = httpx.Request("POST", "https://api.test/v1/chat")
+        rl = openai.RateLimitError("rl", response=httpx.Response(429, request=req), body=None)
+        with mock.patch.object(phase2_scorer, "check_kb_ready", return_value=False), \
+             mock.patch.object(phase2_scorer, "_call_llm", side_effect=rl), \
+             mock.patch.object(phase2_scorer.time, "sleep"):
+            with self.assertRaises(phase2_scorer.TransientAbort):
+                self._run_score_jobs()
+        self.assertEqual(
+            self._statuses(), {"j1": "un-scored", "j2": "un-scored", "j3": "un-scored"}
+        )
+
+    def test_translation_rate_limit_exhaustion_aborts(self):
+        req = httpx.Request("POST", "https://api.test/v1/chat")
+        rl = openai.RateLimitError("rl", response=httpx.Response(429, request=req), body=None)
+        client = mock.Mock()
+        client.chat.completions.create.side_effect = rl
+        with mock.patch.object(phase2_scorer.time, "sleep"), \
+             mock.patch.object(phase2_scorer, "rate_limit"):
+            with self.assertRaises(phase2_scorer.TransientAbort):
+                phase2_scorer._translate_to_english("Wir suchen einen Entwickler", client)
+        self.assertEqual(client.chat.completions.create.call_count, 3)
+
     def test_content_failure_still_marks_error(self):
         with mock.patch.object(phase2_scorer, "check_kb_ready", return_value=False), \
              mock.patch.object(phase2_scorer, "_call_llm", side_effect=ValueError("bad json")):
