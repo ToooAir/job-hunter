@@ -33,7 +33,7 @@ load_dotenv()
 DB_PATH     = os.getenv("DB_PATH", "./data/jobs.db")
 QDRANT_PATH = os.getenv("QDRANT_PATH", "./qdrant_data")
 
-from utils.llm import make_client, chat_model, translation_model, emb_model, LLM_PROVIDER, NO_STRUCTURED_OUTPUT_PROVIDERS, rate_limit  # noqa: E402
+from utils.llm import make_client, chat_model, translation_model, emb_model, LLM_PROVIDER, NO_STRUCTURED_OUTPUT_PROVIDERS, rate_limit, chat_completion, chat_parse  # noqa: E402
 from utils.apply_queue import title_excluded  # noqa: E402
 from utils.lang_req import german_required  # noqa: E402
 from utils.geo_de import has_non_de_marker  # noqa: E402
@@ -68,13 +68,14 @@ class ScoringResult(BaseModel):
     def derive_grade(self) -> "ScoringResult":
         score = self.match_score
         lang = self.jd_language_req
-        # A starts at 80, not at the 70–84 "strong match" band's midpoint:
-        # mistral-medium (scorer since 2026-09-04) hands out 75 as its default
-        # strong-match score, so a 75 cut collapsed B into A (A/B stratum
-        # 29:1 in the A/B run). 80 keeps B as a real tier.
+        # The A cut is calibrated to the scorer model, not to the band text:
+        # mistral-medium handed out 75 as its default strong-match score (75
+        # cut → A/B 29:1), gpt-5.6-luna sits ~10 points lower and compresses
+        # (median 68 on the same rows; 80 cut → A 8/40, 76 cut → A 14/40,
+        # matching medium's A:B ratio). Re-run the A/B before moving it.
         if lang == "de_required" or score < 60:
             self.fit_grade = "C"
-        elif score >= 80:
+        elif score >= 76:
             self.fit_grade = "A"
         else:
             self.fit_grade = "B"
@@ -196,7 +197,7 @@ def _translate_to_english(text: str, client) -> str | None:
     for attempt in range(1, 4):
         try:
             rate_limit()
-            resp = client.chat.completions.create(
+            resp = chat_completion(client,
                 model=translation_model(),
                 messages=[{
                     "role": "user",
@@ -224,7 +225,7 @@ def _parse_with_structured_output(
 ) -> ScoringResult:
     """Use OpenAI/Azure Structured Outputs (.parse). Raises if unsupported."""
     rate_limit()
-    response = client.beta.chat.completions.parse(
+    response = chat_parse(client,
         model=chat_model(),
         messages=[
             {"role": "system", "content": system_prompt},
@@ -257,7 +258,7 @@ def _parse_with_json_mode(
         '"cover_letter_draft": "<full cover letter as a plain string, no nested keys>"}'
     )
     rate_limit()
-    response = client.chat.completions.create(
+    response = chat_completion(client,
         model=chat_model(),
         messages=[
             {"role": "system", "content": system_prompt + json_instruction},
@@ -917,7 +918,7 @@ Company: {job['company']} | Title: {job['title']} | Location: {job.get('location
     client = make_client()
     rate_limit()
     try:
-        resp = client.chat.completions.create(
+        resp = chat_completion(client,
             model=chat_model(),
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -1153,7 +1154,7 @@ def generate_brief_for_job(
     client = make_client()
     rate_limit()
     try:
-        resp = client.chat.completions.create(
+        resp = chat_completion(client,
             model=chat_model(),
             messages=[{"role": "user", "content": prompt}],
             temperature=0.4,

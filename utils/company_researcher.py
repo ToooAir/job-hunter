@@ -13,7 +13,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from utils.db import init_db, fetch_job_by_id, set_company_research
-from utils.llm import make_client, chat_model, rate_limit
+from utils.llm import make_client, chat_model, rate_limit, chat_completion
 
 log = logging.getLogger(__name__)
 
@@ -197,7 +197,7 @@ def research_company(
     client = make_client()
     rate_limit()
     try:
-        resp = client.chat.completions.create(
+        resp = chat_completion(client,
             model=chat_model(),
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,

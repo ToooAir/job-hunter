@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 import openai
 
 from utils.db import init_db, fetch_job_by_id, set_salary_estimate
-from utils.llm import make_client, chat_model, rate_limit
+from utils.llm import make_client, chat_model, rate_limit, chat_completion
 from utils.levels_scraper import fetch_levels_data, LevelsSummary
 from utils.gtj_salary_scraper import fetch_gtj_data
 from utils.profile_loader import load_profile, ProfileError
@@ -395,7 +395,7 @@ def estimate_salary(job_id: str, db_path: str, lang: str = "en") -> str | None:
     for attempt in range(1, 4):
         rate_limit()
         try:
-            resp = client.chat.completions.create(
+            resp = chat_completion(client,
                 model=chat_model(),
                 messages=[{"role": "user", "content": prompt}],
                 # Greedy decoding: the extension asks cache-first while the

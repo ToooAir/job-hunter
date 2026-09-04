@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from utils.llm import make_client, chat_model, emb_model, LLM_PROVIDER, rate_limit  # noqa: E402
+from utils.llm import make_client, chat_model, emb_model, LLM_PROVIDER, rate_limit, chat_completion  # noqa: E402
 
 print(f"Provider : {LLM_PROVIDER}")
 print(f"Chat model: {chat_model()}")
@@ -22,7 +22,7 @@ ok = True
 print("[ Chat ]", end=" ", flush=True)
 try:
     rate_limit()
-    resp = client.chat.completions.create(
+    resp = chat_completion(client,
         model=chat_model(),
         messages=[{"role": "user", "content": "Reply with the single word: OK"}],
         max_tokens=5,
