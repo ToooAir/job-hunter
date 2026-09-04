@@ -153,15 +153,22 @@ def _adapt_chat_kwargs(kwargs: dict) -> dict:
 
 
 def _learn_quirk(exc: Exception, sent: dict) -> bool:
-    """Record which parameter a 400 complained about. True if something new was learned."""
+    """Record which parameter a 400 complained about.
+
+    True when the 400 names a parameter we actually sent, i.e. a retry with
+    adapted kwargs will differ. That includes a quirk another thread learned
+    a moment ago: with three workers starting together, two of them get the
+    same first 400, and the second must retry too (2026-09-04, a job was
+    filed as error because the loser of that race raised instead).
+    """
     msg = str(exc)
-    learned = False
+    adaptable = False
     with _QUIRKS_LOCK:
         for param, quirk in _QUIRK_MARKERS.items():
-            if param in msg and param in sent and quirk not in _QUIRKS:
+            if param in msg and param in sent:
                 _QUIRKS.add(quirk)
-                learned = True
-    return learned
+                adaptable = True
+    return adaptable
 
 
 def _call_with_quirks(fn, kwargs: dict):

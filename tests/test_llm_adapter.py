@@ -52,6 +52,23 @@ class ChatAdapterTest(unittest.TestCase):
         self.assertEqual(len(c.calls), 4)
         self.assertEqual(c.calls[-1], {"model": "m", "messages": [], "max_completion_tokens": 10})
 
+    def test_quirk_learned_by_another_thread_still_retries(self):
+        # race: a sibling worker recorded the quirk between our adapt and our
+        # 400 — the 400 still names a parameter we sent, so retry, don't raise
+        c = _FakeClient()
+        calls = []
+
+        def create(**kw):
+            calls.append(kw)
+            if len(calls) == 1:
+                llm._QUIRKS.add("no_temperature")   # sibling learned it while our request was in flight
+                raise _bad_request("Unsupported value: 'temperature' does not support 0.3")
+            return "ok"
+        c.chat.completions.create.side_effect = create
+        self.assertEqual(llm.chat_completion(c, model="m", messages=[], temperature=0.3), "ok")
+        self.assertIn("temperature", calls[0])
+        self.assertNotIn("temperature", calls[1])
+
     def test_unrelated_400_is_raised(self):
         c = _FakeClient()
         c.chat.completions.create.side_effect = _bad_request("context length exceeded")
