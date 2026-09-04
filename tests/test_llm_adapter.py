@@ -85,3 +85,23 @@ class ChatAdapterTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class KbThresholdTest(unittest.TestCase):
+    """The retrieval floor must follow the embedding model (2026-09-04: the
+    0.60 mistral floor emptied every retrieval on text-embedding-3-small)."""
+
+    def test_default_per_model(self):
+        import phase2_scorer as ps
+        with mock.patch.object(ps, "emb_model", return_value="text-embedding-3-small"), \
+             mock.patch.dict("os.environ", {}, clear=False):
+            import os
+            os.environ.pop("KB_SCORE_THRESHOLD", None)
+            self.assertAlmostEqual(ps._kb_score_threshold(), 0.35)
+        with mock.patch.object(ps, "emb_model", return_value="mistral-embed"):
+            self.assertAlmostEqual(ps._kb_score_threshold(), 0.60)
+
+    def test_env_override(self):
+        import phase2_scorer as ps
+        with mock.patch.dict("os.environ", {"KB_SCORE_THRESHOLD": "0.42"}):
+            self.assertAlmostEqual(ps._kb_score_threshold(), 0.42)

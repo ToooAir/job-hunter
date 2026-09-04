@@ -354,7 +354,22 @@ def check_kb_fresh(qdrant_path: str, kb_dir: str = "./candidate_kb") -> None:
         )
 
 
-_KB_SCORE_THRESHOLD = 0.60  # Cosine similarity floor for KB chunk retrieval.
+def _kb_score_threshold() -> float:
+    """Cosine similarity floor for KB chunk retrieval, per embedding model.
+
+    The floor is model-specific: mistral-embed scores a relevant chunk 0.6+,
+    text-embedding-3-* tops out around 0.55 on the same JDs (80 real JDs on
+    2026-09-04: top-1 range 0.36–0.54, median 0.45, no difference between
+    A/B and C rows). Keeping 0.60 after the Azure switch silently emptied
+    every retrieval. Override with KB_SCORE_THRESHOLD when changing models.
+    """
+    env = os.getenv("KB_SCORE_THRESHOLD")
+    if env:
+        return float(env)
+    return 0.35 if "text-embedding-3" in emb_model() else 0.60
+
+
+_KB_SCORE_THRESHOLD = _kb_score_threshold()
                              # Spot-checked 2026-04-11: 24 jobs × 3 random samples (240 scores total).
                              # Score distribution: ≥0.70 = 93.3%, 0.60–0.69 = 6.7%, <0.60 = 0%.
                              # Finding: threshold acts as a safety net — top-5 chunks almost always
