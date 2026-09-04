@@ -186,7 +186,13 @@ def _is_transient_llm_error(exc: Exception) -> bool:
 
 
 def _translate_to_english(text: str, client) -> str | None:
-    """Translate German JD text to English. Returns translated text or None on failure."""
+    """Translate German JD text to English. Returns translated text or None on failure.
+
+    Raises TransientAbort when three 429s a minute apart still fail: that is
+    a quota that is gone (2026-09-04: limit-req-minute 0 on the whole model
+    family for hours), not a busy minute, and every further job would burn
+    3 min of sleeps for nothing.
+    """
     for attempt in range(1, 4):
         try:
             rate_limit()
@@ -210,8 +216,7 @@ def _translate_to_english(text: str, client) -> str | None:
         except Exception as exc:
             log.warning("Translation failed: %s", exc)
             return None
-    log.warning("Translation gave up after 3 attempts")
-    return None
+    raise TransientAbort("rate limit exhausted during translation (3 × 429 a minute apart)")
 
 
 def _parse_with_structured_output(
@@ -697,6 +702,18 @@ def score_jobs(
                     job["id"], job["title"], job["company"], exc,
                 )
                 break
+        if result is None and isinstance(last_exc, openai.RateLimitError):
+            # Three 429s a minute apart is not a busy minute, it is a quota
+            # that is gone (2026-09-04: limit-req-minute 0 for hours). Marking
+            # the job error would drop it for good; abort and let the
+            # scheduler's backoff retry the whole batch instead.
+            abort_event.set()
+            skipped.append(job["id"])
+            log.warning(
+                "Rate limit exhausted for job %s (%s @ %s) — kept un-scored for retry",
+                job["id"], job["title"], job["company"],
+            )
+            return None
 
         # ── Deterministic post-LLM score adjustments (source bonus + seniority overreach) ──
         if result is not None:
