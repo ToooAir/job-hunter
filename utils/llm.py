@@ -1,6 +1,8 @@
 """
 utils/llm.py — Shared OpenAI-compatible client factory + rate limiter.
-Reads LLM_PROVIDER and related env vars; call make_client() / chat_model() / emb_model() anywhere.
+Reads LLM_PROVIDER and related env vars; call make_client() / chat_model() /
+translation_model() / emb_model() anywhere (see "Model names" for how the
+provider-scoped and generic env vars resolve).
 Call rate_limit() before every API request to respect provider limits.
 Route chat calls through chat_completion() / chat_parse() instead of the raw
 client: they adapt request parameters to the model's quirks (reasoning models
@@ -25,13 +27,8 @@ LLM_PROVIDER          = os.getenv("LLM_PROVIDER", "openai").lower()
 OPENAI_API_KEY        = os.getenv("OPENAI_API_KEY", "")
 AZURE_ENDPOINT        = os.getenv("AZURE_ENDPOINT", "")
 AZURE_API_VERSION     = os.getenv("AZURE_API_VERSION", "2024-08-01-preview")
-AZURE_CHAT_DEPLOYMENT = os.getenv("AZURE_CHAT_DEPLOYMENT", "gpt-4o")
-AZURE_EMB_DEPLOYMENT  = os.getenv("AZURE_EMB_DEPLOYMENT", "text-embedding-3-small")
 CUSTOM_BASE_URL       = os.getenv("CUSTOM_BASE_URL", "")
-CHAT_MODEL            = os.getenv("CHAT_MODEL", "gpt-4o")
-TRANSLATION_MODEL     = os.getenv("TRANSLATION_MODEL", "")   # empty → same as chat_model()
 CHAT_REASONING_EFFORT = os.getenv("CHAT_REASONING_EFFORT", "")  # e.g. "low"; empty → not sent
-EMB_MODEL             = os.getenv("EMB_MODEL", "text-embedding-3-small")
 MISTRAL_API_KEY       = os.getenv("MISTRAL_API_KEY", "")
 MISTRAL_BASE_URL      = "https://api.mistral.ai/v1"
 
@@ -104,23 +101,78 @@ def make_client() -> "openai.OpenAI":
     return openai.OpenAI(api_key=OPENAI_API_KEY)
 
 
-def chat_model() -> str:
+# ── Model names ────────────────────────────────────────────────────────────────
+# Every provider has its own set of model names, so switching LLM_PROVIDER
+# switches the whole set and another provider's leftovers in .env stay
+# harmless (2026-09-04: TRANSLATION_MODEL=mistral-small-2603 left over under
+# azure was sent as a deployment name → 404 → silent translation failure).
+#
+# Resolution order per kind (CHAT / TRANSLATION / EMB):
+#   1. provider-scoped: AZURE_<kind>_DEPLOYMENT, MISTRAL_<kind>_MODEL,
+#      OPENAI_<kind>_MODEL, CUSTOM_<kind>_MODEL
+#   2. generic CHAT_MODEL / TRANSLATION_MODEL / EMB_MODEL — for openai/custom
+#      (and mistral, historically); azure only honours the generic
+#      TRANSLATION_MODEL, its chat/embedding are deployments by definition
+#   3. provider default
+# TRANSLATION falls back to the chat model when nothing is set.
+_KINDS = ("CHAT", "TRANSLATION", "EMB")
+_GENERIC_VAR = {"CHAT": "CHAT_MODEL", "TRANSLATION": "TRANSLATION_MODEL", "EMB": "EMB_MODEL"}
+_GENERIC_ALLOWED = {"azure": {"TRANSLATION"}}   # default: every kind
+_PROVIDER_DEFAULTS = {
+    "mistral": {"CHAT": "mistral-small-2603", "EMB": "mistral-embed"},
+    "azure":   {"CHAT": "gpt-4o", "EMB": "text-embedding-3-small"},
+    "openai":  {"CHAT": "gpt-4o", "EMB": "text-embedding-3-small"},
+    "custom":  {"CHAT": "gpt-4o", "EMB": "text-embedding-3-small"},
+}
+# .env.example ships these as the generic samples; on mistral they are not
+# real model names, so they count as "unset" there (pre-existing behaviour).
+_SAMPLE_GENERIC = {"gpt-4o", "text-embedding-3-small"}
+
+
+def _scoped_var(kind: str) -> str:
     if LLM_PROVIDER == "azure":
-        return AZURE_CHAT_DEPLOYMENT
-    if LLM_PROVIDER == "mistral":
-        return CHAT_MODEL if CHAT_MODEL != "gpt-4o" else "mistral-small-2603"
-    return CHAT_MODEL
+        return f"AZURE_{kind}_DEPLOYMENT"
+    return f"{LLM_PROVIDER.upper()}_{kind}_MODEL"
+
+
+def _resolve(kind: str) -> tuple[str, str]:
+    """Return (model name, where it came from) for a kind in _KINDS."""
+    var = _scoped_var(kind)
+    val = os.getenv(var, "")
+    if val:
+        return val, var
+    if kind in _GENERIC_ALLOWED.get(LLM_PROVIDER, set(_KINDS)):
+        gvar = _GENERIC_VAR[kind]
+        gval = os.getenv(gvar, "")
+        if gval and not (LLM_PROVIDER == "mistral" and gval in _SAMPLE_GENERIC):
+            return gval, gvar
+    default = _PROVIDER_DEFAULTS.get(LLM_PROVIDER, _PROVIDER_DEFAULTS["openai"]).get(kind, "")
+    return default, "default"
+
+
+def chat_model() -> str:
+    return _resolve("CHAT")[0]
 
 
 def translation_model() -> str:
     """Model for the JD German→English translation call.
 
-    Translation is a low-stakes task; on Mistral's per-family rate buckets
-    routing it to a different family than the scorer (e.g. mistral-small
-    while CHAT_MODEL is mistral-medium) roughly halves the scorer's token
-    pressure. Falls back to chat_model() when TRANSLATION_MODEL is unset.
+    Translation is a low-stakes task; route it to a cheaper model or another
+    rate bucket (mistral-small next to mistral-medium, gpt-5-nano next to
+    luna). Falls back to chat_model() when nothing is configured.
     """
-    return TRANSLATION_MODEL or chat_model()
+    return _resolve("TRANSLATION")[0] or chat_model()
+
+
+def model_summary() -> str:
+    """One line for startup logs: which model each kind resolved to and from where."""
+    parts = []
+    for kind in _KINDS:
+        val, src = _resolve(kind)
+        if kind == "TRANSLATION" and not val:
+            val, src = chat_model(), "= chat"
+        parts.append(f"{kind.lower()}={val} ({src})")
+    return " | ".join(parts)
 
 
 # ── Chat call adapter ──────────────────────────────────────────────────────────
@@ -196,8 +248,4 @@ def chat_parse(client, **kwargs):
 
 
 def emb_model() -> str:
-    if LLM_PROVIDER == "azure":
-        return AZURE_EMB_DEPLOYMENT
-    if LLM_PROVIDER == "mistral":
-        return EMB_MODEL if EMB_MODEL != "text-embedding-3-small" else "mistral-embed"
-    return EMB_MODEL
+    return _resolve("EMB")[0]

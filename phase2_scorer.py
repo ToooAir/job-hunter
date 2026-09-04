@@ -33,7 +33,7 @@ load_dotenv()
 DB_PATH     = os.getenv("DB_PATH", "./data/jobs.db")
 QDRANT_PATH = os.getenv("QDRANT_PATH", "./qdrant_data")
 
-from utils.llm import make_client, chat_model, translation_model, emb_model, LLM_PROVIDER, NO_STRUCTURED_OUTPUT_PROVIDERS, rate_limit, chat_completion, chat_parse  # noqa: E402
+from utils.llm import make_client, chat_model, translation_model, emb_model, model_summary, LLM_PROVIDER, NO_STRUCTURED_OUTPUT_PROVIDERS, rate_limit, chat_completion, chat_parse  # noqa: E402
 from utils.apply_queue import title_excluded  # noqa: E402
 from utils.lang_req import german_required  # noqa: E402
 from utils.geo_de import has_non_de_marker  # noqa: E402
@@ -318,6 +318,28 @@ def check_kb_ready(qdrant_path: str) -> bool:
         return False
 
 
+class KBModelMismatch(RuntimeError):
+    """The KB was embedded with a different model than emb_model() — querying
+    it would fail on dimensions or, worse, silently retrieve nothing."""
+
+
+def check_kb_model(qdrant_path: str) -> None:
+    """Raise KBModelMismatch when .kb_model (written by kb_loader) names a
+    different embedding model than the one configured now. A KB built before
+    the marker existed only logs a warning."""
+    marker = Path(qdrant_path) / ".kb_model"
+    if not marker.exists():
+        log.warning("KB has no .kb_model marker — rebuild with python utils/kb_loader.py "
+                    "to enable the embedding-model guard")
+        return
+    built_with = marker.read_text(encoding="utf-8").strip()
+    if built_with != emb_model():
+        raise KBModelMismatch(
+            f"KB at {qdrant_path} was built with '{built_with}' but EMB model is now "
+            f"'{emb_model()}' — run python utils/kb_loader.py before scoring"
+        )
+
+
 def check_kb_fresh(qdrant_path: str, kb_dir: str = "./candidate_kb") -> None:
     """
     Warn if any candidate_kb/*.md file is newer than the last kb_loader run.
@@ -422,6 +444,7 @@ def retrieve_context(
     """Embed a single JD text and retrieve relevant KB context. Used for single-job scoring."""
     from qdrant_client import QdrantClient
 
+    check_kb_model(qdrant_path)
     client = make_client()
     qdrant = QdrantClient(path=qdrant_path)
 
@@ -515,7 +538,7 @@ def score_jobs(
     reset_errors: bool = False,
     job_ids: list[str] | None = None,
 ) -> list[ScoringResult]:
-    log.info("LLM provider: %s | model: %s | translation: %s", LLM_PROVIDER, chat_model(), translation_model())
+    log.info("LLM provider: %s | %s", LLM_PROVIDER, model_summary())
     client = make_client()
     conn = init_db(db_path)
 
@@ -619,6 +642,7 @@ def score_jobs(
 
     kb_ready = check_kb_ready(qdrant_path)
     if kb_ready:
+        check_kb_model(qdrant_path)   # raises before any token is spent
         check_kb_fresh(qdrant_path)
     if not kb_ready:
         log.error(
@@ -1207,6 +1231,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
     try:
         scored = score_jobs(rescore=args.rescore, reset_errors=args.reset_errors)
+    except KBModelMismatch as exc:
+        log.error("%s", exc)
+        sys.exit(2)
     except TransientAbort as exc:
         log.warning("中止本輪評分（%s）— exit %d，scheduler 將於網路恢復後重試", exc, EXIT_TRANSIENT)
         sys.exit(EXIT_TRANSIENT)

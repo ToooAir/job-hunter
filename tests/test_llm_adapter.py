@@ -37,8 +37,13 @@ class _FakeClient:
 class ChatAdapterTest(unittest.TestCase):
     def setUp(self):
         llm._QUIRKS.clear()
+        # phase2_scorer's load_dotenv() may have pulled CHAT_REASONING_EFFORT
+        # from the developer's .env into this process — tests pin it.
+        self._effort = mock.patch.object(llm, "CHAT_REASONING_EFFORT", "")
+        self._effort.start()
 
     def tearDown(self):
+        self._effort.stop()
         llm._QUIRKS.clear()
 
     def test_learns_temperature_then_max_tokens(self):
@@ -109,16 +114,87 @@ class KbThresholdTest(unittest.TestCase):
     0.60 mistral floor emptied every retrieval on text-embedding-3-small)."""
 
     def test_default_per_model(self):
+        import os
         import phase2_scorer as ps
-        with mock.patch.object(ps, "emb_model", return_value="text-embedding-3-small"), \
-             mock.patch.dict("os.environ", {}, clear=False):
-            import os
-            os.environ.pop("KB_SCORE_THRESHOLD", None)
-            self.assertAlmostEqual(ps._kb_score_threshold(), 0.35)
-        with mock.patch.object(ps, "emb_model", return_value="mistral-embed"):
-            self.assertAlmostEqual(ps._kb_score_threshold(), 0.60)
+        env = {k: v for k, v in os.environ.items() if k != "KB_SCORE_THRESHOLD"}
+        with mock.patch.dict("os.environ", env, clear=True):
+            with mock.patch.object(ps, "emb_model", return_value="text-embedding-3-small"):
+                self.assertAlmostEqual(ps._kb_score_threshold(), 0.35)
+            with mock.patch.object(ps, "emb_model", return_value="mistral-embed"):
+                self.assertAlmostEqual(ps._kb_score_threshold(), 0.60)
 
     def test_env_override(self):
         import phase2_scorer as ps
         with mock.patch.dict("os.environ", {"KB_SCORE_THRESHOLD": "0.42"}):
             self.assertAlmostEqual(ps._kb_score_threshold(), 0.42)
+
+
+class ModelResolutionTest(unittest.TestCase):
+    """Model names are provider-scoped; another provider's leftovers are ignored."""
+
+    def _env(self, provider, **env):
+        return (mock.patch.object(llm, "LLM_PROVIDER", provider),
+                mock.patch.dict("os.environ", env, clear=False))
+
+    def _resolve(self, provider, env, clear=("CHAT_MODEL", "TRANSLATION_MODEL", "EMB_MODEL",
+                                              "AZURE_CHAT_DEPLOYMENT", "AZURE_TRANSLATION_DEPLOYMENT",
+                                              "AZURE_EMB_DEPLOYMENT", "MISTRAL_CHAT_MODEL",
+                                              "MISTRAL_TRANSLATION_MODEL", "MISTRAL_EMB_MODEL")):
+        import os
+        base = {k: v for k, v in os.environ.items() if k not in clear}
+        base.update(env)
+        with mock.patch.object(llm, "LLM_PROVIDER", provider), \
+             mock.patch.dict("os.environ", base, clear=True):
+            return llm.chat_model(), llm.translation_model(), llm.emb_model()
+
+    def test_azure_ignores_generic_chat_and_emb_but_honours_generic_translation(self):
+        chat, tr, emb = self._resolve("azure", {
+            "AZURE_CHAT_DEPLOYMENT": "gpt-5.6-luna", "AZURE_EMB_DEPLOYMENT": "text-embedding-3-small",
+            "CHAT_MODEL": "mistral-medium-latest", "EMB_MODEL": "mistral-embed",
+            "TRANSLATION_MODEL": "gpt-5-nano"})
+        self.assertEqual((chat, tr, emb), ("gpt-5.6-luna", "gpt-5-nano", "text-embedding-3-small"))
+
+    def test_azure_scoped_translation_wins_over_generic(self):
+        _, tr, _ = self._resolve("azure", {"AZURE_CHAT_DEPLOYMENT": "luna",
+                                           "AZURE_TRANSLATION_DEPLOYMENT": "gpt-5-nano",
+                                           "TRANSLATION_MODEL": "mistral-small-2603"})
+        self.assertEqual(tr, "gpt-5-nano")
+
+    def test_translation_falls_back_to_chat(self):
+        chat, tr, _ = self._resolve("azure", {"AZURE_CHAT_DEPLOYMENT": "luna"})
+        self.assertEqual((chat, tr), ("luna", "luna"))
+
+    def test_mistral_scoped_then_generic_then_default(self):
+        self.assertEqual(self._resolve("mistral", {"MISTRAL_CHAT_MODEL": "mistral-medium-latest",
+                                                   "CHAT_MODEL": "gpt-4o"})[0], "mistral-medium-latest")
+        self.assertEqual(self._resolve("mistral", {"CHAT_MODEL": "mistral-large-latest"})[0], "mistral-large-latest")
+        # the .env.example sample values are not mistral models → provider default
+        self.assertEqual(self._resolve("mistral", {"CHAT_MODEL": "gpt-4o",
+                                                   "EMB_MODEL": "text-embedding-3-small"})[::2],
+                         ("mistral-small-2603", "mistral-embed"))
+
+    def test_openai_uses_generic(self):
+        self.assertEqual(self._resolve("openai", {"CHAT_MODEL": "gpt-5-mini", "EMB_MODEL": "text-embedding-3-large"})[::2],
+                         ("gpt-5-mini", "text-embedding-3-large"))
+
+    def test_summary_names_sources(self):
+        import os
+        with mock.patch.object(llm, "LLM_PROVIDER", "azure"), \
+             mock.patch.dict("os.environ", {"AZURE_CHAT_DEPLOYMENT": "luna", "TRANSLATION_MODEL": "nano"}):
+            summary = llm.model_summary()
+        self.assertIn("chat=luna (AZURE_CHAT_DEPLOYMENT)", summary)
+        self.assertIn("translation=nano (TRANSLATION_MODEL)", summary)
+
+
+class KbModelGuardTest(unittest.TestCase):
+    def test_mismatch_raises_and_missing_marker_only_warns(self):
+        import tempfile, pathlib
+        import phase2_scorer as ps
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(ps, "emb_model", return_value="text-embedding-3-small"):
+                ps.check_kb_model(d)  # no marker → warning only
+                pathlib.Path(d, ".kb_model").write_text("mistral-embed")
+                with self.assertRaises(ps.KBModelMismatch):
+                    ps.check_kb_model(d)
+                pathlib.Path(d, ".kb_model").write_text("text-embedding-3-small\n")
+                ps.check_kb_model(d)  # same model → fine
