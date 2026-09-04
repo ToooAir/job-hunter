@@ -11,7 +11,7 @@ import logging
 import re
 
 from utils.db import init_db, fetch_job_by_id, set_visa_analysis
-from utils.llm import make_client, chat_model, rate_limit
+from utils.llm import make_client, chat_model, rate_limit, chat_completion
 
 log = logging.getLogger(__name__)
 
@@ -211,7 +211,7 @@ def analyze_visa_compatibility(job_id: str, db_path: str, lang: str = "en") -> s
     client = make_client()
     rate_limit()
     try:
-        resp = client.chat.completions.create(
+        resp = chat_completion(client,
             model=chat_model(),
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,

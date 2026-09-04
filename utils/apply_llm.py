@@ -43,11 +43,11 @@ def _sanitize(text: str) -> str:
 
 def _chat_json(client, model, system, user, max_tokens=1500) -> dict | None:
     """JSON-mode chat with one re-ask on unparseable output."""
-    from utils.llm import rate_limit
+    from utils.llm import rate_limit, chat_completion
     for _ in range(2):
         rate_limit()
         CALL_STATS["calls"] += 1
-        resp = client.chat.completions.create(
+        resp = chat_completion(client,
             model=model,
             response_format={"type": "json_object"},
             temperature=0.2,

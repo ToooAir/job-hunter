@@ -2,6 +2,9 @@
 utils/llm.py — Shared OpenAI-compatible client factory + rate limiter.
 Reads LLM_PROVIDER and related env vars; call make_client() / chat_model() / emb_model() anywhere.
 Call rate_limit() before every API request to respect provider limits.
+Route chat calls through chat_completion() / chat_parse() instead of the raw
+client: they adapt request parameters to the model's quirks (reasoning models
+reject temperature and max_tokens) and inject CHAT_REASONING_EFFORT.
 
 Supported providers:
   openai   — OpenAI API (default)
@@ -27,6 +30,7 @@ AZURE_EMB_DEPLOYMENT  = os.getenv("AZURE_EMB_DEPLOYMENT", "text-embedding-3-smal
 CUSTOM_BASE_URL       = os.getenv("CUSTOM_BASE_URL", "")
 CHAT_MODEL            = os.getenv("CHAT_MODEL", "gpt-4o")
 TRANSLATION_MODEL     = os.getenv("TRANSLATION_MODEL", "")   # empty → same as chat_model()
+CHAT_REASONING_EFFORT = os.getenv("CHAT_REASONING_EFFORT", "")  # e.g. "low"; empty → not sent
 EMB_MODEL             = os.getenv("EMB_MODEL", "text-embedding-3-small")
 MISTRAL_API_KEY       = os.getenv("MISTRAL_API_KEY", "")
 MISTRAL_BASE_URL      = "https://api.mistral.ai/v1"
@@ -117,6 +121,71 @@ def translation_model() -> str:
     pressure. Falls back to chat_model() when TRANSLATION_MODEL is unset.
     """
     return TRANSLATION_MODEL or chat_model()
+
+
+# ── Chat call adapter ──────────────────────────────────────────────────────────
+# Reasoning models (GPT-5 family, incl. Azure deployments of them) reject
+# temperature != 1, want max_completion_tokens instead of max_tokens, and take
+# reasoning_effort. Deployment names are arbitrary, so instead of guessing from
+# the model id the adapter learns from the first 400 and remembers the quirk
+# for the rest of the process. Learned once per process, not per model: every
+# call site here uses the same provider, so the quirks are the same.
+_QUIRKS: set[str] = set()
+_QUIRKS_LOCK = threading.Lock()
+_QUIRK_MARKERS = {
+    "temperature": "no_temperature",
+    "max_tokens": "max_completion_tokens",
+    "reasoning_effort": "no_reasoning_effort",
+}
+
+
+def _adapt_chat_kwargs(kwargs: dict) -> dict:
+    kw = dict(kwargs)
+    if CHAT_REASONING_EFFORT and "reasoning_effort" not in kw:
+        kw["reasoning_effort"] = CHAT_REASONING_EFFORT
+    if "no_temperature" in _QUIRKS:
+        kw.pop("temperature", None)
+    if "max_completion_tokens" in _QUIRKS and "max_tokens" in kw:
+        kw["max_completion_tokens"] = kw.pop("max_tokens")
+    if "no_reasoning_effort" in _QUIRKS:
+        kw.pop("reasoning_effort", None)
+    return kw
+
+
+def _learn_quirk(exc: Exception, sent: dict) -> bool:
+    """Record which parameter a 400 complained about. True if something new was learned."""
+    msg = str(exc)
+    learned = False
+    with _QUIRKS_LOCK:
+        for param, quirk in _QUIRK_MARKERS.items():
+            if param in msg and param in sent and quirk not in _QUIRKS:
+                _QUIRKS.add(quirk)
+                learned = True
+    return learned
+
+
+def _call_with_quirks(fn, kwargs: dict):
+    """Call fn(**kwargs), learning one rejected parameter per 400 and retrying
+    until the request goes through or a 400 teaches nothing new."""
+    import openai
+    for _ in range(len(_QUIRK_MARKERS) + 1):
+        sent = _adapt_chat_kwargs(kwargs)
+        try:
+            return fn(**sent)
+        except openai.BadRequestError as exc:
+            if not _learn_quirk(exc, sent):
+                raise
+    return fn(**_adapt_chat_kwargs(kwargs))
+
+
+def chat_completion(client, **kwargs):
+    """client.chat.completions.create(**kwargs) with model-quirk adaptation."""
+    return _call_with_quirks(client.chat.completions.create, kwargs)
+
+
+def chat_parse(client, **kwargs):
+    """client.beta.chat.completions.parse(**kwargs) with model-quirk adaptation."""
+    return _call_with_quirks(client.beta.chat.completions.parse, kwargs)
 
 
 def emb_model() -> str:
