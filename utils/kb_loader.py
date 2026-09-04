@@ -121,6 +121,12 @@ def build_kb(
         encoding="utf-8",
     )
     log.info("build_kb: wrote timestamp → %s", ts_file)
+    # Record which embedding model built the vectors: the scorer refuses to
+    # query this collection with a different one (dimension and similarity
+    # scale both differ between models — 2026-09-04).
+    model_file = Path(qdrant_path) / ".kb_model"
+    model_file.write_text(emb_model(), encoding="utf-8")
+    log.info("build_kb: wrote embedding model → %s (%s)", model_file, emb_model())
 
 
 if __name__ == "__main__":
