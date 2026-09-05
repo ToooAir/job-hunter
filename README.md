@@ -30,7 +30,7 @@ This tool automates the tedious parts (scraping, deduplication, scoring, cover l
 ## Features
 
 **Pipeline**
-- Scrapes 17 job sources daily on a schedule (APIs + HTML, auto-deduped by JD content hash)
+- Scrapes 14 job sources daily on a schedule (APIs + HTML, auto-deduped by JD content hash); three more ship working but switched off
 - Detects and auto-translates German JDs to English before scoring
 - JDs sanitised before LLM injection — resists prompt injection attacks embedded in job postings
 - RAG-augmented LLM scoring against your personal resume knowledge base
@@ -75,12 +75,12 @@ Daily pipeline (runs inside Docker, interval-based catch-up):
 
 ```
 phase1_ingestor → remote_geo_triage → phase2_scorer → ats_scan → apply_stage1
-17 sources        Germany-eligibility  RAG + LLM       ATS platform  apply-queue
+14 sources        Germany-eligibility  RAG + LLM       ATS platform  apply-queue
 → SQLite,         relabeling of        scoring, CL,    + liveness    drafts for
 auto-deduped      remote locations     translation     check         human review
 ```
 
-**Phase 1** pulls from 17 sources and deduplicates by JD content hash (chars 50–550, skipping platform boilerplate). **Geo triage** relabels bare `Remote` listings by Germany-hiring eligibility and normalises German locations the keyword filters would miss (`"Dresden (DE)"`, `"54595 Prüm"`, second-tier cities) — outright-foreign listings are excluded from LLM scoring entirely, cutting scoring spend roughly in half. **Phase 2** detects German JDs, translates them, scores against your candidate knowledge base via RAG, and grades A/B/C. **ats_scan** classifies which ATS each queue candidate runs on (Greenhouse / Lever / Ashby / Workable / Personio / …) and whether the posting is still live. **Stage 1** builds a ranked apply queue (company-level dedup, daily budget) and generates grounded application drafts.
+**Phase 1** pulls from 14 sources and deduplicates by JD content hash (chars 50–550, skipping platform boilerplate). **Geo triage** relabels bare `Remote` listings by Germany-hiring eligibility and normalises German locations the keyword filters would miss (`"Dresden (DE)"`, `"54595 Prüm"`, second-tier cities) — outright-foreign listings are excluded from LLM scoring entirely, cutting scoring spend roughly in half. **Phase 2** detects German JDs, translates them, scores against your candidate knowledge base via RAG, and grades A/B/C. **ats_scan** classifies which ATS each queue candidate runs on (Greenhouse / Lever / Ashby / Workable / Personio / …) and whether the posting is still live. **Stage 1** builds a ranked apply queue (company-level dedup, daily budget) and generates grounded application drafts.
 
 **Phase 3** is a Streamlit dashboard for reviewing, editing, applying, and tracking your full interview pipeline. A companion browser extension autofills ATS forms from your profile and answers open questions via copy-paste — **you always review and click Submit yourself; nothing is ever auto-submitted.** See [`extension/README.md`](extension/README.md) for its install and usage guide.
 
@@ -97,7 +97,7 @@ job-hunter/
 ├── docker-compose.yml
 ├── run_pipeline.sh                   # Manual full-chain run (dashboard "Run now" button)
 ├── scheduler.py                      # Catch-up scheduler: interval-based, resumes interrupted runs
-├── phase1_ingestor.py                # Scrape jobs (17 sources)
+├── phase1_ingestor.py                # Scrape jobs (14 active sources, 3 switched off)
 ├── remote_geo_triage.py              # Relabel remote/mislabelled locations by Germany eligibility
 ├── phase2_scorer.py                  # LLM score + cover letter + interview brief
 ├── ats_scan.py                       # ATS platform classification + liveness for queue candidates
@@ -400,11 +400,8 @@ Replace the candidate profile section in this file with specific, concrete value
 | [EnglishJobs.de](https://englishjobs.de) | HTML scrape | English-only roles in Germany |
 | [Bundesagentur für Arbeit](https://api.arbeitsagentur.de) | REST API | Official German job register; nationwide + paginated. Endpoint and field names come from the site's own `config.js` — the v2 host is retired and its maintenance page answers with HTTP 200, so a stale URL fails silently |
 | [Remotive](https://remotive.com) | JSON API | Remote-only, English |
-| [Relocate.me](https://relocate.me) | HTML scrape | Roles with relocation support |
-| [Jobicy](https://jobicy.com) | JSON API | Remote-only; geo exclusion filter |
 | [Ashby ATS](https://jobs.ashbyhq.com) | GraphQL API | Per-company board; no auth needed |
 | [Workable ATS](https://apply.workable.com) | REST API | Per-company board; built-in 429 backoff |
-| [We Work Remotely](https://weworkremotely.com) | RSS feed | Programming + DevOps/sysadmin feeds |
 | [Greenhouse ATS](https://boards-api.greenhouse.io) | JSON API | Per-company board; no auth needed |
 | [Heise Jobs](https://jobs.heise.de) | HTML scrape | German IT job board; SSR with cumulative pagination |
 | [Personio ATS](https://personio.de) | XML feed | Per-company feed at `{slug}.jobs.personio.de/xml` |
@@ -414,7 +411,15 @@ Replace the candidate profile section in this file with specific, concrete value
 | [Jobware](https://www.jobware.de) | HTML scrape | German generalist board; internal postings only |
 | LinkedIn / StepStone / other | Manual via dashboard | Search buttons + manual job entry form |
 
-A source that returns "0 new, 0 skipped" for three consecutive runs raises a warning (`utils/source_health.py`). A live source always *skips* postings it has seen before, so complete silence means a dead or changed endpoint — WeAreDevelopers went quiet for 16 days before anyone read the log.
+**Switched off** — the scrapers still work, the calls are commented out in `phase1_ingestor.main` with the reason next to them. Re-enable by uncommenting:
+
+| Source | Method | Why off |
+|--------|--------|---------|
+| [Relocate.me](https://relocate.me) | HTML scrape | A relocation board stops being relevant once you are in the country |
+| [Jobicy](https://jobicy.com) | JSON API | Worldwide-remote board: 0 submissions, every draft abandoned on geo/role mismatch (2026-07-08 abandoned-drafts review) |
+| [We Work Remotely](https://weworkremotely.com) | RSS feed | Same review, same verdict — drafts died on dead or off-target links |
+
+A source that returns "0 new, 0 skipped" for three consecutive runs raises a warning (`utils/source_health.py`) — note this only covers sources the run actually calls, so a switched-off one stays silent by design. A live source always *skips* postings it has seen before, so complete silence means a dead or changed endpoint — WeAreDevelopers went quiet for 16 days before anyone read the log.
 
 ---
 
