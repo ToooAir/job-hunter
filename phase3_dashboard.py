@@ -21,6 +21,7 @@ from utils.db import (
     get_company_applications, auto_expire_stale_jobs, auto_ghost_stale_applications,
     get_focus, set_focus,
     PIPELINE_STATUSES, daily_applied_counts, today_local_iso, week_ago_local_iso,
+    DRAFT_STALE_DAYS, draft_stock,
     _now_local_iso as now_local_iso,
 )
 
@@ -45,6 +46,9 @@ STRINGS: dict[str, dict[str, str]] = {
         "today_applied":      "Applied Today ✅",
         "this_week_applied":  "Applied This Week ✅",
         # LLM cost
+        "draft_stock":        "📮 {n} draft(s) waiting · oldest {d}d · {w} applied this week",
+        "draft_stock_none":   "📮 No drafts waiting · {w} applied this week",
+        "draft_stock_stale":  "📮 {n} draft(s) waiting · **{s} older than {t}d, oldest {d}d** · {w} applied this week",
         "cost_header":        "💸 LLM Cost (est.)",
         "cost_today":         "Today (est.)",
         "cost_month":         "This Month (est.)",
@@ -298,6 +302,9 @@ STRINGS: dict[str, dict[str, str]] = {
         "today_applied":      "今日投遞 ✅",
         "this_week_applied":  "本週投遞 ✅",
         # LLM cost
+        "draft_stock":        "📮 待投 {n} 張 · 最舊 {d} 天 · 本週已投 {w}",
+        "draft_stock_none":   "📮 沒有待投草稿 · 本週已投 {w}",
+        "draft_stock_stale":  "📮 待投 {n} 張 · **{s} 張超過 {t} 天、最舊 {d} 天** · 本週已投 {w}",
         "cost_header":        "💸 LLM 費用（估算）",
         "cost_today":         "今日 est.",
         "cost_month":         "本月 est.",
@@ -1017,6 +1024,18 @@ st.markdown(f"#### {T('trends_header')}")
 t1, t2 = st.columns(2)
 t1.metric(T("today_applied"), _today_cnt)
 t2.metric(T("this_week_applied"), _week_cnt)
+
+# ── Draft stock (drafts rot; nothing else was saying so) ───────────────────────
+_stock = draft_stock(conn)
+if not _stock["count"]:
+    st.caption(T("draft_stock_none").format(w=_week_cnt))
+elif _stock["stale"]:
+    st.warning(T("draft_stock_stale").format(
+        n=_stock["count"], s=_stock["stale"], t=DRAFT_STALE_DAYS,
+        d=_stock["oldest_days"], w=_week_cnt))
+else:
+    st.caption(T("draft_stock").format(
+        n=_stock["count"], d=_stock["oldest_days"], w=_week_cnt))
 
 # ── LLM cost (estimated, read off the usage ledger — never calls the provider) ──
 _cost = fetch_llm_cost()

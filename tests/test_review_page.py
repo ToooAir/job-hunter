@@ -8,6 +8,7 @@ import os
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -18,7 +19,10 @@ try:
 except ImportError:
     HAS_STREAMLIT = False
 
-from utils.db import create_application_snapshot, init_db  # noqa: E402
+from utils.db import (  # noqa: E402
+    DRAFT_STALE_DAYS, create_application_snapshot, draft_age_days,
+    draft_stock, init_db,
+)
 
 PAGE = str(Path(__file__).resolve().parents[1] / "pages" / "1_Apply_Review.py")
 
@@ -70,6 +74,36 @@ class ReviewPageTest(unittest.TestCase):
         at.run()
         self.assertFalse(at.exception, at.exception)
         return at
+
+    def _age(self, snapshot_id, days):
+        """Backdate a draft — create_application_snapshot always stamps now."""
+        ts = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%S")
+        self.conn.execute(
+            "UPDATE application_snapshots SET created_at = ? WHERE id = ?",
+            (ts, snapshot_id))
+        self.conn.commit()
+
+    def test_stale_drafts_are_flagged_and_sorted_first(self):
+        """A draft rots: the posting expires while it waits. The friction/score
+        order used to bury old drafts indefinitely — 2026-09-05 the oldest was
+        24 days old and three pointed at jobs already expired."""
+        fresh = self._draft("job-a", tier=2)
+        stale = self._draft("job-b", tier=2)
+        self._age(fresh, 1)
+        self._age(stale, DRAFT_STALE_DAYS + 13)
+        at = self._run()
+        self.assertTrue(at.warning)                    # the stale-drafts hint
+        self.assertIn(str(DRAFT_STALE_DAYS + 13), str(at.warning[0].value)
+                      + "".join(e.label for e in at.expander))
+        labels = [e.label for e in at.expander]
+        self.assertTrue(labels[0].startswith("🔴"), labels)
+        self.assertNotIn("🔴", labels[1])
+
+    def test_oldest_draft_metric(self):
+        sid = self._draft("job-a")
+        self._age(sid, 9)
+        at = self._run()
+        self.assertEqual(at.metric[1].value, "9 天")
 
     def test_renders_empty_queue(self):
         at = self._run()

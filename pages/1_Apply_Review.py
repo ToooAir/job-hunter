@@ -18,7 +18,8 @@ from datetime import datetime
 import streamlit as st
 from dotenv import load_dotenv
 
-from utils.db import get_focus, init_db, set_focus
+from utils.db import (DRAFT_STALE_DAYS, draft_age_days, draft_stock,
+                      get_focus, init_db, set_focus)
 from utils.snapshot_io import (
     abandon_snapshot,
     edit_snapshot,
@@ -37,6 +38,9 @@ _STRINGS = {
         "empty": "目前沒有待審草稿。先跑 apply_stage1.py。",
         "tier_filter": "Tier 篩選", "all": "全部",
         "match": "匹配", "created": "建立於", "channel": "管道",
+        "age_days": "{n} 天前生成", "age_stale": "🔴 {n} 天前生成",
+        "oldest_draft": "最舊草稿", "days_unit": "{n} 天",
+        "stale_hint": "{n} 張草稿放超過 {d} 天了 — 職缺會過期，先投這些。",
         "verifier_pass": "verifier 通過(全確定性,無生成內容需查)",
         "verifier_cleared": "✓ verifier 已獨立查核生成內容的事實(無捏造／洩漏／薪資・簽證一致)。"
                             "你只需判斷:語氣像不像你、適不適合這家公司 — 不必重查事實。",
@@ -88,6 +92,9 @@ _STRINGS = {
         "empty": "No drafts to review. Run apply_stage1.py first.",
         "tier_filter": "Tier filter", "all": "All",
         "match": "Match", "created": "Created", "channel": "Channel",
+        "age_days": "{n}d old", "age_stale": "🔴 {n}d old",
+        "oldest_draft": "Oldest draft", "days_unit": "{n}d",
+        "stale_hint": "{n} draft(s) have been sitting for more than {d} days — postings expire, send these first.",
         "verifier_pass": "verifier passed (fully deterministic, nothing generated to audit)",
         "verifier_cleared": "✓ Verifier independently checked the generated content "
                             "(no fabrication / leak / salary or visa mismatch). Your call "
@@ -531,7 +538,13 @@ def _draft_card(conn, snap: dict, applied_idx: dict) -> None:
     _, friction_label = _friction(snap)
     dup = _dup_applied(snap, applied_idx)
     dup_mark = {"job": "⛔ ", "company": "⚠️ "}.get(dup[0]) if dup else ""
-    header = (f"{dup_mark}T{tier} [{friction_label}] · {job.get('company')} — {job.get('title')}"
+    age = draft_age_days(snap.get("created_at"))
+    # the age belongs in the HEADER, not just the caption: cards are collapsed
+    # by default, and a reminder nobody can see without clicking is not one
+    age_mark = ""
+    if age is not None:
+        age_mark = (T("age_stale") if age > DRAFT_STALE_DAYS else T("age_days")).format(n=age) + " · "
+    header = (f"{dup_mark}{age_mark}T{tier} [{friction_label}] · {job.get('company')} — {job.get('title')}"
               + (f" · {T('match')} {score}" if score is not None else ""))
     # the 🎯 rerun (below) collapses every expander; keep the card the user is
     # actively applying from open, or they must re-open it to reach the URL
@@ -678,10 +691,15 @@ if _focus:
         st.info(T("focus_now").format(
             _fjob["company"], _fjob["title"], _focus["updated_at"][11:16]))
 
-m1, m2, m3 = st.columns(3)
+_stock = draft_stock(conn)
+m1, m2, m3, m4 = st.columns(4)
 m1.metric(T("drafts"), _count(conn, "draft"))
-m2.metric(T("submitted"), _count(conn, "submitted"))
-m3.metric(T("abandoned"), _count(conn, "abandoned"))
+m2.metric(T("oldest_draft"),
+          T("days_unit").format(n=_stock["oldest_days"]) if _stock["oldest_days"] is not None else "—")
+m3.metric(T("submitted"), _count(conn, "submitted"))
+m4.metric(T("abandoned"), _count(conn, "abandoned"))
+if _stock["stale"]:
+    st.warning(T("stale_hint").format(n=_stock["stale"], d=DRAFT_STALE_DAYS))
 
 drafts = fetch_work(conn, status="draft")
 tier_choice = st.radio(T("tier_filter"), [T("all"), "Tier 2", "Tier 3"],
@@ -694,10 +712,18 @@ elif tier_choice == "Tier 3":
 if not drafts:
     st.info(T("empty"))
 else:
-    # friction first (least manual work left), then match score — surfaces
-    # high-value, low-effort drafts at the top of the queue.
-    drafts.sort(key=lambda d: (_friction(d)[0],
-                               -(d["job"].get("match_score") or 0)))
+    # Stale drafts (older than DRAFT_STALE_DAYS) float to the top, oldest
+    # first: they rot, and the friction/score order buried them for weeks.
+    # Everything else keeps that order — friction first (least manual work
+    # left), then match score — which surfaces high-value, low-effort drafts.
+    def _order(d):
+        age = draft_age_days(d.get("created_at")) or 0
+        stale = age > DRAFT_STALE_DAYS
+        return (0 if stale else 1,
+                -age if stale else 0,
+                _friction(d)[0],
+                -(d["job"].get("match_score") or 0))
+    drafts.sort(key=_order)
     applied_idx = _applied_lookup(conn)
     for snap in drafts:
         _draft_card(conn, snap, applied_idx)

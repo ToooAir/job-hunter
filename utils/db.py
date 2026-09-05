@@ -588,6 +588,46 @@ def week_ago_local_iso(now: datetime | None = None) -> str:
     return ((now or datetime.now()) - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%S")
 
 
+# ── Draft ageing ───────────────────────────────────────────────────────────────
+# A draft rots: the posting expires, the company fills the role, the enthusiasm
+# in the cover letter goes stale. Nothing was measuring that — the oldest draft
+# on 2026-09-05 was 24 days old and three pointed at jobs already expired. These
+# two helpers feed the reminder; nothing auto-withdraws anything, because a
+# 20-day-old draft for a live posting is still worth sending.
+
+DRAFT_STALE_DAYS = 7
+
+
+def draft_age_days(created_at: str | None, now: datetime | None = None) -> int | None:
+    """Whole days since a snapshot was drafted; None when unparseable.
+
+    created_at is a naive LOCAL timestamp (snapshot_io stamps it with
+    _now_local_iso), so it is compared against a naive local now. Reaching for
+    utcnow() here would shift every age by the CEST offset.
+    """
+    if not created_at:
+        return None
+    try:
+        ts = datetime.fromisoformat(str(created_at)[:19])
+    except ValueError:
+        return None
+    return max(0, ((now or datetime.now()) - ts).days)
+
+
+def draft_stock(conn: sqlite3.Connection, now: datetime | None = None) -> dict:
+    """How many drafts are waiting, how old the oldest is, how many are stale."""
+    rows = conn.execute(
+        "SELECT created_at FROM application_snapshots WHERE status = 'draft'"
+    ).fetchall()
+    ages = [a for a in (draft_age_days(r["created_at"], now) for r in rows)
+            if a is not None]
+    return {
+        "count":       len(rows),
+        "oldest_days": max(ages) if ages else None,
+        "stale":       sum(1 for a in ages if a > DRAFT_STALE_DAYS),
+    }
+
+
 def daily_applied_counts(conn: sqlite3.Connection, now: datetime | None = None) -> list[dict]:
     """Applications per day for the current week (Monday → today), local clock.
 
