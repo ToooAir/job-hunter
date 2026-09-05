@@ -164,5 +164,67 @@ class TestIndeedCountrySubdomain(unittest.TestCase):
         self.assertTrue(is_germany_location("Hamburg", "https://de.indeed.com/viewjob?jk=1"))
 
 
+class TestBareCountryAndCityNames(unittest.TestCase):
+    """2026-09-05: 516 already-scored rows carried a location the veto list did
+    not know — bare "US" alone was 399 of them. They were LLM-scored and then
+    sat in the queue's supply as jobs that can never reach a German employer.
+    One case per family added that day."""
+
+    def test_bare_us_is_vetoed(self):
+        for loc in ("US", "US Remote", "Houston (US)", "Remote, US, California"):
+            self.assertTrue(has_non_de_marker(loc), loc)
+
+    def test_us_does_not_eat_german_towns(self):
+        """The whole risk of a two-letter token: \b must keep it off these."""
+        for loc in ("Neuss", "Husum", "Neuss, Germany", "25813 Husum", "Cottbus"):
+            self.assertFalse(has_non_de_marker(loc), loc)
+        self.assertTrue(is_germany_location("Neuss, Germany"))
+        self.assertTrue(is_germany_location("25813 Husum"))
+
+    def test_gulf_latam_africa_asia_country_names(self):
+        for loc in ("United Arab Emirates", "Saudi Arabia", "Doha, Qatar", "Chile",
+                    "Colombia", "Uruguay", "Nigeria", "Kenya", "Philippines",
+                    "Malaysia", "Thailand", "Bangalore, IN"):
+            self.assertTrue(has_non_de_marker(loc), loc)
+
+    def test_european_country_names_the_first_list_missed(self):
+        # \bczech\b never matched "Czechia" — that is why it is listed separately
+        for loc in ("Czechia", "Croatia", "Estonia", "Latvia", "Lithuania",
+                    "Slovenia", "Serbia", "Cyprus", "Malta", "Tirana"):
+            self.assertTrue(has_non_de_marker(loc), loc)
+
+    def test_german_language_country_names_from_bundesagentur(self):
+        for loc in ("SPANIEN", "NORWEGEN", "Mamer, LUXEMBURG", "M/V Louise Michel, ITALIEN",
+                    "Mladá Boleslav, TSCHECHISCHE_REPUBLIK", "Warschau, Polen",
+                    "Bukarest (Rumänien)", "Maynooth, Co. Kildare, Irland"):
+            self.assertTrue(has_non_de_marker(loc), loc)
+
+    def test_bare_city_names_without_a_country(self):
+        for loc in ("Los Angeles", "San Mateo", "Palo Alto", "Mountain View",
+                    "Remote / Ottawa", "Remote / Toronto", "Remote / New-York",
+                    "Seattle", "Boston", "Austin", "Nashville", "Cairo",
+                    "Melbourne", "Kaunas Office", "São Paulo", "Nantes"):
+            self.assertTrue(has_non_de_marker(loc), loc)
+
+    def test_us_state_suffix(self):
+        for loc in ("Reston, VA", "Nashville, TN", "Washington, DC",
+                    "Remote / Santa Clara, CA", "Remote / Mountain View, CA",
+                    "Austin, TX; Honolulu, HI; St. Louis, MO; Washington, DC"):
+            self.assertTrue(has_non_de_marker(loc), loc)
+
+    def test_state_suffix_does_not_claim_de_or_department_suffixes(self):
+        # ", DE" is how several sources write Germany — Delaware is excluded
+        # from the state list on purpose. ", IT" is a department, not Italy.
+        self.assertTrue(is_germany_location("Walldorf, DE, 69190"))
+        self.assertFalse(has_non_de_marker("Bad Homburg, IT"))
+        self.assertFalse(has_non_de_marker("Offenburg, Development"))
+
+    def test_ambiguous_pools_still_flow_to_the_scorer(self):
+        # absence of a marker is not evidence of Germany — these stay scorable
+        for loc in ("Remote", "Remote — EU", "Remote - EMEA", "Europe",
+                    "Homeoffice", "Wuppertal", "Erlangen", "Schwäbisch Hall"):
+            self.assertFalse(has_non_de_marker(loc), loc)
+
+
 if __name__ == "__main__":
     unittest.main()
