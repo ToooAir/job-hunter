@@ -77,6 +77,11 @@ GERMANY_PATTERNS = [
 # contain a GERMANY_PATTERNS hit or a 5-digit zip ("Halle, Belgium",
 # "94104 San Francisco") and Austrian/Swiss cities that would otherwise
 # rely on the country name being present.
+#
+# A mixed string ("Essen (Ruhr), Jakarta (Indonesien)") is vetoed as a whole
+# by design — see is_germany_location. Growing this list therefore also moves
+# a few mixed German+foreign strings out of the pool; the 2026-09-05 additions
+# moved 6 such strings, all of them already expired or skipped.
 _NON_DE_RE = re.compile(
     r"\b(united states|u\.s|usa|united kingdom|uk|england|scotland|wales|"
     r"ireland|spain|españa|france|italy|italia|portugal|netherlands|belgium|"
@@ -86,7 +91,7 @@ _NON_DE_RE = re.compile(
     r"canada|brazil|mexico|argentina|india|china|japan|korea|singapore|"
     r"australia|new zealand|israel|egypt|ägypten|south africa|"
     r"vienna|wien|zurich|zürich|geneva|genève|basel|graz|innsbruck|"
-    r"salzburg|linz|san francisco|new york|london|"
+    r"salzburg|linz|san francisco|new[- ]york|london|"
     # major EU cities that appear without a country name — a Spanish/French/…
     # 5-digit zip ("28046 Madrid") would otherwise pass as a German postal hit
     r"madrid|barcelona|valencia|sevilla|seville|"
@@ -100,9 +105,67 @@ _NON_DE_RE = re.compile(
     r"copenhagen|københavn|oslo|helsinki|tallinn|riga|vilnius|"
     r"porto|zagreb|belgrade|kyiv|kiev|istanbul|"
     # "Lisbonne" contains the pattern "bonn" — veto Lisbon spellings explicitly
-    r"lisbon|lisbonne|lissabon)\b",
+    r"lisbon|lisbonne|lissabon|"
+    # ── Added 2026-09-05 from measured leakage ──────────────────────────────
+    # 516 already-scored rows (49 A / 72 B) carried a location this list did
+    # not know, so they were LLM-scored and then polluted the queue's supply.
+    # Bare "US" was 399 of them; \b keeps it off Neuss/Husum (verified against
+    # all 7,684 distinct locations in the DB).
+    r"us|u\.s\.a|"
+    # Gulf + Middle East
+    r"united arab emirates|uae|saudi arabia|qatar|kuwait|bahrain|oman|"
+    # Latin America
+    r"chile|colombia|uruguay|ecuador|peru|venezuela|bolivia|paraguay|"
+    # Africa
+    r"nigeria|kenya|ghana|morocco|tunisia|"
+    # Asia-Pacific
+    r"philippines|malaysia|indonesia|thailand|vietnam|taiwan|hong kong|"
+    r"pakistan|bangladesh|sri lanka|nepal|"
+    # Europe the original list missed. "czechia" is separate on purpose:
+    # \bczech\b above does not match it.
+    r"estonia|latvia|lithuania|croatia|slovenia|serbia|bosnia|montenegro|"
+    r"albania|moldova|belarus|czechia|cyprus|malta|iceland|"
+    # German-language country names — bundesagentur writes these, sometimes
+    # SHOUTED with an underscore ("Mladá Boleslav, TSCHECHISCHE_REPUBLIK")
+    r"spanien|norwegen|luxemburg|italien|frankreich|niederlande|belgien|"
+    r"schweden|d(?:ä|ae)nemark|finnland|polen|tschechien|tschechische_republik|"
+    r"ungarn|rum(?:ä|ae)nien|bulgarien|griechenland|irland|kroatien|slowenien|"
+    r"slowakei|estland|lettland|litauen|t(?:ü|ue)rkei|vereinigte_staaten|"
+    r"gro(?:ß|ss)britannien|"
+    # Regions that exclude Germany by definition (EMEA does NOT — it includes it)
+    r"latam|apac|"
+    # Bare city names with no country: "Los Angeles", "Remote / Ottawa".
+    # Observed in the leak plus the global tech hubs of the same shape.
+    r"los angeles|san mateo|palo alto|mountain view|santa clara|san jose|"
+    r"san diego|seattle|portland|denver|dallas|houston|atlanta|chicago|miami|"
+    r"philadelphia|nashville|austin|boston|ann arbor|honolulu|st\.? louis|"
+    r"reston|concord|toronto|ottawa|vancouver|montreal|calgary|phoenix|"
+    r"s(?:ã|a)o paulo|buenos aires|bogot(?:á|a)|santiago|lima|montevideo|quito|"
+    r"bangalore|bengaluru|mumbai|hyderabad|chennai|pune|gurgaon|noida|"
+    r"manila|jakarta|bangkok|taipei|seoul|tokyo|osaka|shanghai|beijing|"
+    r"shenzhen|kuala lumpur|ho chi minh|hanoi|"
+    r"dubai|abu dhabi|doha|riyadh|jeddah|tel aviv|cairo|lagos|nairobi|casablanca|"
+    r"melbourne|sydney|brisbane|perth|auckland|wellington|"
+    r"kaunas|tirana|nantes|bordeaux|lille|strasbourg|stra(?:ß|ss)burg|"
+    r"orl(?:é|e)ans|londres|swindon|manchester|birmingham|edinburgh|glasgow|"
+    r"leeds|bristol|cambridge|oxford)\b",
     re.I,
 )
+
+# "Reston, VA", "Nashville, TN", "Remote / Santa Clara, CA" — a US state code
+# as a comma-delimited token. Deliberately excludes DE (Delaware): ", DE" is
+# how several sources write Germany, and _DE_TOKEN_RE below relies on it.
+_US_STATE_SUFFIX_RE = re.compile(
+    r",\s*(?:a[klrz]|c[aot]|dc|fl|ga|hi|i[adln]|k[sy]|la|m[adeinost]|"
+    r"n[cdehjmvy]|o[hkr]|pa|ri|s[cd]|tn|tx|ut|v[at]|w[aivy])\b",
+    re.I,
+)
+
+
+def _text_is_non_de(location_low: str) -> bool:
+    """Both textual veto rules — a country/city name, or a US state suffix."""
+    return bool(_NON_DE_RE.search(location_low)
+                or _US_STATE_SUFFIX_RE.search(location_low))
 
 _DE_POSTAL_RE = re.compile(r"\b\d{5}\b")
 # ", DE" as a comma-delimited token — e.g. "Walldorf, DE, 69190"
@@ -151,7 +214,7 @@ def has_non_de_marker(location: str | None, url: str | None = None) -> bool:
     return False — absence of a marker is not evidence of Germany, so they
     still get scored.
     """
-    return bool(_NON_DE_RE.search((location or "").lower())) or url_is_non_de(url)
+    return _text_is_non_de((location or "").lower()) or url_is_non_de(url)
 
 
 def is_germany_location(location: str | None, url: str | None = None) -> bool:
@@ -167,7 +230,7 @@ def is_germany_location(location: str | None, url: str | None = None) -> bool:
     if url_is_non_de(url):
         return False
     low = loc.lower()
-    if _NON_DE_RE.search(low):
+    if _text_is_non_de(low):
         return False
     if _DE_TOKEN_RE.search(low) or _DE_POSTAL_RE.search(low):
         return True
