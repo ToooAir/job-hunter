@@ -26,7 +26,7 @@ def build_kb(
     from qdrant_client.models import Distance, VectorParams, PointStruct
     from dotenv import load_dotenv
     load_dotenv()
-    from utils.llm import make_client, emb_model
+    from utils.llm import make_client, emb_model, embed
 
     openai_client = make_client()
     qdrant = QdrantClient(path=qdrant_path)
@@ -81,10 +81,7 @@ def build_kb(
     vectors: list[list[float]] = []
     for start in range(0, len(chunks), BATCH):
         batch_texts = [c["text"] for c in chunks[start : start + BATCH]]
-        resp = openai_client.embeddings.create(
-            model=emb_model(),
-            input=batch_texts,
-        )
+        resp = embed(openai_client, batch_texts)
         vectors.extend([e.embedding for e in resp.data])
         log.info("  embedded %d/%d chunks", min(start + BATCH, len(chunks)), len(chunks))
 

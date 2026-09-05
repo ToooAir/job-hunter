@@ -14,6 +14,7 @@ import pyperclip
 import streamlit as st
 import yaml
 
+from utils.llm import daily_budget as llm_daily_budget
 from utils.db import (
     init_db, upsert_job, update_status, set_follow_up, set_notes,
     add_interview_record, get_interview_records, delete_interview_record,
@@ -43,6 +44,22 @@ STRINGS: dict[str, dict[str, str]] = {
         "trends_header":      "📈 Application Trends",
         "today_applied":      "Applied Today ✅",
         "this_week_applied":  "Applied This Week ✅",
+        # LLM cost
+        "cost_header":        "💸 LLM Cost (est.)",
+        "cost_today":         "Today (est.)",
+        "cost_month":         "This Month (est.)",
+        "cost_calls":         "Calls Today",
+        "cost_budget":        "Daily budget ${budget} · est. from token counts — the provider invoice is the authority.",
+        "cost_no_budget":     "No daily budget set (LLM_DAILY_BUDGET_USD) · est. from token counts — the provider invoice is the authority.",
+        "cost_unpriced":      "⚠️ {n} call(s) this month used a model with no price — invisible to the budget gate.",
+        "cost_by_model":      "**LLM Cost by Model (this month, est.)**",
+        "cost_no_data":       "No LLM usage recorded yet (data/llm_usage.jsonl).",
+        "col_model":          "Model",
+        "col_kind":           "Kind",
+        "col_calls":          "Calls",
+        "col_tokens_in":      "Input Tokens",
+        "col_tokens_out":     "Output Tokens",
+        "col_est_usd":        "Est. $",
         "more_stats_expander": "📊 More Analytics",
         "stats_expander":     "📊 Analytics",
         "grade_dist":         "**Grade Distribution**",
@@ -280,6 +297,22 @@ STRINGS: dict[str, dict[str, str]] = {
         "trends_header":      "📈 投遞趨勢",
         "today_applied":      "今日投遞 ✅",
         "this_week_applied":  "本週投遞 ✅",
+        # LLM cost
+        "cost_header":        "💸 LLM 費用（估算）",
+        "cost_today":         "今日 est.",
+        "cost_month":         "本月 est.",
+        "cost_calls":         "今日呼叫數",
+        "cost_budget":        "每日預算 ${budget} · 依 token 數估算，實際以供應商帳單為準。",
+        "cost_no_budget":     "未設每日預算（LLM_DAILY_BUDGET_USD）· 依 token 數估算，實際以供應商帳單為準。",
+        "cost_unpriced":      "⚠️ 本月有 {n} 次呼叫的模型沒有價格，預算閘看不到這些花費。",
+        "cost_by_model":      "**LLM 費用依模型拆分（本月，估算）**",
+        "cost_no_data":       "尚無 LLM 用量紀錄（data/llm_usage.jsonl）。",
+        "col_model":          "模型",
+        "col_kind":           "用途",
+        "col_calls":          "呼叫數",
+        "col_tokens_in":      "輸入 token",
+        "col_tokens_out":     "輸出 token",
+        "col_est_usd":        "估算 $",
         "more_stats_expander": "📊 更多統計",
         "stats_expander":     "📊 統計分析",
         "grade_dist":         "**等級分布**",
@@ -779,6 +812,58 @@ def fetch_job_detail(conn, job_id: str) -> dict | None:
 
 
 @st.cache_data(ttl=60)
+def fetch_llm_cost() -> dict:
+    """Estimated LLM spend, read off data/llm_usage.jsonl (written by utils/llm).
+
+    File-only — the dashboard never calls the provider for this. Costs are
+    estimates derived from token counts; the invoice is the authority.
+    """
+    import os
+
+    path  = Path(os.getenv("LLM_USAGE_PATH", "./data/llm_usage.jsonl"))
+    today = today_iso()          # Europe/Berlin — the clock utils/llm stamps with
+    month = today[:7]
+    out = {"today_usd": 0.0, "month_usd": 0.0, "today_calls": 0,
+           "unpriced": 0, "by_model": pd.DataFrame(), "has_data": False}
+    if not path.exists():
+        return out
+    per_model: dict[tuple[str, str], dict] = {}
+    try:
+        with path.open(encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                ts = str(rec.get("ts", ""))
+                if not ts.startswith(month):
+                    continue
+                out["has_data"] = True
+                est = rec.get("est_usd")
+                usd = float(est) if est else 0.0
+                out["month_usd"] += usd
+                if est is None:
+                    out["unpriced"] += 1
+                if ts.startswith(today):
+                    out["today_usd"] += usd
+                    out["today_calls"] += 1
+                key = (rec.get("model") or "?", rec.get("kind") or "?")
+                agg = per_model.setdefault(
+                    key, {"model": key[0], "kind": key[1], "calls": 0,
+                          "tokens_in": 0, "tokens_out": 0, "est_usd": 0.0})
+                agg["calls"]      += 1
+                agg["tokens_in"]  += int(rec.get("prompt_tokens") or 0)
+                agg["tokens_out"] += int(rec.get("completion_tokens") or 0)
+                agg["est_usd"]    += usd
+    except OSError:
+        return out
+    if per_model:
+        out["by_model"] = pd.DataFrame(
+            sorted(per_model.values(), key=lambda r: -r["est_usd"]))
+    return out
+
+
+@st.cache_data(ttl=60)
 def fetch_stats(_conn) -> dict:
     """Return all data needed for the stats expander (language-neutral column names)."""
     # Grade distribution
@@ -933,6 +1018,22 @@ t1, t2 = st.columns(2)
 t1.metric(T("today_applied"), _today_cnt)
 t2.metric(T("this_week_applied"), _week_cnt)
 
+# ── LLM cost (estimated, read off the usage ledger — never calls the provider) ──
+_cost = fetch_llm_cost()
+st.markdown(f"#### {T('cost_header')}")
+if _cost["has_data"]:
+    c1, c2, c3 = st.columns(3)
+    c1.metric(T("cost_today"), f"${_cost['today_usd']:.2f}")
+    c2.metric(T("cost_month"), f"${_cost['month_usd']:.2f}")
+    c3.metric(T("cost_calls"), _cost["today_calls"])
+    _budget = llm_daily_budget()
+    st.caption(T("cost_budget").format(budget=f"{_budget:.2f}") if _budget is not None
+               else T("cost_no_budget"))
+    if _cost["unpriced"]:
+        st.caption(T("cost_unpriced").format(n=_cost["unpriced"]))
+else:
+    st.caption(T("cost_no_data"))
+
 # ── Everything else (incl. the trend charts): kept, but in a collapsed expander ──
 with st.expander(T("more_stats_expander"), expanded=False):
     col_daily, col_weekly = st.columns(2)
@@ -964,6 +1065,21 @@ with st.expander(T("more_stats_expander"), expanded=False):
             st.bar_chart(stats["lang_df"], y="cnt")
         else:
             st.caption(T("no_scored_jobs"))
+
+    st.markdown(T("cost_by_model"))
+    if not _cost["by_model"].empty:
+        _bm = _cost["by_model"].rename(columns={
+            "model":      T("col_model"),
+            "kind":       T("col_kind"),
+            "calls":      T("col_calls"),
+            "tokens_in":  T("col_tokens_in"),
+            "tokens_out": T("col_tokens_out"),
+            "est_usd":    T("col_est_usd"),
+        })
+        _bm[T("col_est_usd")] = _bm[T("col_est_usd")].map(lambda v: f"{v:.4f}")
+        st.dataframe(_bm, use_container_width=True, hide_index=True)
+    else:
+        st.caption(T("cost_no_data"))
 
     st.markdown(T("funnel_title"))
     if not stats["funnel_df"].empty and stats["funnel_df"]["count"].sum() > 0:

@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from utils.llm import make_client, chat_model, emb_model, LLM_PROVIDER, rate_limit, chat_completion  # noqa: E402
+from utils.llm import make_client, chat_model, emb_model, LLM_PROVIDER, rate_limit, chat_completion, embed  # noqa: E402
 
 print(f"Provider : {LLM_PROVIDER}")
 print(f"Chat model: {chat_model()}")
@@ -37,8 +37,7 @@ except Exception as e:
 # ── Embedding ─────────────────────────────────────────────────────────────────
 print("[ Embed ]", end=" ", flush=True)
 try:
-    rate_limit()
-    resp = client.embeddings.create(model=emb_model(), input=["test"])
+    resp = embed(client, ["test"])
     dim = len(resp.data[0].embedding)
     print(f"✓  dim={dim}")
 except Exception as e:

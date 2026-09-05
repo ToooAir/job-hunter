@@ -180,7 +180,10 @@ class ModelResolutionTest(unittest.TestCase):
     def test_summary_names_sources(self):
         import os
         with mock.patch.object(llm, "LLM_PROVIDER", "azure"), \
-             mock.patch.dict("os.environ", {"AZURE_CHAT_DEPLOYMENT": "luna", "TRANSLATION_MODEL": "nano"}):
+             mock.patch.dict("os.environ", {"AZURE_CHAT_DEPLOYMENT": "luna", "TRANSLATION_MODEL": "nano",
+                                            # the deployed .env sets this and it wins over the
+                                            # generic var — pin it out (see JOB_HUNTER_SKIP_DOTENV)
+                                            "AZURE_TRANSLATION_DEPLOYMENT": ""}):
             summary = llm.model_summary()
         self.assertIn("chat=luna (AZURE_CHAT_DEPLOYMENT)", summary)
         self.assertIn("translation=nano (TRANSLATION_MODEL)", summary)

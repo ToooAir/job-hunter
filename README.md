@@ -235,6 +235,11 @@ OPENAI_API_KEY=sk-...
 # LLM_PROVIDER=custom
 # CUSTOM_BASE_URL=http://localhost:11434/v1
 
+# LLM cost guard (see "LLM cost guard" below)
+# LLM_DAILY_BUDGET_USD=2.0       # cap on one local day's estimated spend; unset = unlimited
+# LLM_PRICE_CHAT=0.20/0.10/1.20  # $/1M tokens as input/cached/output; overrides the built-in table
+# LLM_USAGE_PATH=./data/llm_usage.jsonl
+
 DB_PATH=./data/jobs.db
 QDRANT_PATH=./qdrant_data
 
@@ -245,6 +250,33 @@ QDRANT_PATH=./qdrant_data
 ```
 
 > **Switching providers**: If you change the embedding model (e.g. from OpenAI `text-embedding-3-small` at 1536-dim to Mistral `mistral-embed` at 1024-dim), you must rebuild the knowledge base: `python utils/kb_loader.py`
+
+### LLM cost guard
+
+Every chat and embedding call is routed through `utils/llm.py`, which appends one
+JSON line per call to `data/llm_usage.jsonl` — model, kind, token counts (input /
+cached / output) and an **estimated** cost from the price table in that module.
+The dashboard's 💸 card reads that file only; it never calls the provider. The
+provider's invoice is the authority, the ledger is a running approximation.
+
+`LLM_DAILY_BUDGET_USD` caps one local day (`TZ=Europe/Berlin`, the same clock the
+ledger stamps with). Phase 2 checks the day's total before each job; on reaching
+the cap it aborts with exit 75, so the scheduler backs off, the jobs stay
+`un-scored`, and **nothing is marked `error`**. Leaving it unset keeps the old
+unlimited behaviour — fine on a quota-limited free tier, risky on a pay-as-you-go
+provider where a runaway loop bills a card instead of stopping.
+
+A deliberate large rescore overrides the cap for one run instead of editing
+`.env` (which needs a container restart to take effect):
+
+```bash
+docker compose exec pipeline python scripts/rescore_generic_backend.py --cohort model-swap --budget 5
+docker compose exec pipeline python phase2_scorer.py --rescore --budget 5
+```
+
+If a model has no entry in the price table and no `LLM_PRICE_<KIND>` override,
+its calls are still logged with token counts but with `est_usd: null` — they are
+invisible to the budget gate, and both the log and the dashboard say so.
 
 ### `config/grading_rules.md`
 
