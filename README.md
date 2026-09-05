@@ -30,12 +30,13 @@ This tool automates the tedious parts (scraping, deduplication, scoring, cover l
 ## Features
 
 **Pipeline**
-- Scrapes 16 job sources daily on a schedule (APIs + HTML, auto-deduped by JD content hash)
+- Scrapes 17 job sources daily on a schedule (APIs + HTML, auto-deduped by JD content hash)
 - Detects and auto-translates German JDs to English before scoring
 - JDs sanitised before LLM injection — resists prompt injection attacks embedded in job postings
 - RAG-augmented LLM scoring against your personal resume knowledge base
-- A/B/C grading with source bonus (Relocate.me, Greenhouse, Lever, Bundesagentur)
+- A/B/C grading with a source bonus for direct ATS postings and a seniority-overreach penalty
 - Cover letter generated per job, editable with 3 tone presets (Formal / Startup / Concise)
+- Every LLM call metered to a JSONL ledger with an estimated cost, and an optional daily budget that stops a runaway run instead of a card
 
 **Semi-auto Apply**
 - Geo triage: bare "Remote" listings classified by Germany-hiring eligibility (free regex rules daily; optional LLM pass on demand), mislabelled German locations normalised so they reach the queue
@@ -50,17 +51,18 @@ This tool automates the tedious parts (scraping, deduplication, scoring, cover l
 **On-demand Analysis (per job, one click)**
 - Salary estimate with negotiation guidance (market range, opening price, floor)
 - Company research (scrapes about page + LLM summary: tech stack, culture, relocation stance)
-- Interview prep brief: role summary, key requirements, inferred pain points, your matched experience, 5 likely questions
+- Interview prep brief: role summary, key requirements, inferred pain points, your matched experience, 5 likely questions, plus suggested answers to the questions your own past first rounds recorded
 
 **Pipeline Tracking**
 - Full status flow: `scored → applied → interview_1 → interview_2 → offer / rejected`
 - Structured interview records per round (date, format, questions, self-rating, impressions)
 - Follow-up reminders (auto-set 7 days after applying, customisable)
 - Duplicate application warning (flags if you've applied to the same company before)
-- Stats dashboard: grade distribution, source yield table, application funnel, weekly trend
+- Draft ageing: waiting drafts show their age, stale ones (> 7 days) sort to the top and are flagged — postings expire while a draft waits
+- Stats dashboard: grade distribution, source yield table, application funnel, weekly trend, estimated LLM spend
 
 **Flexibility**
-- Works with OpenAI, Mistral AI (free tier), Azure OpenAI, or any local/custom LLM endpoint
+- Works with OpenAI, Mistral AI, Azure OpenAI, or any local/custom LLM endpoint — model names are provider-scoped, so switching `LLM_PROVIDER` switches the whole set and another provider's leftovers stay harmless
 - Fully Dockerised — one `docker compose up -d` to run
 - Dashboard UI supports **English / 中文** — toggle in the sidebar, no restart needed
 - All personal data (resume, keys, DB) stays local, never leaves your machine
@@ -73,12 +75,12 @@ Daily pipeline (runs inside Docker, interval-based catch-up):
 
 ```
 phase1_ingestor → remote_geo_triage → phase2_scorer → ats_scan → apply_stage1
-16 sources        Germany-eligibility  RAG + LLM       ATS platform  apply-queue
+17 sources        Germany-eligibility  RAG + LLM       ATS platform  apply-queue
 → SQLite,         relabeling of        scoring, CL,    + liveness    drafts for
 auto-deduped      remote locations     translation     check         human review
 ```
 
-**Phase 1** pulls from 16 sources and deduplicates by JD content hash (chars 50–550, skipping platform boilerplate). **Geo triage** relabels bare `Remote` listings by Germany-hiring eligibility and normalises German locations the keyword filters would miss (`"Dresden (DE)"`, `"54595 Prüm"`, second-tier cities) — outright-foreign listings are excluded from LLM scoring entirely, cutting scoring spend roughly in half. **Phase 2** detects German JDs, translates them, scores against your candidate knowledge base via RAG, and grades A/B/C. **ats_scan** classifies which ATS each queue candidate runs on (Greenhouse / Lever / Ashby / Workable / Personio / …) and whether the posting is still live. **Stage 1** builds a ranked apply queue (company-level dedup, daily budget) and generates grounded application drafts.
+**Phase 1** pulls from 17 sources and deduplicates by JD content hash (chars 50–550, skipping platform boilerplate). **Geo triage** relabels bare `Remote` listings by Germany-hiring eligibility and normalises German locations the keyword filters would miss (`"Dresden (DE)"`, `"54595 Prüm"`, second-tier cities) — outright-foreign listings are excluded from LLM scoring entirely, cutting scoring spend roughly in half. **Phase 2** detects German JDs, translates them, scores against your candidate knowledge base via RAG, and grades A/B/C. **ats_scan** classifies which ATS each queue candidate runs on (Greenhouse / Lever / Ashby / Workable / Personio / …) and whether the posting is still live. **Stage 1** builds a ranked apply queue (company-level dedup, daily budget) and generates grounded application drafts.
 
 **Phase 3** is a Streamlit dashboard for reviewing, editing, applying, and tracking your full interview pipeline. A companion browser extension autofills ATS forms from your profile and answers open questions via copy-paste — **you always review and click Submit yourself; nothing is ever auto-submitted.** See [`extension/README.md`](extension/README.md) for its install and usage guide.
 
@@ -95,7 +97,7 @@ job-hunter/
 ├── docker-compose.yml
 ├── run_pipeline.sh                   # Manual full-chain run (dashboard "Run now" button)
 ├── scheduler.py                      # Catch-up scheduler: interval-based, resumes interrupted runs
-├── phase1_ingestor.py                # Scrape jobs (16 sources)
+├── phase1_ingestor.py                # Scrape jobs (17 sources)
 ├── remote_geo_triage.py              # Relabel remote/mislabelled locations by Germany eligibility
 ├── phase2_scorer.py                  # LLM score + cover letter + interview brief
 ├── ats_scan.py                       # ATS platform classification + liveness for queue candidates
@@ -103,6 +105,7 @@ job-hunter/
 ├── apply_api.py                      # Local sidecar API for the browser extension (127.0.0.1:8531)
 ├── phase3_dashboard.py               # Streamlit review dashboard (EN / 中文)
 ├── extension/                        # Browser extension: ATS autofill + answer panel
+├── scripts/                          # One-off backfills and measurement experiments
 ├── tests/                            # Unit tests (run inside the container)
 ├── check_api.py                      # Quick LLM + embedding connectivity check
 ├── LICENSE
@@ -123,15 +126,17 @@ job-hunter/
 ├── docs/
 │   └── screenshot.png
 ├── data/
-│   └── jobs.db                       # SQLite database (not committed)
+│   ├── jobs.db                       # SQLite database (not committed)
+│   └── llm_usage.jsonl               # Per-call token + estimated cost ledger (not committed)
 ├── qdrant_data/                      # Local vector store (not committed)
 ├── logs/
 │   └── pipeline.log                  # Scheduler run history
 └── utils/
     ├── db.py                         # SQLite helpers + status transitions
     ├── kb_loader.py                  # Build Qdrant knowledge base from candidate_kb/
-    ├── llm.py                        # OpenAI / Mistral / Azure / custom endpoint factory
+    ├── llm.py                        # Endpoint factory, chat/embed wrappers, usage ledger + budget gate
     ├── geo_de.py                     # Germany location matching (single source of truth)
+    ├── lang_req.py                   # German-requirement regex gate (runs before any LLM call)
     ├── apply_queue.py                # Ranked apply queue (dedup gate, budget, ATS bias)
     ├── apply_llm.py                  # Shared LLM plumbing for apply flows
     ├── apply_verifier.py             # Fact-check pass over generated drafts
@@ -227,13 +232,18 @@ OPENAI_API_KEY=sk-...
 # Azure OpenAI
 # LLM_PROVIDER=azure
 # AZURE_ENDPOINT=https://...
-# AZURE_API_VERSION=2024-08-01-preview
-# AZURE_CHAT_DEPLOYMENT=gpt-4o
+# AZURE_API_VERSION=2024-12-01-preview
+# AZURE_CHAT_DEPLOYMENT=gpt-5.6-luna
+# AZURE_TRANSLATION_DEPLOYMENT=gpt-5-nano   # optional: cheaper model for the JD translation
 # AZURE_EMB_DEPLOYMENT=text-embedding-3-small
 
 # Custom / local (LiteLLM, Ollama, vLLM, etc.)
 # LLM_PROVIDER=custom
 # CUSTOM_BASE_URL=http://localhost:11434/v1
+
+# CHAT_REASONING_EFFORT=low      # sent with every chat call on reasoning models; unset = not sent
+# KB_SCORE_THRESHOLD=0.35        # cosine floor for KB retrieval; default follows the embedding model
+# PIPELINE_PROBE_URL=            # scheduler connectivity probe; default follows LLM_PROVIDER
 
 # LLM cost guard (see "LLM cost guard" below)
 # LLM_DAILY_BUDGET_USD=2.0       # cap on one local day's estimated spend; unset = unlimited
@@ -386,9 +396,9 @@ Replace the candidate profile section in this file with specific, concrete value
 | Source | Method | Notes |
 |--------|--------|-------|
 | [Arbeitnow](https://www.arbeitnow.com) | JSON API | Stable; English and German roles |
-| [WeAreDevelopers](https://www.wearedevelopers.com) | Private REST API | Germany's largest dev job board; Germany + remote passes |
+| [WeAreDevelopers](https://www.wearedevelopers.com) | Markdown endpoints | Germany's largest dev job board. The JSON API was retired in 2026-08 and answered every query with an empty array for 16 days before anyone noticed; the scraper now reads the `/jobs.md` + `/jobs/ext/<id>.md` views the site documents in its `agents.md` |
 | [EnglishJobs.de](https://englishjobs.de) | HTML scrape | English-only roles in Germany |
-| [Bundesagentur für Arbeit](https://api.arbeitsagentur.de) | REST API | Official German job register |
+| [Bundesagentur für Arbeit](https://api.arbeitsagentur.de) | REST API | Official German job register; nationwide + paginated. Endpoint and field names come from the site's own `config.js` — the v2 host is retired and its maintenance page answers with HTTP 200, so a stale URL fails silently |
 | [Remotive](https://remotive.com) | JSON API | Remote-only, English |
 | [Relocate.me](https://relocate.me) | HTML scrape | Roles with relocation support |
 | [Jobicy](https://jobicy.com) | JSON API | Remote-only; geo exclusion filter |
@@ -400,9 +410,11 @@ Replace the candidate profile section in this file with specific, concrete value
 | [Personio ATS](https://personio.de) | XML feed | Per-company feed at `{slug}.jobs.personio.de/xml` |
 | [Welcome to the Jungle](https://www.welcometothejungle.com) | Algolia API | EU startup jobs; English-only, remote-EU + Germany filter |
 | [Lever ATS](https://api.lever.co) | JSON API | Per-company board; no auth needed |
+| [GermanTechJobs](https://germantechjobs.de) | Internal REST API + Playwright | English-friendly German tech roles; JD needs a browser, so detail fetches are capped per run |
+| [Jobware](https://www.jobware.de) | HTML scrape | German generalist board; internal postings only |
 | LinkedIn / StepStone / other | Manual via dashboard | Search buttons + manual job entry form |
 
-GermanTechJobs is currently disabled (JS SPA — requires Playwright).
+A source that returns "0 new, 0 skipped" for three consecutive runs raises a warning (`utils/source_health.py`). A live source always *skips* postings it has seen before, so complete silence means a dead or changed endpoint — WeAreDevelopers went quiet for 16 days before anyone read the log.
 
 ---
 
@@ -416,14 +428,21 @@ Jobs are deduplicated by an MD5 hash of characters 50–550 of the JD text. The 
 
 Phase 2 detects German-language JDs using a token frequency heuristic (>8% German function words). Detected JDs are translated to English via a single LLM call before scoring and embedding. The translation is cached in the database — rescoring reuses it without an extra API call.
 
+The step looks redundant once the scoring model reads German natively, so it was measured rather than assumed (`scripts/experiment_translation_retirement.py`, 40 German JDs scored twice): scoring the German original instead cut KB retrieval overlap to a median 3 of 5 chunks, pushed 3 of 40 queries below the retrieval floor, disagreed on grade in 6 cases — five of them scoring the German arm *lower* — and produced two outright language-requirement errors the translated arm got right. It stays. Re-run that script before revisiting the call on a new model.
+
 ### Pre-flight Filters (before any LLM call)
+
+Almost nothing reaches the model. On the 2026-09-05 run, 4,586 un-scored rows entered Phase 2 and 144 were scored — 4,193 were plainly outside Germany, 166 were student/intern roles, 62 hit the German-requirement rule, 21 had expired. Each filter is deterministic and cheap; the LLM is the last resort, not the first pass.
 
 | Condition | Action |
 |-----------|--------|
 | Age from `fetched_at` exceeds source TTL (see table below) | → `expired` (TTL-based, runs first) |
 | `expires_at` is in the past | → `expired` (explicit deadline) |
 | Location names a non-German country/city outright, or geo triage labelled it `Remote — non-EU` | → skipped, stays `un-scored` (no LLM call; TTL cleans it up) |
+| Title is a student / working-student / internship role | → skipped, stays `un-scored` |
+| JD anchors a German-language requirement at C1/C2/fluent/`verhandlungssicher` level (`utils/lang_req.py`) | → `scored` as C / `de_required`, `top_3_reasons` prefixed `rule-gated:` (no LLM call) |
 | JD text shorter than 100 characters | → `error` (no LLM call) |
+| Today's estimated LLM spend has reached `LLM_DAILY_BUDGET_USD` | → run aborts with exit 75, remaining jobs stay `un-scored` for the next run |
 
 **Source TTL defaults** (applied when `expires_at` is not set by the scraper):
 
@@ -441,18 +460,20 @@ Grading logic lives in `config/grading_rules.md` and is applied by the LLM. A so
 
 | Grade | Condition |
 |-------|-----------|
-| A | score ≥ 80, language not `de_required` |
-| B | 60 ≤ score < 80, language not `de_required` |
+| A | score ≥ 76, language not `de_required` |
+| B | 60 ≤ score < 76, language not `de_required` |
 | C | score < 60 or `de_required` |
 
-**Source bonus** (applied in Python post-LLM):
+The A cut is calibrated to the scoring model, not to the wording of the bands — models differ in where they put "strong match". `mistral-medium` handed out 75 as its default strong-match score; `gpt-5.6-luna` sits about ten points lower and compresses its range, so 76 reproduces the same A:B ratio. Re-run an A/B comparison before moving it.
 
-| Source | Bonus | Reason |
+**Deterministic post-LLM adjustments** (applied in Python — more reliable than asking the prompt for them):
+
+| Source / title | Adjustment | Reason |
 |--------|-------|--------|
-| relocateme | +10 | Company actively offers relocation support |
-| greenhouse | +5 | Direct ATS post — active hiring signal |
-| lever | +5 | Direct ATS post — active hiring signal |
-| bundesagentur | +5 | Official register; higher proportion of visa-friendly employers |
+| greenhouse, lever | +5 | Direct ATS post — active hiring signal |
+| Principal / Staff / Head of / Architect titles | −15 | Far beyond the candidate's range; a soft demotion, not a hard drop, so a standout match can still surface |
+
+A `bundesagentur` +5 bonus was removed in 2026-09: the "more visa-friendly employers" premise had no data behind it, and the first cohort (37 applied, 19 rejected within 12 days, 0 interviews) argued the other way.
 
 **Visa classification** (from JD text): `open` · `eu_only` · `sponsored` · `unclear`
 
@@ -481,10 +502,16 @@ Expired jobs are removed from the main job list automatically. TTL is checked at
 ## Dashboard Features
 
 ### KPI Row
-Pending review · Applied this week · In interview · Offers · Follow-up due · Scoring errors
+Pending review · Applied this week · In interview · Offers · Follow-up due · Ghosted · Scoring errors
+
+### Draft Stock
+One line under the trend metrics: drafts waiting, how old the oldest is, how many applications went out this week. It turns amber when a draft has been sitting longer than a week — postings expire while drafts wait, and nothing auto-withdraws them.
+
+### LLM Cost (est.)
+Today's and this month's estimated spend plus today's call count, read from `data/llm_usage.jsonl` — the card never calls the provider. A per-model breakdown (calls, input/output tokens, estimated cost) sits in the analytics expander. Estimates come from token counts and a price table; the provider's invoice is the authority.
 
 ### Statistics Panel
-Grade distribution · Language requirement breakdown · Application funnel · Source yield table (A-grade rate, interview-to-apply rate) · Weekly apply trend (last 8 weeks)
+Grade distribution · Language requirement breakdown · Application funnel · Source yield table (A-grade rate, interview-to-apply rate) · Weekly apply trend (last 8 weeks) · LLM cost by model
 
 ### Job List
 
@@ -567,6 +594,8 @@ Free-text notes field. Follow-up reminder date (auto-set to 7 days post-apply, c
 | Visa analysis | 1 chat | 2,000–4,000 |
 
 All on-demand analyses (visa, salary, company research) are opt-in per job — triggered by buttons in the dashboard.
+
+Those figures are estimates from before the metering existed. `data/llm_usage.jsonl` now records the real token counts per call, so `LLM_DAILY_BUDGET_USD` can be set from your own numbers rather than this table. A steady day on `gpt-5.6-luna` (60–130 jobs scored, roughly half of them translated) lands near $0.20.
 
 ---
 
