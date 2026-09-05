@@ -4,9 +4,11 @@ Reads LLM_PROVIDER and related env vars; call make_client() / chat_model() /
 translation_model() / emb_model() anywhere (see "Model names" for how the
 provider-scoped and generic env vars resolve).
 Call rate_limit() before every API request to respect provider limits.
-Route chat calls through chat_completion() / chat_parse() instead of the raw
-client: they adapt request parameters to the model's quirks (reasoning models
-reject temperature and max_tokens) and inject CHAT_REASONING_EFFORT.
+Route chat calls through chat_completion() / chat_parse() and embedding calls
+through embed() instead of the raw client: they adapt request parameters to the
+model's quirks (reasoning models reject temperature and max_tokens), inject
+CHAT_REASONING_EFFORT, and record token usage + estimated cost (see "Usage
+accounting").
 
 Supported providers:
   openai   — OpenAI API (default)
@@ -19,9 +21,14 @@ Supported providers:
   custom   — Any OpenAI-compatible endpoint (LiteLLM, Ollama, vLLM, …)
 """
 
+import json
+import logging
 import os
-import time
+import sys
 import threading
+import time
+
+log = logging.getLogger(__name__)
 
 LLM_PROVIDER          = os.getenv("LLM_PROVIDER", "openai").lower()
 OPENAI_API_KEY        = os.getenv("OPENAI_API_KEY", "")
@@ -175,6 +182,228 @@ def model_summary() -> str:
     return " | ".join(parts)
 
 
+# ── Usage accounting + daily budget gate ──────────────────────────────────────
+# Mistral's free tier failed safe: when the quota was gone the pipeline stopped.
+# Azure bills a card instead, so a runaway loop or an accidental full-pool
+# rescore is an invoice, not an outage. Every chat/embedding call appends one
+# JSON line to data/llm_usage.jsonl with token counts and an ESTIMATED cost
+# (the provider's invoice is the authority), and phase2_scorer calls
+# check_budget() before each job so the day's running total can stop the run
+# via TransientAbort → exit 75 → the jobs stay un-scored for tomorrow.
+#
+# Single-line appends under "a" mode use O_APPEND, so the pipeline, dashboard
+# and apply_api containers can share the file without interleaving.
+
+USAGE_PATH_VAR      = "LLM_USAGE_PATH"
+_DEFAULT_USAGE_PATH = "./data/llm_usage.jsonl"
+_SCRIPT             = os.path.basename(sys.argv[0]) if sys.argv else ""
+
+# $ per 1M tokens: (input, cached input, output). Provider list prices as of
+# 2026-09 — an estimate, not the bill. Matched as a substring of the model /
+# deployment name (longest key wins), so "gpt-5.6-luna" hits "luna". Override
+# per kind with LLM_PRICE_CHAT / LLM_PRICE_TRANSLATION / LLM_PRICE_EMB, either
+# "in/cached/out" or a single number (used for input and cached).
+_PRICES: dict[str, tuple[float, float, float]] = {
+    "luna":                   (0.20, 0.10,  1.20),
+    "gpt-5-nano":             (0.05, 0.005, 0.40),
+    "gpt-4o-mini":            (0.15, 0.075, 0.60),
+    "gpt-4o":                 (2.50, 1.25, 10.00),
+    "text-embedding-3-small": (0.02, 0.02,  0.00),
+    "text-embedding-3-large": (0.13, 0.13,  0.00),
+    "mistral-small":          (0.10, 0.10,  0.30),
+    "mistral-medium":         (0.40, 0.40,  2.00),
+    "mistral-embed":          (0.01, 0.01,  0.00),
+}
+
+
+class BudgetExceeded(RuntimeError):
+    """The day's estimated LLM spend has reached LLM_DAILY_BUDGET_USD.
+
+    Callers must treat this as transient — leave the work undone for the next
+    run — never as a per-item failure (2026-09-04: an exhausted-quota path
+    filed 117 jobs as permanent errors).
+    """
+
+
+_usage_lock      = threading.Lock()
+_budget_override: float | None = None
+_spend_date      = ""     # local date the two counters below belong to
+_spend_baseline  = 0.0    # other processes' spend that day, read from the ledger
+_spend_process   = 0.0    # this process's spend since that read
+_unpriced        : set[str] = set()
+_ctx             = threading.local()
+
+
+def _usage_path() -> str:
+    """Resolved per call so tests (and scripts) can redirect it via the env var."""
+    return os.getenv(USAGE_PATH_VAR, _DEFAULT_USAGE_PATH)
+
+
+def _today() -> str:
+    """Local date. All three containers run TZ=Europe/Berlin, so the budget day
+    matches the one the user reasons in (same clock as applied_at)."""
+    return time.strftime("%Y-%m-%d")
+
+
+def set_job_context(job_id: str | None) -> None:
+    """Tag this thread's subsequent usage lines with a job id (scorer workers)."""
+    _ctx.job_id = job_id
+
+
+def _kind_for(model: str) -> str:
+    if model == emb_model():
+        return "emb"
+    if model != chat_model() and model == translation_model():
+        return "translation"
+    return "chat"
+
+
+def _price_for(model: str, kind: str) -> tuple[float, float, float] | None:
+    raw = os.getenv(f"LLM_PRICE_{kind.upper()}", "").strip()
+    if raw:
+        try:
+            parts = [float(p) for p in raw.split("/")]
+        except ValueError:
+            log.warning("LLM_PRICE_%s=%r is not a price — falling back to the table",
+                        kind.upper(), raw)
+            parts = []
+        if len(parts) == 1:
+            return (parts[0], parts[0], 0.0)
+        if len(parts) == 3:
+            return (parts[0], parts[1], parts[2])
+    low = (model or "").lower()
+    for key in sorted(_PRICES, key=len, reverse=True):
+        if key in low:
+            return _PRICES[key]
+    return None
+
+
+def _read_day_total(day: str) -> float:
+    """Sum est_usd for one local day across all processes."""
+    total = 0.0
+    try:
+        with open(_usage_path(), encoding="utf-8") as fh:
+            for line in fh:
+                if day not in line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if str(rec.get("ts", "")).startswith(day) and rec.get("est_usd"):
+                    total += float(rec["est_usd"])
+    except FileNotFoundError:
+        return 0.0
+    except OSError as exc:
+        log.warning("LLM usage ledger unreadable (%s) — the budget gate sees $0 spent", exc)
+    return total
+
+
+def _roll_day_locked() -> None:
+    """Re-read the ledger when the calendar day changed (long-lived processes)."""
+    global _spend_date, _spend_baseline, _spend_process
+    day = _today()
+    if day == _spend_date:
+        return
+    _spend_date     = day
+    _spend_process  = 0.0
+    _spend_baseline = _read_day_total(day)
+
+
+def spend_today() -> float:
+    """Estimated $ spent today: the ledger's total when this process first
+    looked, plus everything this process has spent since."""
+    with _usage_lock:
+        _roll_day_locked()
+        return _spend_baseline + _spend_process
+
+
+def daily_budget() -> float | None:
+    """Budget in $ for one local day; None = unlimited (the historical default)."""
+    if _budget_override is not None:
+        return _budget_override
+    raw = os.getenv("LLM_DAILY_BUDGET_USD", "").strip()
+    if not raw:
+        return None
+    try:
+        val = float(raw)
+    except ValueError:
+        log.warning("LLM_DAILY_BUDGET_USD=%r is not a number — no budget enforced", raw)
+        return None
+    if val < 0:
+        log.warning("LLM_DAILY_BUDGET_USD=%s is negative — no budget enforced", raw)
+        return None
+    return val
+
+
+def set_budget_override(usd: float | None) -> None:
+    """Per-run override for the --budget flag; never touches .env (an .env edit
+    only takes effect after `docker compose up -d`)."""
+    global _budget_override
+    _budget_override = usd
+
+
+def check_budget() -> None:
+    """Raise BudgetExceeded when today's estimated spend has reached the budget."""
+    budget = daily_budget()
+    if budget is None:
+        return
+    spent = spend_today()
+    if spent >= budget:
+        raise BudgetExceeded(
+            f"daily LLM budget reached — est. ${spent:.4f} spent today "
+            f">= ${budget:.2f} (LLM_DAILY_BUDGET_USD)"
+        )
+
+
+def _record_usage(model: str, resp, kind: str | None = None) -> None:
+    """Book one call into the day's total and append it to the ledger.
+
+    Never raises: accounting must not take down a call path that worked.
+    """
+    global _spend_process
+    try:
+        usage = getattr(resp, "usage", None)
+        if usage is None:      # fakes in tests, providers that omit usage
+            return
+        kind       = kind or _kind_for(model)
+        prompt     = int(getattr(usage, "prompt_tokens", 0) or 0)
+        completion = int(getattr(usage, "completion_tokens", 0) or 0)
+        details    = getattr(usage, "prompt_tokens_details", None)
+        cached     = min(int(getattr(details, "cached_tokens", 0) or 0), prompt)
+        price      = _price_for(model, kind)
+        if price is None:
+            est = None
+            with _usage_lock:
+                unseen = model not in _unpriced
+                _unpriced.add(model)
+            if unseen:
+                log.warning(
+                    "no price known for model %r — its spend stays invisible to "
+                    "LLM_DAILY_BUDGET_USD; set LLM_PRICE_%s", model, kind.upper())
+        else:
+            p_in, p_cached, p_out = price
+            est = ((prompt - cached) * p_in + cached * p_cached + completion * p_out) / 1e6
+            with _usage_lock:
+                _roll_day_locked()
+                _spend_process += est
+        rec = {
+            "ts":                time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "script":            _SCRIPT,
+            "model":             model,
+            "kind":              kind,
+            "prompt_tokens":     prompt,
+            "cached_tokens":     cached,
+            "completion_tokens": completion,
+            "est_usd":           est,
+            "job_id":            getattr(_ctx, "job_id", None),
+        }
+        with open(_usage_path(), "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception as exc:   # noqa: BLE001 — accounting is never fatal
+        log.warning("LLM usage not recorded: %s", exc)
+
+
 # ── Chat call adapter ──────────────────────────────────────────────────────────
 # Reasoning models (GPT-5 family, incl. Azure deployments of them) reject
 # temperature != 1, want max_completion_tokens instead of max_tokens, and take
@@ -239,13 +468,30 @@ def _call_with_quirks(fn, kwargs: dict):
 
 def chat_completion(client, **kwargs):
     """client.chat.completions.create(**kwargs) with model-quirk adaptation."""
-    return _call_with_quirks(client.chat.completions.create, kwargs)
+    resp = _call_with_quirks(client.chat.completions.create, kwargs)
+    _record_usage(kwargs.get("model", ""), resp)
+    return resp
 
 
 def chat_parse(client, **kwargs):
     """client.beta.chat.completions.parse(**kwargs) with model-quirk adaptation."""
-    return _call_with_quirks(client.beta.chat.completions.parse, kwargs)
+    resp = _call_with_quirks(client.beta.chat.completions.parse, kwargs)
+    _record_usage(kwargs.get("model", ""), resp)
+    return resp
 
 
 def emb_model() -> str:
     return _resolve("EMB")[0]
+
+
+def embed(client, inputs, model: str | None = None):
+    """client.embeddings.create with rate limiting and usage accounting.
+
+    Every embedding call goes through here (scorer batch + single, KB build,
+    check_api) so the ledger sees the whole spend, not just the chat half.
+    """
+    name = model or emb_model()
+    rate_limit()
+    resp = client.embeddings.create(model=name, input=inputs)
+    _record_usage(name, resp, kind="emb")
+    return resp

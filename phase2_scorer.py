@@ -33,7 +33,7 @@ load_dotenv()
 DB_PATH     = os.getenv("DB_PATH", "./data/jobs.db")
 QDRANT_PATH = os.getenv("QDRANT_PATH", "./qdrant_data")
 
-from utils.llm import make_client, chat_model, translation_model, emb_model, model_summary, LLM_PROVIDER, NO_STRUCTURED_OUTPUT_PROVIDERS, rate_limit, chat_completion, chat_parse  # noqa: E402
+from utils.llm import make_client, chat_model, translation_model, emb_model, model_summary, LLM_PROVIDER, NO_STRUCTURED_OUTPUT_PROVIDERS, rate_limit, chat_completion, chat_parse, embed, check_budget, BudgetExceeded, set_job_context, set_budget_override  # noqa: E402
 from utils.apply_queue import title_excluded  # noqa: E402
 from utils.lang_req import german_required  # noqa: E402
 from utils.geo_de import has_non_de_marker  # noqa: E402
@@ -429,8 +429,7 @@ def _batch_embed(texts: list[str], client, batch_size: int = 16) -> list[list[fl
     vectors: list[list[float]] = []
     for start in range(0, len(texts), batch_size):
         batch = texts[start : start + batch_size]
-        rate_limit()
-        resp = client.embeddings.create(model=emb_model(), input=batch)
+        resp = embed(client, batch)
         vectors.extend([e.embedding for e in resp.data])
         log.info("  embedded %d/%d JDs", min(start + batch_size, len(texts)), len(texts))
     return vectors
@@ -448,11 +447,7 @@ def retrieve_context(
     client = make_client()
     qdrant = QdrantClient(path=qdrant_path)
 
-    rate_limit()
-    emb_resp = client.embeddings.create(
-        model=emb_model(),
-        input=jd_text[:6000],
-    )
+    emb_resp = embed(client, jd_text[:6000])
     return _qdrant_query(qdrant, emb_resp.data[0].embedding, top_k)
 
 
@@ -660,6 +655,11 @@ def score_jobs(
         if job.get("translated_jd_text"):
             continue  # already translated in a previous run
         if _detect_german(job.get("raw_jd_text") or "", job_id=job["id"]):
+            try:
+                check_budget()
+            except BudgetExceeded as exc:
+                raise TransientAbort(str(exc)) from exc
+            set_job_context(job["id"])
             log.info("German JD detected: %s @ %s — translating…", job["title"], job["company"])
             translated = _translate_to_english(job["raw_jd_text"], client)
             if translated:
@@ -668,6 +668,7 @@ def score_jobs(
                 translated_count += 1
             else:
                 log.warning("Translation failed for %s — scoring with original German text", job["id"])
+            set_job_context(None)
     if translated_count:
         log.info("Translated %d German JD(s) to English", translated_count)
 
@@ -700,6 +701,7 @@ def score_jobs(
     max_concurrent = int(os.getenv("MISTRAL_MAX_CONCURRENT", "3"))
     db_lock = threading.Lock()
     abort_event = threading.Event()   # set on first transient (network-class) failure
+    abort_reason: list[str] = []      # why, for the TransientAbort message
     skipped: list[str] = []           # job ids left un-scored for the next run
 
     def _llm_score_job(job: dict) -> ScoringResult | None:
@@ -707,6 +709,18 @@ def score_jobs(
         if abort_event.is_set():
             skipped.append(job["id"])  # list.append is thread-safe (GIL)
             return None
+        # Cost guard: the day's estimated spend, checked before every job so a
+        # runaway loop stops at the budget instead of at the invoice. Budget
+        # exhaustion is transient by contract — the job stays un-scored.
+        try:
+            check_budget()
+        except BudgetExceeded as exc:
+            abort_event.set()
+            abort_reason.append(str(exc))
+            skipped.append(job["id"])
+            log.warning("%s — job %s kept un-scored for the next run", exc, job["id"])
+            return None
+        set_job_context(job["id"])
         context = contexts.get(job["id"], "(候選人背景資料未載入)")
         effective_jd = (job.get("translated_jd_text") or job["raw_jd_text"])[:6000]
         system_prompt, user_prompt = build_prompt(
@@ -819,13 +833,14 @@ def score_jobs(
 
     failed = len(jobs) - len(scored) - len(skipped)
     log.info(
-        "完成：%d 筆成功，%d 筆失敗（error），%d 筆保持 un-scored（網路問題，待重試）",
+        "完成：%d 筆成功，%d 筆失敗（error），%d 筆保持 un-scored（網路問題或預算用盡，待重試）",
         len(scored), failed, len(skipped),
     )
     conn.close()
     if abort_event.is_set():
+        why = abort_reason[0] if abort_reason else "network-class failure"
         raise TransientAbort(
-            f"network-class failure — {len(skipped)} job(s) left un-scored for the next run"
+            f"{why} — {len(skipped)} job(s) left un-scored for the next run"
         )
     return scored
 
@@ -1228,14 +1243,26 @@ if __name__ == "__main__":
         action="store_true",
         help="Reset all error-status jobs to un-scored so they will be retried",
     )
+    parser.add_argument(
+        "--budget",
+        type=float,
+        default=None,
+        metavar="USD",
+        help="Override LLM_DAILY_BUDGET_USD for this run only (deliberate large "
+             "rescores; editing .env would need a container restart to take effect)",
+    )
     args = parser.parse_args()
+    if args.budget is not None:
+        set_budget_override(args.budget)
+        log.info("LLM daily budget overridden for this run: $%.2f", args.budget)
     try:
         scored = score_jobs(rescore=args.rescore, reset_errors=args.reset_errors)
     except KBModelMismatch as exc:
         log.error("%s", exc)
         sys.exit(2)
     except TransientAbort as exc:
-        log.warning("中止本輪評分（%s）— exit %d，scheduler 將於網路恢復後重試", exc, EXIT_TRANSIENT)
+        log.warning("中止本輪評分（%s）— exit %d，scheduler 將退避後重試（網路恢復或隔日預算重置）",
+                    exc, EXIT_TRANSIENT)
         sys.exit(EXIT_TRANSIENT)
 
     n = len(scored)

@@ -117,6 +117,9 @@ def main() -> None:
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--cohort", choices=("generic-backend", "soft-german", "model-swap"),
                     default="generic-backend")
+    ap.add_argument("--budget", type=float, default=None, metavar="USD",
+                    help="Override LLM_DAILY_BUDGET_USD for this run only — a "
+                         "deliberate cohort rescore costs more than a normal day")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO,
@@ -145,6 +148,11 @@ def main() -> None:
 
     from phase2_scorer import score_jobs  # noqa: E402  (LLM stack import)
     from utils.db import init_db, reset_to_unscored  # noqa: E402
+    from utils.llm import set_budget_override  # noqa: E402
+
+    if args.budget is not None:
+        set_budget_override(args.budget)
+        print(f"LLM daily budget overridden for this run: ${args.budget:.2f}")
 
     c = init_db(args.db)
     reset_to_unscored(c, ids)
