@@ -32,7 +32,9 @@ from utils.staffing import is_staffing
 
 # ── Setup ──────────────────────────────────────────────────────────────────────
 
-load_dotenv()
+# see phase2_scorer for why this is opt-out (ship mounts .env into the tests)
+if not os.getenv("JOB_HUNTER_SKIP_DOTENV"):
+    load_dotenv()
 
 DB_PATH = os.getenv("DB_PATH", "./data/jobs.db")
 os.makedirs(os.path.dirname(os.path.abspath(DB_PATH)), exist_ok=True)

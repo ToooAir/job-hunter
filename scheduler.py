@@ -50,7 +50,9 @@ from utils.db import (
     start_pipeline_run,
 )
 
-load_dotenv()
+# see phase2_scorer for why this is opt-out (ship mounts .env into the tests)
+if not os.getenv("JOB_HUNTER_SKIP_DOTENV"):
+    load_dotenv()
 
 # after load_dotenv: utils.llm snapshots LLM_PROVIDER / AZURE_ENDPOINT at
 # import time (same ordering as phase2_scorer)

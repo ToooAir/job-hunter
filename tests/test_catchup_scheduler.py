@@ -246,7 +246,13 @@ class ScoreJobsNetworkSafetyTest(unittest.TestCase):
         return {r["id"]: r["status"] for r in rows}
 
     def _run_score_jobs(self):
-        return phase2_scorer.score_jobs(db_path=self.db_path, qdrant_path=self.qdrant_path)
+        # _call_llm is mocked in every caller, so the client is never used —
+        # but constructing a real one needs an API key, and the only reason
+        # that used to work is that ship mounted the developer's .env into the
+        # test container (see JOB_HUNTER_SKIP_DOTENV).
+        with mock.patch.object(phase2_scorer, "make_client", return_value=mock.Mock()):
+            return phase2_scorer.score_jobs(db_path=self.db_path,
+                                            qdrant_path=self.qdrant_path)
 
     def test_network_failure_keeps_jobs_unscored(self):
         net_err = openai.APIConnectionError(
@@ -390,3 +396,36 @@ class SchedulerExecuteRunTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DotenvOptOutTest(unittest.TestCase):
+    """`ship` mounts the repo — .env included — into the test container, so a
+    module-level load_dotenv() turns every variable the user adds to .env into
+    a silent test input. CHAT_REASONING_EFFORT, KB_SCORE_THRESHOLD and
+    AZURE_TRANSLATION_DEPLOYMENT each broke the suite that way before
+    JOB_HUNTER_SKIP_DOTENV existed."""
+
+    MARKER = "JOB_HUNTER_DOTENV_MARKER"
+
+    def _import_scheduler_with_env_file(self, skip: bool) -> str:
+        """Import scheduler from a cwd holding a .env, report what it saw."""
+        import subprocess
+        root = str(Path(__file__).resolve().parents[1])
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, ".env").write_text(f"{self.MARKER}=leaked\n", encoding="utf-8")
+            env = {"PATH": os.environ.get("PATH", ""), "PYTHONPATH": root,
+                   "HOME": d, "TZ": "Europe/Berlin"}
+            if skip:
+                env["JOB_HUNTER_SKIP_DOTENV"] = "1"
+            out = subprocess.run(
+                [sys.executable, "-c",
+                 f"import scheduler, os; print(os.getenv('{self.MARKER}', 'absent'))"],
+                cwd=d, env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(out.returncode, 0, out.stderr[-800:])
+            return out.stdout.strip().splitlines()[-1]
+
+    def test_without_the_flag_dotenv_leaks_in(self):
+        self.assertEqual(self._import_scheduler_with_env_file(skip=False), "leaked")
+
+    def test_with_the_flag_dotenv_is_not_read(self):
+        self.assertEqual(self._import_scheduler_with_env_file(skip=True), "absent")

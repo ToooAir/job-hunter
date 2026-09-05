@@ -15,10 +15,18 @@ step and report it — never commit failing code, never deploy an unbuilt image.
 
    ```bash
    docker run --rm -v "$PWD":/app -w /app -v "$PWD"/config:/app/config:ro \
+     -e JOB_HUNTER_SKIP_DOTENV=1 \
      job-hunter-app:latest python3 -m unittest discover tests -q
    ```
 
    All tests must pass. There is no separate CI — this container run is the CI.
+
+   `JOB_HUNTER_SKIP_DOTENV=1` matters: the mount carries `.env` into the
+   container, and without the flag every variable the user adds there becomes a
+   silent test input (it has already broken `CHAT_REASONING_EFFORT`,
+   `KB_SCORE_THRESHOLD` and `AZURE_TRANSLATION_DEPLOYMENT`). The three
+   containers get their environment from compose's `env_file`, so runtime is
+   unaffected.
 
 2. **Commit.** English conventional message (`feat(scope): ...`, `fix(scope): ...`)
    describing why, not just what. Never `git add` gitignored config

@@ -251,6 +251,24 @@ QDRANT_PATH=./qdrant_data
 
 > **Switching providers**: If you change the embedding model (e.g. from OpenAI `text-embedding-3-small` at 1536-dim to Mistral `mistral-embed` at 1024-dim), you must rebuild the knowledge base: `python utils/kb_loader.py`
 
+### Tests
+
+There is no separate CI — this container run is it:
+
+```bash
+docker run --rm -v "$PWD":/app -w /app -v "$PWD"/config:/app/config:ro \
+  -e JOB_HUNTER_SKIP_DOTENV=1 \
+  job-hunter-app:latest python3 -m unittest discover tests -q
+```
+
+The mount carries `.env` into the container, so without
+`JOB_HUNTER_SKIP_DOTENV=1` every variable added to `.env` becomes a silent test
+input — `CHAT_REASONING_EFFORT`, `KB_SCORE_THRESHOLD` and
+`AZURE_TRANSLATION_DEPLOYMENT` have each broken the suite that way. The flag
+makes the four module-level `load_dotenv()` calls (phase1, phase2, scheduler,
+check_api) no-ops. Runtime is unaffected: the three containers get their
+environment from compose's `env_file`.
+
 ### LLM cost guard
 
 Every chat and embedding call is routed through `utils/llm.py`, which appends one

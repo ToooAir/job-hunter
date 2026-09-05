@@ -3,10 +3,14 @@ check_api.py — Quick connectivity check for LLM + embedding APIs.
 Usage: python check_api.py
 """
 
+import os
 import sys
+
 from dotenv import load_dotenv
 
-load_dotenv()
+# see phase2_scorer for why this is opt-out (ship mounts .env into the tests)
+if not os.getenv("JOB_HUNTER_SKIP_DOTENV"):
+    load_dotenv()
 
 from utils.llm import make_client, chat_model, emb_model, LLM_PROVIDER, rate_limit, chat_completion, embed  # noqa: E402
 

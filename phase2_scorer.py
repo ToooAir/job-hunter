@@ -28,7 +28,15 @@ from utils.db import (
 
 # ── Setup ──────────────────────────────────────────────────────────────────────
 
-load_dotenv()
+# Module-level load_dotenv() is convenient for a CLI run and poison for the
+# test suite: ship mounts the repo — .env included — into the test container,
+# so every variable the user adds to .env silently becomes a test input (it has
+# already broken CHAT_REASONING_EFFORT, KB_SCORE_THRESHOLD and
+# AZURE_TRANSLATION_DEPLOYMENT). JOB_HUNTER_SKIP_DOTENV=1 turns it off for the
+# suite. The three containers get their environment from compose's env_file, so
+# runtime is unaffected either way.
+if not os.getenv("JOB_HUNTER_SKIP_DOTENV"):
+    load_dotenv()
 
 DB_PATH     = os.getenv("DB_PATH", "./data/jobs.db")
 QDRANT_PATH = os.getenv("QDRANT_PATH", "./qdrant_data")
