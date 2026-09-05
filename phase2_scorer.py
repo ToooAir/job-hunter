@@ -23,7 +23,7 @@ from utils.db import (
     init_db, get_unscored_jobs, update_score, fetch_job_by_id,
     reset_to_unscored, reset_errors_to_unscored, mark_error, mark_expired,
     set_interview_brief, set_translated_jd, auto_expire_stale_jobs,
-    get_application_snapshots,
+    get_application_snapshots, get_all_interview_records,
 )
 
 # ── Setup ──────────────────────────────────────────────────────────────────────
@@ -1004,7 +1004,7 @@ _BRIEF_SECTIONS = {
         "lo_lbl":       "Location",
         "jd_sec":       "## Job Description",
         "ctx_sec":      "## Candidate Background",
-        "lead":         "Output the following five sections in order:",
+        "lead":         "Output the following sections in order:",
         "role":         "### Role Summary",
         "role_h":       "(2–3 sentences: what the role does, team context)",
         "tech":         "### Core Technical Requirements",
@@ -1015,6 +1015,18 @@ _BRIEF_SECTIONS = {
         "highlights_h": "(Select 2–3 experiences from the candidate background that best address this role)",
         "questions":    "### Likely Interview Questions",
         "questions_h":  "(5 specific questions the interviewer might ask based on this JD)",
+        # Past first-round records — input block + the section it earns in the output
+        "past_title":   "## Questions From Your Past First-Round Interviews",
+        "past_hint":    "(Your own notes from first rounds at other companies. Same person, "
+                        "same story — these keep coming back.)",
+        "past_q":       "Questions",
+        "past_rating":  "Self-rating",
+        "past_impr":    "Impressions",
+        "past_sec":     "### Answers To Questions You Have Been Asked Before",
+        "past_sec_h":   "(Pick the questions above that this interviewer is likely to repeat. "
+                        "For each, 2–3 sentences of a suggested answer grounded in the candidate "
+                        "background above. If the background gives no basis for an answer, say so "
+                        "plainly instead of inventing one.)",
         # Submission evidence (appended deterministically — never LLM-generated)
         "subm_title":   "## 📋 What You Actually Submitted",
         "subm_meta":    "Submitted",
@@ -1034,7 +1046,7 @@ _BRIEF_SECTIONS = {
         "lo_lbl":       "地點",
         "jd_sec":       "## 職缺描述",
         "ctx_sec":      "## 候選人背景",
-        "lead":         "請依序輸出以下五個段落：",
+        "lead":         "請依序輸出以下段落：",
         "role":         "### 角色摘要",
         "role_h":       "（2–3 句：這個職位在做什麼、所在團隊背景）",
         "tech":         "### 核心技術要求",
@@ -1045,6 +1057,15 @@ _BRIEF_SECTIONS = {
         "highlights_h": "（從候選人背景中選出最相關的 2–3 項經歷，說明如何對應職缺需求）",
         "questions":    "### 可能被問到的問題",
         "questions_h":  "（根據此 JD 列出 5 個具體面試問題）",
+        # 過去一面紀錄——輸入區塊 + 它換來的輸出段落
+        "past_title":   "## 你過去一面被問過的問題",
+        "past_hint":    "（你自己在其他公司一面後寫的筆記。同一個人、同一套故事，這些題目會一直回來。）",
+        "past_q":       "問題",
+        "past_rating":  "自評",
+        "past_impr":    "感想",
+        "past_sec":     "### 曾被問過的題目：建議答法",
+        "past_sec_h":   "（從上面挑出這位面試官可能重問的題，每題用 2–3 句給出建議答法，"
+                        "且必須以上方候選人背景為依據。若背景資料裡找不到依據，就直說沒有依據，不要編。）",
         # 投遞存證（確定性附加，永不經 LLM 生成）
         "subm_title":   "## 📋 你當時實際提交的內容",
         "subm_meta":    "投遞時間",
@@ -1071,7 +1092,7 @@ BRIEF_PROMPT_TEMPLATE = """\
 
 {ctx_sec}
 {context}
-
+{past_block}
 ---
 
 {lead}
@@ -1089,8 +1110,81 @@ BRIEF_PROMPT_TEMPLATE = """\
 {highlights_h}
 
 {questions}
-{questions_h}\
+{questions_h}{past_out}\
 """
+
+
+def _qa_pairs(custom_qa) -> list[tuple[str, str]]:
+    """Normalise a snapshot's custom_qa into (question, answer) pairs.
+
+    snapshot_io.append_custom_qa writes a LIST of {question, answer, source,
+    asked_at} — all 843 stored snapshots are that shape — but this reader
+    assumed a dict and raised AttributeError, so the whole brief failed for
+    any job that had answered a form question. The dict branch is kept for
+    hand-written rows.
+    """
+    if isinstance(custom_qa, dict):
+        return [(str(q), str(a)) for q, a in custom_qa.items()]
+    pairs = []
+    for item in custom_qa or []:
+        if isinstance(item, dict):
+            pairs.append((str(item.get("question", "")), str(item.get("answer", ""))))
+    return [p for p in pairs if p[0] or p[1]]
+
+
+PAST_INTERVIEW_CHARS = 1500   # prompt budget for the whole past-rounds block
+
+
+def _past_interview_block(conn, lang: str, exclude_job_id: str | None = None,
+                          cap: int = PAST_INTERVIEW_CHARS) -> str:
+    """The candidate's own notes from past FIRST rounds, newest first.
+
+    The funnel's hole is 9 first rounds → 0 second rounds, and the brief was
+    reading only the JD and the KB — it never saw what the candidate actually
+    gets asked. Five records is far too few to mine automatically; a human
+    writes them, the machine feeds them back.
+
+    Never includes `interviewer`: no person's name enters a prompt. The block
+    is wrapped in <document> by the caller, which the prompt's injection line
+    already covers.
+    """
+    s = _BRIEF_SECTIONS.get(lang, _BRIEF_SECTIONS["en"])
+    records = [r for r in get_all_interview_records(conn, round="interview_1")
+               if r["job_id"] != exclude_job_id
+               and ((r.get("questions") or "").strip() or (r.get("impressions") or "").strip())]
+    if not records:
+        return ""
+
+    # Split the budget evenly, questions first: the questions are the point,
+    # impressions are colour. The -40 pays for each entry's date line, labels
+    # and separator, so len(records) entries actually fit inside cap instead
+    # of the oldest one falling off the end.
+    per = max(200, cap // len(records) - 40)
+    q_budget, i_budget = int(per * 0.75), int(per * 0.25)
+
+    parts, used = [], 0
+    for r in records:
+        bits = [f"**{r.get('interview_date') or '?'}**"]
+        q = (r.get("questions") or "").strip()
+        if q:
+            bits.append(f"{s['past_q']}: {_trim(q, q_budget)}")
+        if r.get("self_rating") is not None:
+            bits.append(f"{s['past_rating']}: {r['self_rating']}/5")
+        imp = (r.get("impressions") or "").strip()
+        if imp:
+            bits.append(f"{s['past_impr']}: {_trim(imp, i_budget)}")
+        entry = "\n".join(bits)
+        if used + len(entry) > cap and parts:
+            break
+        parts.append(entry)
+        used += len(entry)
+    return "\n\n".join(parts)
+
+
+def _trim(text: str, limit: int) -> str:
+    """Collapse whitespace and cut to limit, marking the cut."""
+    flat = " ".join(text.split())
+    return flat if len(flat) <= limit else flat[:limit].rstrip() + " …"
 
 
 def _submission_evidence(conn, job: dict, lang: str) -> str:
@@ -1106,14 +1200,14 @@ def _submission_evidence(conn, job: dict, lang: str) -> str:
 
     cover_letter = ""
     cl_header = ""
-    custom_qa: dict = {}
+    custom_qa: dict | list = {}
     meta_line = ""
 
     if submitted is not None:
         cover_letter = (submitted.get("cover_letter") or "").strip()
         cl_header = s["subm_cl"]
         try:
-            custom_qa = json.loads(submitted.get("custom_qa") or "{}")
+            custom_qa = json.loads(submitted.get("custom_qa") or "[]")
         except (json.JSONDecodeError, TypeError):
             custom_qa = {}
         parts = []
@@ -1141,7 +1235,7 @@ def _submission_evidence(conn, job: dict, lang: str) -> str:
         lines += [cl_header, "", cover_letter, ""]
     if custom_qa:
         lines += [s["subm_qa"], ""]
-        for q, a in custom_qa.items():
+        for q, a in _qa_pairs(custom_qa):
             lines += [f"**Q:** {q}", "", f"**A:** {a}", ""]
     return "\n".join(lines).rstrip()
 
@@ -1178,6 +1272,12 @@ def generate_brief_for_job(
     )
 
     s = _BRIEF_SECTIONS.get(lang, _BRIEF_SECTIONS["en"])
+    past = _past_interview_block(conn, lang, exclude_job_id=job_id)
+    past_block = (
+        f"\n{s['past_title']}\n{s['past_hint']}\n<document>\n"
+        f"{_sanitize_jd(past)}\n</document>\n" if past else ""
+    )
+    past_out = f"\n\n{s['past_sec']}\n{s['past_sec_h']}" if past else ""
     prompt = BRIEF_PROMPT_TEMPLATE.format(
         intro=s["intro"],
         inj=s["inj"],
@@ -1198,6 +1298,8 @@ def generate_brief_for_job(
         highlights_h=s["highlights_h"],
         questions=s["questions"],
         questions_h=s["questions_h"],
+        past_block=past_block,
+        past_out=past_out,
         company=job["company"],
         title=job["title"],
         location=job.get("location") or "—",
