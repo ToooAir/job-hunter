@@ -526,6 +526,25 @@ def get_interview_records(conn: sqlite3.Connection, job_id: str) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def get_all_interview_records(
+    conn: sqlite3.Connection,
+    round: str = "interview_1",
+    limit: int = 20,
+) -> list[dict]:
+    """Interview records across ALL jobs, most recent first.
+
+    get_interview_records answers "what happened at this company"; this one
+    answers "what keeps being asked of me", which is what the interview brief
+    needs to prepare an answer for next time.
+    """
+    rows = conn.execute(
+        "SELECT * FROM interview_records WHERE round = ? "
+        "ORDER BY interview_date DESC, created_at DESC LIMIT ?",
+        (round, limit),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def delete_interview_record(conn: sqlite3.Connection, record_id: int) -> None:
     conn.execute("DELETE FROM interview_records WHERE id = ?", (record_id,))
     conn.commit()
