@@ -161,6 +161,46 @@ class IsOnlineTest(unittest.TestCase):
     def test_unreachable_host_is_offline(self):
         self.assertFalse(scheduler.is_online("https://127.0.0.1:1/", timeout=1))
 
+    def test_http_error_status_counts_as_online(self):
+        """The probe now points at the LLM provider's own root (2026-09-05).
+        An API root answers an unauthenticated GET with 200, 401 or 404
+        depending on the provider — all of them prove connectivity, and
+        reading them as offline would mean the daily run never fires."""
+        import urllib.error
+        for code in (401, 403, 404, 500):
+            err = urllib.error.HTTPError("https://api.test/", code, "no", {}, None)
+            with mock.patch.object(scheduler.urllib.request, "urlopen", side_effect=err):
+                self.assertTrue(scheduler.is_online("https://api.test/"), code)
+
+    def test_probe_url_follows_the_provider(self):
+        """PROBE_URL used to be hard-coded to api.mistral.ai — under
+        LLM_PROVIDER=azure that deferred runs on an outage at a provider we
+        no longer call."""
+        from utils import llm
+        cases = [
+            ("azure",   {"AZURE_ENDPOINT": "https://res.openai.azure.com"},
+             "https://res.openai.azure.com"),
+            ("custom",  {"CUSTOM_BASE_URL": "http://localhost:11434/v1"},
+             "http://localhost:11434/v1"),
+            ("mistral", {}, "https://api.mistral.ai/"),
+            ("openai",  {}, "https://api.openai.com/"),
+            # provider configured but endpoint missing → merely reachable host
+            ("azure",   {"AZURE_ENDPOINT": ""}, "https://api.openai.com/"),
+        ]
+        for provider, env, expected in cases:
+            with mock.patch.object(llm, "LLM_PROVIDER", provider), \
+                 mock.patch.object(llm, "AZURE_ENDPOINT", env.get("AZURE_ENDPOINT", "")), \
+                 mock.patch.object(llm, "CUSTOM_BASE_URL", env.get("CUSTOM_BASE_URL", "")), \
+                 mock.patch.dict("os.environ", {"PIPELINE_PROBE_URL": ""}):
+                self.assertEqual(llm.probe_url(), expected, provider)
+
+    def test_explicit_probe_url_still_wins(self):
+        from utils import llm
+        with mock.patch.object(llm, "LLM_PROVIDER", "azure"), \
+             mock.patch.object(llm, "AZURE_ENDPOINT", "https://res.openai.azure.com"), \
+             mock.patch.dict("os.environ", {"PIPELINE_PROBE_URL": "https://example.test/"}):
+            self.assertEqual(llm.probe_url(), "https://example.test/")
+
 
 class TransientClassificationTest(unittest.TestCase):
     def _status_error(self, code: int):

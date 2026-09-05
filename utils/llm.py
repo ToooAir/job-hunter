@@ -484,6 +484,30 @@ def emb_model() -> str:
     return _resolve("EMB")[0]
 
 
+def probe_url() -> str:
+    """Host for the scheduler's connectivity probe.
+
+    Probing the provider we actually call is the point: a run deferred because
+    api.mistral.ai is unreachable is meaningless once LLM_PROVIDER=azure. The
+    scheduler treats any HTTP response — 401/404 included — as online, which
+    is what an API root returns to an unauthenticated GET.
+
+    PIPELINE_PROBE_URL overrides everything; a provider whose endpoint is not
+    configured falls back to a host that is merely reachable, since the probe
+    only has to answer "is there internet".
+    """
+    override = os.getenv("PIPELINE_PROBE_URL", "").strip()
+    if override:
+        return override
+    if LLM_PROVIDER == "azure" and AZURE_ENDPOINT:
+        return AZURE_ENDPOINT
+    if LLM_PROVIDER == "custom" and CUSTOM_BASE_URL:
+        return CUSTOM_BASE_URL
+    if LLM_PROVIDER == "mistral":
+        return "https://api.mistral.ai/"
+    return "https://api.openai.com/"
+
+
 def embed(client, inputs, model: str | None = None):
     """client.embeddings.create with rate limiting and usage accounting.
 

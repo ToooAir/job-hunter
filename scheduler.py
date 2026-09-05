@@ -52,6 +52,10 @@ from utils.db import (
 
 load_dotenv()
 
+# after load_dotenv: utils.llm snapshots LLM_PROVIDER / AZURE_ENDPOINT at
+# import time (same ordering as phase2_scorer)
+from utils.llm import probe_url  # noqa: E402
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -67,7 +71,7 @@ MIN_INTERVAL_HOURS = float(os.getenv("PIPELINE_MIN_INTERVAL_HOURS", "20"))
 ANCHOR_HOUR        = int(os.getenv("PIPELINE_ANCHOR_HOUR", "7"))
 ANCHOR_GAP_HOURS   = float(os.getenv("PIPELINE_ANCHOR_GAP_HOURS", "6"))
 TICK_SECONDS       = int(os.getenv("PIPELINE_TICK_SECONDS", "60"))
-PROBE_URL          = os.getenv("PIPELINE_PROBE_URL", "https://api.mistral.ai/")
+PROBE_URL          = probe_url()   # provider-scoped; PIPELINE_PROBE_URL still wins
 STALE_RUN_HOURS    = 48   # an open run older than this is abandoned, not resumed
 EX_TEMPFAIL        = 75   # contract with phase2_scorer.EXIT_TRANSIENT
 BACKOFF_BASE_S     = 300  # first retry after a transient failure: 5 min
