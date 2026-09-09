@@ -30,12 +30,13 @@
 ## 功能特色
 
 **Pipeline**
-- 每日排程爬取 16 個來源（API + HTML，依 JD 內容雜湊自動去重）
+- 每日排程爬取 14 個來源（API + HTML，依 JD 內容雜湊自動去重）；另有 3 個爬蟲能跑但刻意關閉
 - 自動偵測德文 JD 並翻譯為英文後再評分
 - JD 注入 LLM 前先做清理，防禦職缺描述中夾帶的 Prompt Injection 攻擊
 - 基於個人履歷知識庫的 RAG 增強 LLM 評分
-- A/B/C 分級，含來源加分機制（Relocate.me、Greenhouse、Lever、Bundesagentur）
+- A/B/C 分級：直接 ATS 刊登有來源加分，資歷過度超出的職稱則降權
 - 每筆職缺自動產出 Cover Letter，支援三種語氣調整（正式 / 新創 / 精簡）
+- 每次 LLM 呼叫都記進 JSONL 帳本並附估計成本，另有選用的每日預算——失控時中止的是這次執行，不是你的信用卡額度
 
 **半自動投遞**
 - 地理分流：裸 "Remote" 職缺按「德國可否受僱」分類（每日免費規則層;LLM 補判按需手動觸發），關鍵字漏掉的德國地名自動正規化,不再默默掉出佇列
@@ -50,17 +51,18 @@
 **按需分析（每筆職缺，一鍵觸發）**
 - 薪資估計 + 談判建議（市場區間、開價建議、底線）
 - 公司研究（爬取官網 + LLM 摘要：技術堆疊、文化、搬遷支援/Relocation 政策）
-- 面試準備單：角色摘要、核心技術要求、推斷痛點、你的相關亮點、5 個可能被問的問題
+- 面試準備單：角色摘要、核心技術要求、推斷痛點、你的相關亮點、5 個可能被問的問題，外加針對你自己過往一面實際記錄下來的題目給出的建議答法
 
 **求職追蹤**
 - 完整狀態流程：`已評分 → 已投遞 → 一面 → 二面 → Offer / 已拒絕`
 - 每輪結構化面試記錄（日期、形式、問題、自我評分、感想）
 - 跟進提醒（投遞後自動設為 7 天，可自訂）
 - 重複投遞警告（偵測是否已投遞過同公司其他職缺）
-- 統計儀表板：等級分布、來源效益表、求職漏斗、每週投遞趨勢
+- 草稿老化：等待中的草稿會顯示已經放多久，超過 7 天的排到最上面並標記——草稿還在等的時候，職缺就過期了
+- 統計儀表板：等級分布、來源效益表、求職漏斗、每週投遞趨勢、LLM 估計花費
 
 **靈活性**
-- 支援 OpenAI、Mistral AI（有免費方案）、Azure OpenAI，或任何本地/自訂 LLM 端點
+- 支援 OpenAI、Mistral AI、Azure OpenAI，或任何本地/自訂 LLM 端點——模型名稱依 Provider 分組解析，切換 `LLM_PROVIDER` 就整組換掉，其他 Provider 殘留的設定不會亂入
 - 完整 Docker 化 — 一行 `docker compose up -d` 即可啟動
 - 儀表板支援 **English / 中文** 切換 — Sidebar 即時切換，無需重啟
 - 所有個人資料（履歷、API Key、資料庫）留在本地，不上傳任何外部服務
@@ -73,11 +75,11 @@
 
 ```
 phase1_ingestor → remote_geo_triage → phase2_scorer → ats_scan → apply_stage1
-16 個來源爬入      Remote/漏網德國      RAG + LLM       ATS 平台      投遞佇列
+14 個來源爬入      Remote/漏網德國      RAG + LLM       ATS 平台      投遞佇列
 SQLite 自動去重    地名重標             評分、CL、翻譯   + 存活檢查    草稿生成
 ```
 
-**Phase 1** 從 16 個來源爬取，依 JD 內容雜湊（第 50–550 字元，跳過平台套版開頭）去重。**地理分流**把裸 `Remote` 職缺按德國可否受僱重標,並正規化關鍵字漏掉的德國地名（`"Dresden (DE)"`、`"54595 Prüm"`、二線城市）——明確境外的職缺完全跳過 LLM 評分,評分開銷約砍半。**Phase 2** 偵測德文 JD 並翻譯，透過 RAG 對照個人知識庫評分，分出 A/B/C 級。**ats_scan** 判定每筆佇列候選跑在哪個 ATS（Greenhouse / Lever / Ashby / Workable / Personio…）以及是否還活著。**Stage 1** 建立排序佇列（同公司去重、每日額度）並生成有依據的投遞草稿。
+**Phase 1** 從 14 個來源爬取，依 JD 內容雜湊（第 50–550 字元，跳過平台套版開頭）去重。**地理分流**把裸 `Remote` 職缺按德國可否受僱重標,並正規化關鍵字漏掉的德國地名（`"Dresden (DE)"`、`"54595 Prüm"`、二線城市）——明確境外的職缺完全跳過 LLM 評分,評分開銷約砍半。**Phase 2** 偵測德文 JD 並翻譯，透過 RAG 對照個人知識庫評分，分出 A/B/C 級。**ats_scan** 判定每筆佇列候選跑在哪個 ATS（Greenhouse / Lever / Ashby / Workable / Personio…）以及是否還活著。**Stage 1** 建立排序佇列（同公司去重、每日額度）並生成有依據的投遞草稿。
 
 **Phase 3** 是 Streamlit 儀表板，用於審閱、編輯、投遞和追蹤完整面試流程;搭配瀏覽器套件在 ATS 表單一鍵填入個人資料、複製貼上式回答開放題——**送出永遠由人審閱後親自按下,不會自動投遞。**套件的安裝與使用說明見 [`extension/README.md`](extension/README.md)。
 
@@ -94,7 +96,7 @@ job-hunter/
 ├── docker-compose.yml
 ├── run_pipeline.sh                   # 手動全鏈執行（儀表板「立即執行」按鈕呼叫）
 ├── scheduler.py                      # 追趕式排程器（間隔制,中斷後從未完成的 stage 續跑）
-├── phase1_ingestor.py                # 爬取職缺（16 個來源）
+├── phase1_ingestor.py                # 爬取職缺（14 個啟用來源，另 3 個關閉）
 ├── remote_geo_triage.py              # Remote/漏網德國地名按受僱資格重標
 ├── phase2_scorer.py                  # LLM 評分 + Cover Letter + 面試準備單
 ├── ats_scan.py                       # ATS 平台判定 + 佇列候選存活檢查
@@ -102,6 +104,7 @@ job-hunter/
 ├── apply_api.py                      # 瀏覽器套件的本機 sidecar API（127.0.0.1:8531）
 ├── phase3_dashboard.py               # Streamlit 審閱儀表板（支援 EN / 中文）
 ├── extension/                        # 瀏覽器套件：ATS 自動填入 + 回答面板
+├── scripts/                          # 一次性回填腳本與量測實驗
 ├── tests/                            # 單元測試（在容器內執行）
 ├── check_api.py                      # LLM + Embedding API 連線快速檢查
 ├── LICENSE
@@ -122,15 +125,17 @@ job-hunter/
 ├── docs/
 │   └── screenshot.png
 ├── data/
-│   └── jobs.db                       # SQLite 資料庫（不納入版本控制）
+│   ├── jobs.db                       # SQLite 資料庫（不納入版本控制）
+│   └── llm_usage.jsonl               # 逐次呼叫的 token + 估計成本帳本（不納入版本控制）
 ├── qdrant_data/                      # 本地向量資料庫（不納入版本控制）
 ├── logs/
 │   └── pipeline.log                  # 排程執行記錄
 └── utils/
     ├── db.py                         # SQLite 操作 + 狀態流轉
     ├── kb_loader.py                  # 從 candidate_kb/ 建立 Qdrant 知識庫
-    ├── llm.py                        # OpenAI / Mistral / Azure / 自訂端點工廠
+    ├── llm.py                        # 端點工廠、chat/embed 封裝、用量帳本 + 預算閘門
     ├── geo_de.py                     # 德國地點比對（單一事實來源）
+    ├── lang_req.py                   # 德語要求 regex 閘門（在任何 LLM 呼叫之前執行）
     ├── apply_queue.py                # 投遞佇列（去重閘門、額度、ATS 偏好排序）
     ├── apply_llm.py                  # 投遞流程共用 LLM plumbing
     ├── apply_verifier.py             # 生成草稿的事實查核層
@@ -219,19 +224,30 @@ OPENAI_API_KEY=sk-...
 # LLM_PROVIDER=mistral
 # MISTRAL_API_KEY=your_key_here
 # CHAT_MODEL=mistral-small-2603
+# MISTRAL_TRANSLATION_MODEL=mistral-small-2603   # 選用：JD 翻譯走獨立的限流桶
 # EMB_MODEL=mistral-embed
 # MISTRAL_MAX_CONCURRENT=3   # 並發評分數（預設 3，視帳號 TPM 調整）
 
 # Azure OpenAI
 # LLM_PROVIDER=azure
 # AZURE_ENDPOINT=https://...
-# AZURE_API_VERSION=2024-08-01-preview
-# AZURE_CHAT_DEPLOYMENT=gpt-4o
+# AZURE_API_VERSION=2024-12-01-preview
+# AZURE_CHAT_DEPLOYMENT=gpt-5.6-luna
+# AZURE_TRANSLATION_DEPLOYMENT=gpt-5-nano   # 選用：JD 翻譯改用較便宜的模型
 # AZURE_EMB_DEPLOYMENT=text-embedding-3-small
 
 # 自訂 / 本地端點（LiteLLM、Ollama、vLLM 等）
 # LLM_PROVIDER=custom
 # CUSTOM_BASE_URL=http://localhost:11434/v1
+
+# CHAT_REASONING_EFFORT=low      # 推理模型每次 chat 呼叫都會帶上；不設就不送
+# KB_SCORE_THRESHOLD=0.35        # KB 檢索的 cosine 下限；預設隨 Embedding 模型而定
+# PIPELINE_PROBE_URL=            # 排程器的連線探測目標；預設隨 LLM_PROVIDER 而定
+
+# LLM 成本護欄（見下方「LLM 成本護欄」）
+# LLM_DAILY_BUDGET_USD=2.0       # 單一本地日的估計花費上限；不設 = 無上限
+# LLM_PRICE_CHAT=0.20/0.10/1.20  # 每 1M token 單價，格式為 input/cached/output；覆寫內建價目表
+# LLM_USAGE_PATH=./data/llm_usage.jsonl
 
 DB_PATH=./data/jobs.db
 QDRANT_PATH=./qdrant_data
@@ -243,6 +259,33 @@ QDRANT_PATH=./qdrant_data
 ```
 
 > **切換 Provider 注意**：若更換 Embedding 模型（例如從 OpenAI `text-embedding-3-small`（1536 維）換為 Mistral `mistral-embed`（1024 維）），必須重建知識庫：`python utils/kb_loader.py`
+
+### 測試
+
+沒有獨立的 CI——就這一行容器執行：
+
+```bash
+docker run --rm -v "$PWD":/app -w /app -v "$PWD"/config:/app/config:ro \
+  -e JOB_HUNTER_SKIP_DOTENV=1 \
+  job-hunter-app:latest python3 -m unittest discover tests -q
+```
+
+掛載會把 `.env` 一起帶進容器，所以少了 `JOB_HUNTER_SKIP_DOTENV=1`，每個新加進 `.env` 的變數都會變成無聲的測試輸入——`CHAT_REASONING_EFFORT`、`KB_SCORE_THRESHOLD`、`AZURE_TRANSLATION_DEPLOYMENT` 各自都這樣弄壞過測試。這個旗標讓四支模組層級的 `load_dotenv()`（phase1、phase2、scheduler、check_api）變成 no-op。執行時不受影響：三個容器的環境變數是 compose 的 `env_file` 給的。
+
+### LLM 成本護欄
+
+每次 chat 與 embedding 呼叫都經過 `utils/llm.py`，逐筆往 `data/llm_usage.jsonl` 追加一行 JSON——模型、種類、token 數（輸入 / 快取 / 輸出），以及依該模組價目表算出的**估計**成本。儀表板的 💸 卡片只讀這個檔案，從不呼叫 Provider。Provider 的帳單才是權威，帳本只是持續逼近的近似值。
+
+`LLM_DAILY_BUDGET_USD` 限制單一本地日（`TZ=Europe/Berlin`，與帳本蓋時間戳的是同一個時鐘）。Phase 2 每評一筆前先檢查當日總額；達到上限就以 exit 75 中止，排程器隨之退避，職缺留在 `un-scored`，而且**不會有任何一筆被標成 `error`**。不設定就維持原本的無上限行為——配額制的免費方案還好，後付費 Provider 上就危險：失控迴圈會一路刷卡，而不是停下來。
+
+要刻意做大量重評時，用單次執行覆寫上限，不必去改 `.env`（改了還得重啟容器才生效）：
+
+```bash
+docker compose exec pipeline python scripts/rescore_generic_backend.py --cohort model-swap --budget 5
+docker compose exec pipeline python phase2_scorer.py --rescore --budget 5
+```
+
+若某個模型不在價目表裡、也沒有 `LLM_PRICE_<KIND>` 覆寫，其呼叫仍會記錄 token 數，但 `est_usd: null`——這些呼叫對預算閘門是隱形的，log 和儀表板都會明講。
 
 ### `config/grading_rules.md`
 
@@ -333,23 +376,30 @@ docker compose exec pipeline python utils/kb_loader.py
 | 來源 | 方式 | 說明 |
 |------|------|------|
 | [Arbeitnow](https://www.arbeitnow.com) | JSON API | 穩定；含英德文職缺 |
-| [WeAreDevelopers](https://www.wearedevelopers.com) | Private REST API | 德語圈最大開發者求職板；德國 + 遠端雙 pass |
+| [WeAreDevelopers](https://www.wearedevelopers.com) | Markdown 端點 | 德語圈最大開發者求職板。JSON API 於 2026-08 退役，之後每次查詢都回空陣列，整整 16 天沒人發現；爬蟲改讀站方自己在 `agents.md` 裡寫明的 `/jobs.md` + `/jobs/ext/<id>.md` |
 | [EnglishJobs.de](https://englishjobs.de) | HTML 爬取 | 德國英語職缺 |
-| [Bundesagentur für Arbeit](https://api.arbeitsagentur.de) | REST API | 德國官方職缺平台 |
+| [Bundesagentur für Arbeit](https://api.arbeitsagentur.de) | REST API | 德國官方職缺平台；全國 + 分頁抓取。端點與欄位名稱取自站方自己的 `config.js`——v2 host 已退役，維護頁面卻回 HTTP 200，所以用舊 URL 會靜默失敗 |
 | [Remotive](https://remotive.com) | JSON API | 純遠端，英語 |
-| [Relocate.me](https://relocate.me) | HTML 爬取 | 提供搬遷協助的職缺 |
-| [Jobicy](https://jobicy.com) | JSON API | 純遠端；含地區排除篩選 |
 | [Ashby ATS](https://jobs.ashbyhq.com) | GraphQL API | 公司專屬職缺板，無需認證 |
 | [Workable ATS](https://apply.workable.com) | REST API | 公司專屬職缺板；內建 429 指數退避 |
-| [We Work Remotely](https://weworkremotely.com) | RSS feed | 程式設計 + DevOps / 系統管理 feed |
 | [Greenhouse ATS](https://boards-api.greenhouse.io) | JSON API | 公司專屬職缺板，無需認證 |
 | [Heise Jobs](https://jobs.heise.de) | HTML 爬取 | 德國 IT 求職板；SSR 累積分頁 |
 | [Personio ATS](https://personio.de) | XML feed | 公司專屬 feed：`{slug}.jobs.personio.de/xml` |
 | [Welcome to the Jungle](https://www.welcometothejungle.com) | Algolia API | 歐洲新創職缺；僅英語，遠端 EU + 德國辦公室篩選 |
 | [Lever ATS](https://api.lever.co) | JSON API | 公司專屬職缺板，無需認證 |
+| [GermanTechJobs](https://germantechjobs.de) | 內部 REST API + Playwright | 對英語友善的德國技術職缺；JD 需要瀏覽器才拿得到，所以每次執行的詳情抓取有上限 |
+| [Jobware](https://www.jobware.de) | HTML 爬取 | 德國綜合求職板；只收企業自刊職缺 |
 | LinkedIn / StepStone / 其他 | 儀表板手動 | 搜尋捷徑按鈕 + 手動新增表單 |
 
-GermanTechJobs 目前停用（JS SPA，需 Playwright）。
+**已關閉**——爬蟲本身還能跑，只是在 `phase1_ingestor.main` 裡把呼叫註解掉並在旁邊寫上理由，取消註解即可恢復：
+
+| 來源 | 方式 | 關閉原因 |
+|------|------|----------|
+| [Relocate.me](https://relocate.me) | HTML 爬取 | 人已經在德國之後，搬遷職缺板就失去意義 |
+| [Jobicy](https://jobicy.com) | JSON API | 全球遠端職缺板：0 次投遞，草稿全數因地理／職務不符被放棄（2026-07-08 放棄草稿檢討） |
+| [We Work Remotely](https://weworkremotely.com) | RSS feed | 同一次檢討、同樣結論——草稿都死在失效或偏離目標的連結上 |
+
+某個來源連續三次執行都回報「0 筆新增、0 筆跳過」會發出警告（`utils/source_health.py`）——注意這只涵蓋該次執行真的有呼叫的來源，關閉中的來源本來就不會出聲。活著的來源一定會「跳過」看過的職缺，所以完全沉默代表端點死了或改了——WeAreDevelopers 就這樣安靜了 16 天才有人去讀 log。
 
 ---
 
@@ -363,14 +413,21 @@ GermanTechJobs 目前停用（JS SPA，需 Playwright）。
 
 Phase 2 使用 Token 頻率啟發式方法（>8% 德文功能詞）偵測德文 JD，偵測到後透過單次 LLM 呼叫翻譯為英文再評分與向量化。翻譯結果快取在資料庫中——重新評分時直接重用，不額外消耗 API。
 
+評分模型本身就讀得懂德文，這一步看起來多餘，所以是實測而非猜測（`scripts/experiment_translation_retirement.py`，40 筆德文 JD 各評兩次）：改用德文原文評分，KB 檢索重疊度中位數掉到 5 塊裡只剩 3 塊、40 筆中有 3 筆低於檢索門檻、6 筆等級判定不一致（其中 5 筆是德文組給得**更低**），還多出 2 筆語言要求誤判——那 2 筆翻譯組是對的。所以保留。換新模型後想重新檢討這個呼叫，先把那支腳本再跑一次。
+
 ### 預先過濾（LLM 呼叫前）
+
+幾乎沒有職缺走得到模型面前。2026-09-05 那次執行，4,586 筆 un-scored 進入 Phase 2，只有 144 筆真的送去評分——4,193 筆明顯不在德國、166 筆是學生／實習職、62 筆命中德語要求規則、21 筆已過期。每道過濾都是確定性且便宜的；LLM 是最後手段，不是第一關。
 
 | 條件 | 動作 |
 |------|------|
 | 自 `fetched_at` 起超過來源 TTL（見下表） | → `expired`（TTL 到期，最先執行） |
 | `expires_at` 已過期 | → `expired`（明確截止日） |
 | 地點明寫非德國國家/城市，或地理分流已判 `Remote — non-EU` | → 跳過，保持 `un-scored`（不呼叫 LLM;由 TTL 清理） |
+| 職稱屬學生 / 工讀生 / 實習職 | → 跳過，保持 `un-scored` |
+| JD 明確要求德語達 C1/C2/流利/`verhandlungssicher`（`utils/lang_req.py`） | → 直接記為 `scored`、C 級 / `de_required`，`top_3_reasons` 前綴 `rule-gated:`（不呼叫 LLM） |
 | JD 文字少於 100 字元 | → `error`（不呼叫 LLM） |
+| 今日估計 LLM 花費已達 `LLM_DAILY_BUDGET_USD` | → 該次執行以 exit 75 中止，剩餘職缺留在 `un-scored` 等下一次 |
 
 **來源 TTL 預設值**（scraper 未填入 `expires_at` 時使用）：
 
@@ -388,18 +445,20 @@ TTL 過期檢查也會在每次開啟儀表板時自動執行，無需等到 Pha
 
 | 等級 | 條件 |
 |------|------|
-| A | 分數 ≥ 80，語言要求非 `de_required` |
-| B | 60 ≤ 分數 < 80，語言要求非 `de_required` |
+| A | 分數 ≥ 76，語言要求非 `de_required` |
+| B | 60 ≤ 分數 < 76，語言要求非 `de_required` |
 | C | 分數 < 60 或語言要求為 `de_required` |
 
-**來源加分**（LLM 評分後在 Python 套用）：
+A 級門檻是對著評分模型校準的，不是對著分級文字——不同模型把「強匹配」放在哪個刻度差很多。`mistral-medium` 預設把強匹配打在 75 分；`gpt-5.6-luna` 整體低約 10 分且刻度被壓縮，所以要用 76 才能還原同樣的 A:B 比例。動這個門檻之前，先跑一次 A/B 對照。
 
-| 來源 | 加分 | 原因 |
+**LLM 之後的確定性調整**（在 Python 端套用——比在 Prompt 裡要求模型自己算可靠）：
+
+| 來源 / 職稱 | 調整 | 原因 |
 |------|------|------|
-| relocateme | +10 | 公司主動提供搬遷協助 |
-| greenhouse | +5 | 直接 ATS 刊登——積極招募訊號 |
-| lever | +5 | 直接 ATS 刊登——積極招募訊號 |
-| bundesagentur | +5 | 官方平台；簽證友善雇主比例較高 |
+| greenhouse、lever | +5 | 直接 ATS 刊登——積極招募訊號 |
+| Principal / Staff / Head of / Architect 職稱 | −15 | 遠超出候選人射程；只是軟降權而非硬砍，所以真的特別匹配的仍浮得上來 |
+
+`bundesagentur` 的 +5 加分已於 2026-09 移除：「官方平台簽證友善雇主較多」這個前提沒有數據支撐，而第一批數據（投 37 筆、12 天內被拒 19 筆、0 場面試）反而指向相反結論。
 
 **簽證分類**（從 JD 文字判斷）：`open` · `eu_only` · `sponsored` · `unclear`
 
@@ -428,10 +487,16 @@ un-scored（待評分）
 ## 儀表板功能
 
 ### KPI 列
-待審閱 · 本週投遞 · 面試中 · Offer · 待跟進 · 評分失敗
+待審閱 · 本週投遞 · 面試中 · Offer · 待跟進 · 已讀不回 · 評分失敗
+
+### 草稿庫存
+趨勢指標下方的一行：多少草稿在等、最舊那筆放了多久、本週投出幾封。草稿放超過一週會轉成琥珀色——草稿在等的時候職缺會過期，而且沒有任何機制會自動撤回。
+
+### LLM 花費（估計）
+今日與本月的估計花費，加上今日呼叫次數，全部只讀 `data/llm_usage.jsonl`——這張卡片從不呼叫 Provider。分析展開區內有逐模型明細（呼叫次數、輸入／輸出 token、估計成本）。估計值由 token 數與價目表算出；Provider 的帳單才是權威。
 
 ### 統計分析面板
-等級分布 · 語言要求分布 · 求職漏斗 · 來源效益表（A 級率、面試率）· 每週投遞趨勢（近 8 週）
+等級分布 · 語言要求分布 · 求職漏斗 · 來源效益表（A 級率、面試率）· 每週投遞趨勢（近 8 週）· LLM 各模型花費
 
 ### 職缺清單
 
@@ -514,6 +579,8 @@ un-scored（待評分）
 | 簽證分析 | 1 chat | 2,000–4,000 |
 
 所有按需分析（簽證、薪資、公司研究）皆為每筆職缺選擇性觸發——點擊儀表板按鈕後才執行。
+
+上表是計費機制存在之前的估計值。`data/llm_usage.jsonl` 現在會記錄每次呼叫的真實 token 數，所以 `LLM_DAILY_BUDGET_USD` 可以照你自己的數字設，不必參考這張表。用 `gpt-5.6-luna` 的平常一天（評分 60–130 筆，大約一半需要翻譯）大概落在 $0.20。
 
 ---
 
