@@ -34,3 +34,12 @@ story.md
 # Chrome "Pack extension" output (extension.pem is a private signing key)
 extension.crx
 extension.pem
+
+# Personal job-search notes. This repo is public: these are working notes about
+# named companies, real interviews, salary bands disclosed in confidence, and
+# visa/health circumstances. The files stay on disk, out of git.
+docs/interview_retro_*
+docs/plan_*
+docs/worklist_*
+docs/handoff_prompt_*
+docs/*_pilot_batch.md
