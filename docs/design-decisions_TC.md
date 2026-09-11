@@ -54,14 +54,19 @@
 
 ### 決策理由
 - **Metadata 前綴注入**：如果只是將履歷單純按段落切 Chunk，Chunk 會喪失原本所屬章節的上下文資訊（例如：只剩一句「開發了微服務 API」）。系統在產生 Embedding 前，會自動將所屬的標題階層（`H1`/`H2`）作為前綴注入（如 `[Projects: ProjectX | Backend Engineer] - 開發了微服務 API`）。這確保了向量空間的語意更貼近特定的技術堆疊，提升 Query 命中率。
-- **Cos Similarity 動態門檻**：設定 `_KB_SCORE_THRESHOLD = 0.60`，過濾掉關聯度低於門檻的 Hits。
+- **Cosine 相似度下限——依 embedding 模型而定**：`_kb_score_threshold()` 濾掉低於下限的 Hits，而這個下限**取決於建 KB 的是哪個 embedding 模型**：`mistral-embed` 是 0.60、`text-embedding-3-*` 是 0.35。這裡的陷阱正是「寫死一個數字」本身，詳見 §17。
 
 ### 踩過的坑與解法
-Vector DB（如 Qdrant）的特性是「永遠會回傳 Top K 個結果」，即使職缺技術棧與履歷「完全無關」，它還是會硬擠出分數最低但相對最接近的經歷。這曾導致 LLM 拿到不相干的經驗來胡亂拼湊求職信。**解法**是透過上述的 0.60 相似度門檻攔截，若無達標經歷則直接 fallback 回傳 `[No relevant experience found in KB]`，讓 LLM 明白「此處無參考資料」，由它自行透過常識處理，而非基於錯誤資料產生嚴重幻覺。
+Vector DB（如 Qdrant）的特性是「永遠會回傳 Top K 個結果」，即使職缺技術棧與履歷「完全無關」，它還是會硬擠出分數最低但相對最接近的經歷。這曾導致 LLM 拿到不相干的經驗來胡亂拼湊求職信。**解法**是透過上述依模型而定的相似度下限攔截，若無達標經歷則直接 fallback 回傳 `[No relevant experience found in KB]`，讓 LLM 明白「此處無參考資料」，由它自行透過常識處理，而非基於錯誤資料產生嚴重幻覺。
 
 ---
 
 ## 6. Token 與 API 最佳化：如何適應嚴苛的 Provider 限制？
+
+> **狀態（2026-09-11）**：下方的並發機制仍在程式中、仍然正確，但**數字已經不是**了——
+> 正式環境已於 2026-09-04 改用 Azure OpenAI。Mistral 的 RPS/TPM 表是塑造這個設計的
+> 約束，不是它現在執行的約束。保留的理由是那套推理（兩個各自獨立的天花板，以及哪一個
+> 才是真正的瓶頸）換到任何 Provider 都適用。
 
 使用 Mistral 等外部 API 時，需克服嚴苛的 Rate Limit（1 RPS）與每分鐘 Token 上限（TPM）。
 
@@ -120,7 +125,7 @@ with ThreadPoolExecutor(max_workers=max_concurrent) as executor:
 
 ## 8. Embedding Model 選用：為什麼不能隨意切換？
 
-系統支援 OpenAI（`text-embedding-3-small`，1536 維）與 Mistral（`mistral-embed`，1024 維）兩種 Embedding Model，但**兩者在同一個 Vector Collection 內不可混用**，必須擇一並貫徹到底。
+系統支援三種 Embedding 後端：OpenAI 與 Azure OpenAI（`text-embedding-3-small`，1536 維）以及 Mistral（`mistral-embed`，1024 維），但**它們在同一個 Vector Collection 內不可混用**，必須擇一並貫徹到底。
 
 ### 決策理由
 
@@ -141,6 +146,8 @@ Qdrant 的 Vector Collection 在建立時就會固定向量維度，之後無法
 vector_size = len(vectors[0])   # 不再寫死 1536
 ```
 同時在 Phase 2 加入 KB 新鮮度時間戳（`qdrant_data/.kb_built_at`），每次執行前比對 `candidate_kb/` 目錄的檔案修改時間，若 KB 比 `.md` 檔案舊就發出 WARNING 提醒重建。
+
+**但新鮮度時間戳不夠。** 它抓得到「KB 過期」，抓不到「KB 是別的 embedding 模型建的」——而後者失敗得安靜得多：維度甚至可能是吻合的（OpenAI 與 Azure 都回 1536 維），底下的相似度刻度卻已經位移。因此 `kb_loader.py` 另外寫入 `qdrant_data/.kb_model`，`check_kb_model()` 拒絕在別的模型建出來的 KB 上執行（scorer exit 2，`retrieve_context` 直接 raise）。**大聲失敗好過安靜地檢索不到東西。**
 
 ### 操作原則
 
@@ -217,10 +224,20 @@ Markdown 結構與 `\n\n` 切割互相配合後，每個 `##` 小節（公司或
 
 ### 後端（防止幻覺進入 Prompt）
 
-- **Embedding 相似度門檻 `_KB_SCORE_THRESHOLD = 0.60`**：Cosine similarity 低於 0.60 的 KB chunk 不會進入 Prompt。實際上，主要的過濾機制是 `top_k=5`——不論門檻為何，進入 Prompt 的最多只有分數最高的 5 個 chunk。門檻的作用是最後一道防線：若連排名第一的 chunk 都低於 0.60，系統會路由至 fallback，而非強行注入雜訊。
+- **Embedding 相似度下限（依模型而定）**：Cosine similarity 低於下限的 KB chunk 不會進入 Prompt，而下限隨 embedding 模型變動（`mistral-embed` 0.60、`text-embedding-3-*` 0.35）。實際上，主要的過濾機制是 `top_k=5`——不論門檻為何，進入 Prompt 的最多只有分數最高的 5 個 chunk。門檻的作用是最後一道防線：若連排名第一的 chunk 都低於 0.60，系統會路由至 fallback，而非強行注入雜訊。
 - **`[No relevant experience found in KB]` Fallback**：門檻過濾後無結果時的明確信號，引導 LLM 根據常識作答，而非幻覺捏造。
 
-**關於門檻校準**：2026-04-11 進行了 Spot-check（24 筆職缺 × 3 輪隨機抽樣，共 240 個分數），結果顯示 93.3% 的 top-10 命中分數 ≥0.70，最低分為 0.66，沒有任何分數低於 0.60。這確認了門檻在實務中幾乎不會被觸發——但樣本存在先天偏差：資料庫只收錄軟體工程職缺，對一份軟體工程師 KB 而言，分數自然偏高。真正與 KB 毫不相關的 JD（如護理師、業務）的分數下界並未被測試。0.60 保留為保守下限；若 KB 擴展至 15 個 chunk 以上，應重新進行實測。
+**關於門檻校準——以及這條門檻後來怎麼咬了我們一口。** 2026-04-11 的 Spot-check（24 筆職缺 × 3 輪隨機抽樣，共 240 個分數）顯示 93.3% 的 top-10 命中分數 ≥0.70，最低 0.66，沒有任何分數低於 0.60。當時下的結論是「門檻幾乎不會被觸發」，於是 0.60 就以保守下限的身分留了下來。
+
+那個結論只對 `mistral-embed` 成立，對其他模型都不成立。2026-09-04 換裝 Azure 時 KB 改用 `text-embedding-3-small` 重建，**同一批 JD 的 top-1 分數掉到 0.36–0.54**（中位數 0.45，實測 80 筆真實 JD，A/B 級與 C 級之間沒有區別）。0.60 的下限對上這個分布不是「幾乎不會觸發」，而是**全部擋掉**；而失敗的樣子不是報錯，是一封用 `[No relevant experience found in KB]` 寫出來的 Cover Letter。
+
+解法不是換一個更好的常數。**Cosine 相似度在不同 embedding 模型之間本來就不可比**，所以下限現在跟著模型走：
+
+```python
+return 0.35 if "text-embedding-3" in emb_model() else 0.60
+```
+
+並保留 `KB_SCORE_THRESHOLD` 作為引入新模型時的覆寫手段。這個教訓可以推廣到這個專案之外：**任何絕對的相似度門檻都是 embedding 模型的性質，不是你資料的性質**——換模型就必須重新量測；而且「安靜地什麼都檢索不到」比「直接報錯」危險得多。
 
 ### 為什麼不做 KB Chunk 透明度介面？
 
@@ -243,6 +260,14 @@ Markdown 結構與 `\n\n` 切割互相配合後，每個 `##` 小節（公司或
 切換 Provider 是高頻需求：Mistral 在某些地區速度更快、費率更低，而 OpenAI 在模型能力與穩定性上有優勢。若每個業務模組自己做 `if/else` 分支，Provider 切換就會變成散落在多處的修改任務，且容易漏改。
 
 工廠層讓這個決策**收斂到一個地方**：改 `.env` 的 `LLM_PROVIDER` 即完成切換，不需要動業務程式碼。這也讓未來加入第三個 Provider（如 Gemini、local Ollama）只需新增一個 `elif` 分支，不影響下游。
+
+### 但這層抽象有個洞：模型名稱
+
+工廠層藏起了「該建哪個 client」，模型名稱卻仍然來自扁平的環境變數（`CHAT_MODEL`、`EMB_MODEL`）。於是切換 `LLM_PROVIDER` 時，前一個 Provider 的模型名會留在原地——而且是**錯得很安靜**，不是缺值：把 Azure 的 deployment 名稱送去 Mistral，只會得到一個 400。
+
+`_resolve(kind)` 補掉這個洞：模型名稱依 Provider 分組解析，依序嘗試
+`AZURE_<KIND>_DEPLOYMENT` / `MISTRAL_<KIND>_MODEL` / `OPENAI_|CUSTOM_<KIND>_MODEL`，
+再落到通用的 `CHAT_MODEL` / `TRANSLATION_MODEL` / `EMB_MODEL`，最後才是 Provider 預設值。現在切 `LLM_PROVIDER` 是整組一起換，`.env` 裡其他 Provider 的殘留值也不會亂入。`model_summary()` 在 scorer 啟動時把解析結果寫進 log，所以 log 說的就是實際跑的。
 
 ### 這裡值得記錄的不是 Factory Pattern 本身
 
@@ -274,7 +299,11 @@ Embedded Qdrant 的限制是：同一時間只能有一個 process 持有資料�
 
 ---
 
-## 13. 為什麼 Phase 2 Chat Model 選用 mistral-small-2603 而非 mistral-large-2512？
+## 13. 為什麼 Phase 2 Chat Model 選用 mistral-small-2603 而非 mistral-large-2512？（歷史）
+
+> **已於 2026-09-04 被取代。** 正式環境現在跑 Azure OpenAI `gpt-5.6-luna`。
+> 這一節保留下來，是因為它記錄了一個**在當時的約束下正確**的決定；也因為它正好是
+> §17 的前情提要——那一節講的就是當約束改變時發生了什麼事。
 
 本系統的 Chat Model 在開發初期使用 `mistral-large-2512`，後來在月 Token 耗盡後切換至 `mistral-small-2603`，並確認效果符合需求後將其定為正式選用。這個決定不是被動降級，而是在橫向比較後的主動選擇。
 
@@ -384,3 +413,66 @@ Dashboard「全部刷新」按鈕直接迭代 `_ROLE_MAP` 取得 5 個已知 rol
 **為何不加一個 flag？** `fetch_levels_data(..., is_slug=True)` 讓同一個參數名稱在不同情況下接受兩種互不相容的輸入型別——`job_title` 有時是人類職稱，有時是已解析的 slug。正確行為取決於一個呼叫者必須記得設定的布林值。
 
 **決策：** `fetch_levels_by_slug(role_slug, location_slug)` 只接受已解析的 slug，明確標注為批次快取預熱用的入口點。當兩個呼叫端的輸入契約根本不相容時，命名清晰的獨立函式比模式旗標更容易理解和維護。
+
+---
+
+## 17. 換 LLM Provider：會壞掉的三件事
+
+§11 主張工廠層讓切換 Provider 變得很便宜。2026-09-04 把正式環境從 Mistral 搬到 Azure OpenAI，正好是對這個主張的檢驗。建 client 的部分確實只改了一行，但另外有三件事壞了，而且沒有一件是大聲壞的。
+
+**1. 參數。** GPT-5 家族直接拒絕 `temperature` 與 `max_tokens`——回的是 400，不是警告。全專案有十二個呼叫點，逐一去改既繁瑣又容易再漏。改成讓 adapter 學一次：攔下 400、從錯誤內容認出是哪個參數不被接受、拿掉該參數重試，並把這個教訓快取到本次執行結束。已經學會的兄弟 worker 不會重新踩一遍。業務程式照樣傳 `temperature`，由 adapter 決定它活不活得下來。
+
+**2. 維度。** OpenAI 與 Azure 的 `text-embedding-3-small` 都是 1536 維，所以在其中一邊建的 Qdrant collection，在另一邊載入時不會有任何抱怨。**這才是危險的情況：形狀吻合，語意不吻合。** `.kb_model` 守衛（見 §8）存在的理由正是「只檢查維度不夠」。
+
+**3. 相似度刻度。** 已在 §10 詳述。兩個 embedding 模型的 cosine 分數不在同一個刻度上，所以每一條依舊模型校準出來的絕對門檻現在都是錯的，而且錯的方向是「什麼都檢索不到」。
+
+**評分刻度也會跟著移動。** 模型的輸出不只是措辭不同，**分布也不同**。`mistral-medium` 預設把強匹配打在 75 分；`gpt-5.6-luna` 整體低約 10 分，而且刻度被壓縮。若在換裝時把 A 級門檻釘在 80，A 級會直接塌掉；門檻改成 76 才能還原同樣的 A:B 比例。而 `grading_rules.md` 裡的分級文字**一個字都沒改**——**這個數字是對著模型校準的，不是對著它旁邊那些字。**
+
+於是有了這份檢查表：參數、維度、相似度刻度、輸出分布。**換 Provider 是一次量測工作，不是一次設定變更。**
+
+---
+
+## 18. LLM 成本護欄：為什麼「預算用完」絕對不能算成錯誤
+
+在有配額上限的免費方案上，用完額度是一種**安全的失敗**——Provider 不再回應，pipeline 就停了。在後付費方案上不是：失控的迴圈不會停，它會一路刷卡。搬到 Azure 等於拿掉了免費方案一直在順便提供的那張安全網；而在舊 Provider 上，一次不小心的大量重評就已經燒光過一個月的額度。
+
+**先計量，因為看不見的東西沒辦法設預算。** 每一次 chat 與 embedding 呼叫都經過 `utils/llm.py`，逐筆往 `data/llm_usage.jsonl` 追加一行 JSON：模型、種類、輸入/快取/輸出 token，以及依價目表算出的估計成本。儀表板的卡片只讀這個檔案，從不呼叫 Provider。這份帳本明確定位為近似值——帳單才是權威——而價目表裡沒有的模型會以 `est_usd: null` 記錄它的 token 數，**而不是猜一個數字**，讓缺口是看得見的，而不是被當成零默默算掉。
+
+**預算閘門，以及它不該留下的狀態。** `LLM_DAILY_BUDGET_USD` 限制單一本地日。微妙的地方不在上限本身，而在**達到上限的那一刻發生什麼事**。早期的限流路徑在 Provider 拒絕時把職缺標成 `error`，結果 117 筆只是運氣不好的資料被永久停放。預算用盡是同一類事件：**它是暫時的，而且是關於這次執行、不是關於那些職缺。** 所以閘門 raise `TransientAbort` → 程序 exit 75 → 排程器退避 → 職缺留在 `un-scored`，隔天再撿起來。**不會有任何一筆被標成 `error`，因為那些職缺本身沒有任何問題。**
+
+值得記住的分辨：**「這筆工作失敗了」和「我們停工了」是兩種不同的狀態**，混為一談的代價是那些資料。
+
+---
+
+## 19. LLM 呼叫前的確定性閘門：為什麼幾乎沒有東西走得到模型面前
+
+直覺的 pipeline 是把爬到的每一筆職缺都送給 LLM，讓 prompt 自己去分辨。實測後的版本幾乎什麼都不送。2026-09-05 那次執行，4,586 筆 un-scored 進入 Phase 2，**只有 144 筆真的評分**：
+
+| 被什麼擋下 | 筆數 |
+|---|---|
+| 地點明確不在德國 | 4,193 |
+| 學生／工讀生／實習職稱 | 166 |
+| 硬性德語要求（regex） | 62 |
+| 已過期（TTL 或明確截止日） | 21 |
+
+每一道閘門都是確定性的、花費在微秒等級，而且事後可稽核。**LLM 是最後手段，不是第一關。**
+
+**德語要求那道閘門是最有意思的**，因為那正是 regex 在 LLM 的主場上贏過它的案例。一份要求 C1／`verhandlungssicher` 德語的 JD 對這位候選人是硬性的不合格，而讓模型得出這個結論要花一次翻譯呼叫加一次評分呼叫——為了一個一句話就看得出來的結論。這道閘門錨定在 `deutsch`／`german` 前後 60 字元內出現的程度標記，若同一個窗口裡有軟化詞（`von Vorteil`、`nice to have`）則放行。
+
+在 6,146 筆上實測：攔下 54% 的 `de_required`，對其他標籤的誤判率 0.95%——而那些被攔到的 A/B 級職缺，經人工核對後發現是**模型自己**把硬性要求標成了 `de_plus`。被閘門處理的資料寫成 `scored`／C 級，`top_3_reasons` 前綴 `rule-gated:`，所以每一個由規則做出的決定都 grep 得到、也翻得回來。
+
+走到這一步修了三次，每一次都來自真實的誤判：錨定要用 `\bgerman\b`（裸的 `C1` 會配到 "English C1"）、同一個窗口內若提到英語就取消資格、程度標記裡要拿掉 "proficiency"（"German language proficiency (B1 or above)" 不是硬性要求）。**一道便宜的過濾器，只有在你量過它的錯誤率之後才是便宜的**——這一道在放到模型前面之前，對著真實資料重建了三次。
+
+---
+
+## 20. 偵測死掉的來源：訊號是沉默，不是失敗
+
+WeAreDevelopers 的私有 API 從 2026-08-17 起，對任何查詢都回 `200 + []`。沒有 raise、沒有重試、沒有任何一行 log 看起來不正常。每日摘要連續 **16 次執行**都寫著「新增 0 筆，略過 0 筆」，才有人真的去讀它——而那在當時是整條 pipeline 裡轉換率最高的來源。
+
+失敗的不是那個死掉的端點。端點本來就會死。**失敗的是「死掉的來源」和「安靜的一天」產生了一模一樣的輸出**，所以用「監控錯誤」這條路永遠抓不到它。
+
+**解開它的觀察是**：一個健康的爬蟲對上一個健康的來源，至少一定會**略過**它看過的職缺。新增 0 筆是日常。新增 0 筆**而且**略過 0 筆就不是安靜的一天，而是一個不再回答的端點。`utils/source_health.py` 在 `app_state` 裡逐來源記錄連續沉默的次數，所以計數器跨得過每日執行與容器重建，滿三次升級為 WARNING。
+
+有兩件事是刻意不做的。**第一次沉默不告警**，因為真的空結果是會發生的。而且**只涵蓋該次執行真的有呼叫的來源**——刻意關閉的爬蟲本來就會沉默，不該被包裝成故障。
+
+可推廣的形式：**對任何輪詢型的整合，先定義「有在運作但什麼都沒找到」長什麼樣，並確保它和「沒在運作」分得出來。** 如果這兩者產生同一行 log，再多的錯誤監控都救不了你。

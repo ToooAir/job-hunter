@@ -54,14 +54,20 @@ When generating interview prep sheets or Cover Letters, the system runs RAG (Ret
 
 ### Rationale
 - **Metadata Prefix Injection**: If a resume is split purely paragraph-by-paragraph, the chunk loses its section-level context (e.g. leaving just "Developed microservices API"). Before creating an embedding, the system automatically injects the parent `H1`/`H2` heading hierarchy as a prefix to the chunk (e.g. `[Projects: ProjectX | Backend Engineer] - Developed microservices API`). This anchors the semantic layout of the vector space to specific tech stacks, massively improving query hit rates.
-- **Cosine Similarity Dynamic Threshold**: We set `_KB_SCORE_THRESHOLD = 0.60` to filter out hits demonstrating low relevancy below the threshold.
+- **Cosine Similarity Floor — per embedding model**: `_kb_score_threshold()` drops hits below a floor that *depends on which embedding model built the KB*: 0.60 for `mistral-embed`, 0.35 for `text-embedding-3-*`. A single hard-coded number is the trap here, not the feature — see §17.
 
 ### Pitfalls & Solutions
-A feature of Vector DBs (like Qdrant) is that they "always return the Top K results," even if the job's tech stack and the resume are entirely unrelated. It will simply return the least relevant but mathematically closest experience. Previously, this caused the LLM to stitch together irrelevant experiences to "fake" a cover letter. **Solution**: Intercept via the 0.60 similarity threshold. If no experiences meet the mark, fallback directly to `[No relevant experience found in KB]`. This signals to the LLM "there are no references here," prompting it to generate logically based on common sense rather than hallucinating based on bad data.
+A feature of Vector DBs (like Qdrant) is that they "always return the Top K results," even if the job's tech stack and the resume are entirely unrelated. It will simply return the least relevant but mathematically closest experience. Previously, this caused the LLM to stitch together irrelevant experiences to "fake" a cover letter. **Solution**: Intercept via the model-specific similarity floor. If no experiences meet the mark, fallback directly to `[No relevant experience found in KB]`. This signals to the LLM "there are no references here," prompting it to generate logically based on common sense rather than hallucinating based on bad data.
 
 ---
 
 ## 6. Token and API Optimization: Adapting to strict Provider limits?
+
+> **Status (2026-09-11)**: the concurrency machinery below is still in the code and
+> still correct. The *numbers* are not: production moved to Azure OpenAI on
+> 2026-09-04, so the Mistral RPS/TPM table is the constraint this design was
+> shaped by, not the one it runs under today. Kept because the reasoning —
+> two independent ceilings, and which one binds — transfers to any provider.
 
 Using external APIs like Mistral requires overcoming strict Rate Limits (1 RPS) and Token Per Minute (TPM) ceilings.
 
@@ -120,7 +126,7 @@ Certain tech startups or networking platforms inject hidden instructions randoml
 
 ## 8. Embedding Model Selection: Why can't we swap it arbitrarily?
 
-The system supports two Embedding Models: OpenAI (`text-embedding-3-small`, 1536 dims) and Mistral (`mistral-embed`, 1024 dims). However, **the two cannot be mixed within the same Vector Collection**. One must be selected and carried through end-to-end.
+The system supports three embedding backends: OpenAI and Azure OpenAI (`text-embedding-3-small`, 1536 dims) and Mistral (`mistral-embed`, 1024 dims). However, **they cannot be mixed within the same Vector Collection**. One must be selected and carried through end-to-end.
 
 ### Rationale
 
@@ -141,6 +147,8 @@ Qdrant structures Vector Collections by binding dimensionality persistently upon
 vector_size = len(vectors[0])   # Stop hardcoding 1536
 ```
 Simultaneously, we inserted KB freshness timestamps (`qdrant_data/.kb_built_at`) into Phase 2 evaluations. By tracking modify times pre-execution, we raise WARNING prompts for immediate builds should the internal KB timestamp fall behind standard `.md` edits.
+
+**A freshness timestamp is not enough.** It catches a stale KB; it does not catch a KB built by a *different embedding model*, which fails far more quietly — the dimensions may even match (OpenAI and Azure both return 1536), while the similarity scale underneath has shifted. `kb_loader.py` therefore also writes `qdrant_data/.kb_model`, and `check_kb_model()` refuses to run against a KB built by another model (scorer exits 2; `retrieve_context` raises). Loud failure beats silent empty retrieval.
 
 ### Operational Principles
 
@@ -217,10 +225,20 @@ The system employs multiple guardrails on the backend to prevent hallucinations 
 
 ### Backend (Blocking chunks from entering the Prompt)
 
-- **Vector Similarity Threshold `_KB_SCORE_THRESHOLD = 0.60`**: A conservative lower bound that drops KB chunks whose cosine similarity falls below 0.60. In practice, the primary filter is `top_k=5`—only the five highest-scoring chunks enter the prompt regardless of threshold. The threshold functions as a last-resort safety net: if even the top-ranked chunk scores below 0.60, the system routes to the fallback rather than injecting noise.
+- **Vector Similarity Floor (model-specific)**: a lower bound that drops KB chunks scoring below it — 0.60 under `mistral-embed`, 0.35 under `text-embedding-3-*`. In practice the primary filter is `top_k=5`: only the five highest-scoring chunks enter the prompt regardless of the floor. The floor is a last-resort safety net — if even the top-ranked chunk falls below it, the system routes to the fallback rather than injecting noise.
 - **The `[No relevant experience found in KB]` Fallback**: An explicit routing signal that activates when no chunk clears the threshold. It guides the LLM to respond based on factual common sense defaults rather than hallucinating fake career histories.
 
-**On threshold calibration**: A spot-check run on 2026-04-11 (24 jobs × 3 random samples, 240 scores) found that 93.3% of top-10 hits scored ≥0.70, with a minimum of 0.66. No score fell below 0.60. This confirms the threshold is rarely triggered—but the sample carries an inherent selection bias: the DB contains only software engineering roles, which naturally score high against a software engineer's KB. The true lower bound of the score distribution (i.e., what a genuinely off-domain JD would score) was not tested. The 0.60 value is retained as a conservative floor; it should be revisited empirically if the KB expands beyond ~15 chunks.
+**On threshold calibration — and how this one bit us.** A spot-check on 2026-04-11 (24 jobs × 3 random samples, 240 scores) found 93.3% of top-10 hits scored ≥0.70, minimum 0.66, nothing below 0.60. The conclusion drawn at the time was "the threshold is rarely triggered", and 0.60 was left as a conservative floor.
+
+That conclusion was true of `mistral-embed` and of nothing else. When the KB was rebuilt on `text-embedding-3-small` during the 2026-09-04 Azure switch, the same JDs scored top-1 in the range 0.36–0.54 (median 0.45, measured on 80 real JDs, with no separation between A/B and C rows). A 0.60 floor against that distribution does not "rarely trigger" — it rejects *everything*, and the failure mode is a cover letter written with `[No relevant experience found in KB]` rather than an error.
+
+The fix is not a better constant. Cosine similarity is not comparable across embedding models, so the floor now follows the model:
+
+```python
+return 0.35 if "text-embedding-3" in emb_model() else 0.60
+```
+
+with `KB_SCORE_THRESHOLD` as an override when a new model is introduced. The lesson generalises past this project: **any absolute similarity threshold is a property of the embedding model, not of your data** — it must be re-measured whenever the model changes, and the retrieval that silently returns nothing is worse than the one that errors.
 
 ### Why Avoid A KB Chunk Transparency UI?
 
@@ -243,6 +261,21 @@ This design assumes that human users inherently review the draft thoroughly prio
 Swapping providers is a high-frequency demand: Mistral routinely offers speed optimizations and cheaper rates in some global zones, while OpenAI sustains model capability and consistency leads. If every downstream module managed independent `if/else` logic flows, provider swapping would fragment modifying efforts and induce error leakage universally.
 
 The factory layer consolidates this task into **one single location**. Reconfiguring `LLM_PROVIDER` in `.env` completes the swap independently with zero business-code alterations. Doing this ensures future scaling (e.g. Gemini, Local Ollama integration) takes merely an extra `elif` branch locally without touching the downstream.
+
+### The abstraction had a hole: model names
+
+The factory hid *which client* to build, but the model names still came from
+flat environment variables (`CHAT_MODEL`, `EMB_MODEL`). Switching
+`LLM_PROVIDER` therefore left the previous provider's model names behind, and
+they were silently wrong rather than absent — an Azure deployment name sent to
+Mistral is just a 400.
+
+`_resolve(kind)` closes it: model names are provider-scoped, tried in order —
+`AZURE_<KIND>_DEPLOYMENT` / `MISTRAL_<KIND>_MODEL` / `OPENAI_|CUSTOM_<KIND>_MODEL`,
+then the generic `CHAT_MODEL` / `TRANSLATION_MODEL` / `EMB_MODEL`, then the
+provider default. Flipping `LLM_PROVIDER` now swaps the whole set at once, and
+another provider's leftovers in `.env` stay harmless. `model_summary()` logs the
+resolved set at scorer start, so the log says what actually ran.
 
 ### What’s truly noteworthy here isn’t the Factory Pattern
 
@@ -276,7 +309,12 @@ Embedded Qdrant restricts simultaneous write access locking completely entirely;
 
 ---
 
-## 13. Why use `mistral-small-2603` for Phase 2 over `mistral-large-2512`?
+## 13. Why use `mistral-small-2603` for Phase 2 over `mistral-large-2512`? (historical)
+
+> **Superseded 2026-09-04.** Production now runs Azure OpenAI `gpt-5.6-luna`.
+> This section is kept as the record of a decision that was correct for its
+> constraints — and as the setup for §17, which is what happened when those
+> constraints changed.
 
 During early development stages, `mistral-large-2512` anchored Phase 2 functionality. Upon exhausting our monthly Token quota, we migrated to `mistral-small-2603`. Following confirmed operational analysis, the small build formally transitioned exclusively into our final model deployment. This was an active scaling choice, rather than a passive downgrade.
 
@@ -386,3 +424,142 @@ The dashboard "Refresh All" button iterates `_ROLE_MAP` directly to get all 5 kn
 **Why not add a flag?** `fetch_levels_data(..., is_slug=True)` creates a function with two incompatible input types under the same parameter name. The `job_title` parameter would sometimes be a human title and sometimes a pre-resolved slug — correct behavior depends on a boolean that callers must remember to set.
 
 **Decision:** `fetch_levels_by_slug(role_slug, location_slug)` accepts pre-resolved slugs only and is documented as the bulk-refresh entry point. When two call sites have genuinely incompatible input contracts, a separate named function is clearer than a mode flag.
+
+---
+
+## 17. Switching LLM providers: the three things that break
+
+Section 11 argues that a factory layer makes swapping providers cheap. Moving
+production from Mistral to Azure OpenAI on 2026-09-04 is the test of that claim.
+The client construction was indeed a one-line change. Three other things broke,
+none of them loudly.
+
+**1. Parameters.** The GPT-5 family rejects `temperature` and `max_tokens`
+outright — a 400, not a warning. With twelve call sites, patching each one is
+both tedious and fragile. Instead the adapter learns the quirk once: a 400 whose
+body names an unsupported parameter is caught, the parameter is dropped, the
+call is retried, and the lesson is cached for the rest of the run. A sibling
+worker that has already learned it does not repeat the discovery. Business code
+keeps passing `temperature`; the adapter decides whether it survives.
+
+**2. Dimensions.** Both OpenAI and Azure serve `text-embedding-3-small` at 1536
+dims, so the Qdrant collection built under one loads without complaint under the
+other. This is the dangerous case: the shape matches and the semantics do not.
+Hence `.kb_model` (§8) — the guard exists precisely because dimension checking
+is not enough.
+
+**3. The similarity scale.** Covered in §10. Cosine scores from two embedding
+models are not on the same scale, so every absolute threshold calibrated against
+the old model is now wrong, and wrong in the direction of returning nothing.
+
+**The grading scale moves too.** Model output is not only differently worded, it
+is differently *distributed*. `mistral-medium` handed out 75 as its default
+strong-match score; `gpt-5.6-luna` sits about ten points lower and compresses its
+range. Holding the A cut at 80 across that switch would have collapsed the A
+grade; the cut moved to 76 to reproduce the same A:B ratio. The band text in
+`grading_rules.md` did not change at all — **the number is calibrated to the
+model, not to the words around it.**
+
+The checklist that came out of this: verify parameters, dimensions, similarity
+scale, and output distribution. A provider swap is a measurement exercise, not a
+configuration change.
+
+---
+
+## 18. The LLM cost guard: why an exhausted budget must not be an error
+
+On a quota-limited free tier, running out is a safe failure — the provider stops
+answering and the pipeline stops. On pay-as-you-go it is not: a runaway loop
+bills a card instead of stopping. Moving to Azure removed the accidental safety
+net that the free tier had been providing, and one careless bulk rescore had
+already burned a month's credits under the old provider.
+
+**Metering first, because you cannot budget what you cannot see.** Every chat and
+embedding call routes through `utils/llm.py`, which appends one JSON line per
+call to `data/llm_usage.jsonl`: model, kind, input/cached/output tokens, and an
+estimated cost from a price table. The dashboard card reads that file and never
+calls the provider. The ledger is explicitly an approximation — the invoice is
+the authority — and a model absent from the price table logs its tokens with
+`est_usd: null` rather than guessing, so the gap is visible instead of silently
+counted as zero.
+
+**The budget gate, and the state it must not leave behind.** `LLM_DAILY_BUDGET_USD`
+caps one local day. The subtle part is not the cap but what happens at it. An
+earlier rate-limit path marked jobs `error` when the provider refused, which
+permanently parked 117 rows that were merely unlucky. Exhausting a budget is the
+same class of event: **transient, and about the run, not about the job.** So the
+gate raises `TransientAbort` → the process exits 75 → the scheduler backs off →
+the jobs stay `un-scored` and are picked up tomorrow. Nothing is marked `error`,
+because nothing about those jobs is wrong.
+
+The distinction worth keeping: *the job failed* and *we stopped working* are
+different states, and conflating them costs you the rows.
+
+---
+
+## 19. Deterministic pre-flight gates: why almost nothing reaches the model
+
+The intuitive pipeline sends every scraped job to the LLM and lets the prompt
+sort it out. The measured one barely sends anything. On the 2026-09-05 run,
+4,586 un-scored rows entered Phase 2 and **144 were scored**:
+
+| Rejected by | Rows |
+|---|---|
+| Location plainly outside Germany | 4,193 |
+| Student / working-student / internship title | 166 |
+| Hard German-language requirement (regex) | 62 |
+| Already expired (TTL or explicit deadline) | 21 |
+
+Each gate is deterministic, costs microseconds, and is auditable after the fact.
+The LLM is the last resort, not the first pass.
+
+**The German-requirement gate is the interesting one**, because it is the case
+where a regex beats the model on its own turf. A JD demanding C1/`verhandlungssicher`
+German is a hard no for this candidate, and grading it costs a translation call
+plus a scoring call to reach a conclusion visible in one sentence. The gate
+anchors on `deutsch`/`german` within 60 characters of a level marker, and stands
+down if a softener (`von Vorteil`, `nice to have`) sits in the same window.
+
+Measured on 6,146 rows: it catches 54% of `de_required`, with a 0.95% false
+positive rate on other labels — and the A/B rows it did catch turned out to be
+cases where *the LLM* had mislabelled a hard requirement as `de_plus`. Rows it
+gates are written as `scored` / grade C with `top_3_reasons` prefixed
+`rule-gated:`, so every rule-made decision is greppable and reversible.
+
+Getting there took three corrections, all from real false positives: anchor on
+`\bgerman\b` (bare `C1` matched "English C1"), disqualify a span that also
+mentions English, and drop "proficiency" from the level markers ("German language
+proficiency (B1 or above)" is not a hard requirement). **A cheap filter is only
+cheap if you measure its error rate** — this one was rebuilt three times against
+real rows before it was allowed in front of the model.
+
+---
+
+## 20. Detecting a dead source: silence, not failure, is the signal
+
+WeAreDevelopers' private API began answering `200 + []` to every query on
+2026-08-17. Nothing raised, nothing retried, nothing logged as abnormal. The
+daily summary read "0 added, 0 skipped" for **16 consecutive runs** before anyone
+read it closely — and it was, at the time, the highest-converting source in the
+pipeline.
+
+The failure is not the dead endpoint. Endpoints die. The failure is that a dead
+source and a quiet day produced identical output, so monitoring for errors could
+never have caught it.
+
+**The insight that fixes it**: a healthy scraper against a healthy source always
+at least *skips* postings it has seen before. Zero added is ordinary. Zero added
+**and** zero skipped is not a quiet day — it is an endpoint that stopped
+answering. `utils/source_health.py` counts consecutive such runs per source in
+`app_state`, so the counter survives daily runs and container rebuilds, and
+escalates to a WARNING at three.
+
+Two things this deliberately does not do. It does not alert on the first silent
+run, because a genuinely empty result set happens. And it only covers sources the
+run actually calls — a deliberately switched-off scraper stays silent by design,
+and should not be dressed up as a fault.
+
+The generalisable form: **for any polling integration, define what "working but
+finding nothing" looks like, and make sure it is distinguishable from "not
+working".** If the two produce the same log line, no amount of error monitoring
+will save you.

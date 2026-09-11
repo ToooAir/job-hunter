@@ -979,7 +979,7 @@ def scrape_jobware(
 # 2026-09-02 rewrite. The private wad-api /v2/jobs/search went silent on
 # 2026-08-17 — HTTP 200 with data=[] for every query, so the log said
 # "新增 0 筆，略過 0 筆" for 16 days and nobody noticed the best-converting
-# source (6 of 9 first interviews) had stopped. The site is now a Hotwire SSR
+# source had stopped. The site is now a Hotwire SSR
 # app and, per https://www.wearedevelopers.com/agents.md, every page has a
 # Markdown twin — "append .md to any URL":
 #   GET /jobs.md?country=DE&q=<kw>&page=N   → 24 listings per page, each with

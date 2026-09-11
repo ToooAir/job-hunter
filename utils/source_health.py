@@ -2,7 +2,7 @@
 
 Why: wearedevelopers' private API started answering 200 + [] on 2026-08-17.
 The daily summary then read "wearedevelopers 新增 0 筆，略過 0 筆" for 16 runs
-and nobody noticed that the source behind 6 of 9 first interviews had died —
+and nobody noticed that the highest-converting source in the pipeline had died —
 a healthy source always at least *skips* known postings. So "0 added AND 0
 skipped" is the signature of a dead or changed endpoint, and it must escalate
 to a WARNING once it repeats, instead of hiding in an INFO line that looks
