@@ -35,6 +35,26 @@ _TRACKING_PARAMS = frozenset({
 })
 
 
+# A sign-in / create-account landing is a wall, not a form. jobware bounces
+# every anonymous job view to /account/login?redirect=<the job>, and that page
+# really does render E-Mail/Vorname/Nachname/Telefonnummer inputs — its login
+# is Apple/magic-link, so there is no password field to give it away. Stored as
+# an apply link it sends the human to a sign-up page instead of the posting
+# (2026-09-13: five rows had exactly that). Matched on the PATH only: a
+# `?redirect=` query naming the real posting must not rescue the wrapper.
+_ACCOUNT_WALL_PATH_RE = re.compile(
+    r"/(login|signin|sign-in|log-in|logon|register|registration|signup|"
+    r"sign-up|anmelden|anmeldung|registrieren|registrierung)(/|$)", re.I)
+
+
+def account_wall_url(url):
+    """True when the URL is a sign-in / create-account page."""
+    u = (url or "").strip()
+    if not u.startswith(("http://", "https://")):
+        return False
+    return bool(_ACCOUNT_WALL_PATH_RE.search(urlparse(u).path))
+
+
 def plausible_apply_url(url):
     """True when the URL could be a real apply page — rejects static assets,
     terms/privacy pages, and bare (or locale-only) homepages."""
@@ -54,5 +74,7 @@ def plausible_apply_url(url):
     if _ASSET_TAIL_RE.search(path.rstrip("/")):
         return False
     if _JUNK_PATH_RE.search(path):
+        return False
+    if account_wall_url(u):
         return False
     return True

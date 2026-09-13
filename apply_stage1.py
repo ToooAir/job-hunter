@@ -38,6 +38,7 @@ from urllib.parse import urljoin, urlparse
 sys.path.insert(0, str(Path(__file__).parent))
 
 from utils.apply_graph import build_graph  # noqa: E402
+from utils.apply_url import account_wall_url, plausible_apply_url  # noqa: E402
 from utils.apply_queue import (  # noqa: E402
     DEFAULT_DB_PATH, build_queue, is_addressable, topup_budget,
 )
@@ -78,6 +79,14 @@ def verdict_of(report: dict, tree: dict | None) -> str:
         return "external-board"
     if report["captcha"]:
         return "captcha"
+    # A sign-in/registration landing is a wall even when it renders inputs.
+    # The password branch below catches the classic case, but jobware signs in
+    # with Apple/magic-link — no password anywhere — while its wall asks for
+    # name/email/phone, which sails past _has_apply_signature and graded "ok"
+    # (2026-09-13). Judge the destination, not just the controls. A gone
+    # signal still wins, exactly as it does over the password branch below.
+    if account_wall_url(report.get("final_url")) and not report.get("gone_signal"):
+        return "account-wall"
     if tree and tree["fields"]:
         return "ok" if _has_apply_signature(tree["fields"]) else "weak-form"
     if report.get("gone_signal"):
@@ -251,8 +260,13 @@ def run_pass_a(jobs: list[dict]) -> list[dict]:
                     # and a homepage's search boxes pass that bar (Zenjob
                     # lesson). Otherwise the probe may have drifted and
                     # persisting the URL would poison the next run's target.
+                    # …and never a URL we would refuse to store anyway (a
+                    # sign-in wall renders inputs, so the field test alone
+                    # let jobware's /account/login through as the apply link)
                     "apply_url": (report.get("final_url")
-                                  if tree and tree.get("fields") else None),
+                                  if tree and tree.get("fields")
+                                  and plausible_apply_url(report.get("final_url"))
+                                  else None),
                     "notes": [note],
                 })
             except Exception as exc:  # one bad site never kills the sweep

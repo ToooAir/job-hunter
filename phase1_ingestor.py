@@ -896,6 +896,49 @@ def _jw_iframe_jd(resource_url: str) -> str:
         return ""
 
 
+# The listing API carries the real apply route; the job page does not. jobware
+# bounces every anonymous view of /job/<slug> to /account/login?redirect=…, so
+# probing that page only ever finds jobware's own sign-up wizard (and used to
+# store it as the apply link). In a 16-posting sample: 14 EMAIL_CLIENT (apply
+# by mail), 1 EXTERN (the employer's own ATS), 1 ANZEIGE (instructions live in
+# the advert text — nothing to link to).
+_JW_REDIRECT_RE = re.compile(
+    r"""(?:location\.href\s*=\s*|<meta[^>]+?refresh[^>]+?url\s*=)"""
+    r"""["']?(https?://[^"'>\s]+)""", re.I)
+_JW_HTML_HEADERS = {**JW_HEADERS, "Accept": "text/html,*/*"}
+
+
+def _jw_resolve_extern(apply_url: str) -> str | None:
+    """jobware/apply/<token> is a ~750-byte "Weiterleitung" interstitial whose
+    meta-refresh points at the employer's own ATS. Following it once here, at
+    ingest, is what lets classify_url recognise the posting (Greenhouse,
+    Personio, …) and put the job in the addressable pool instead of leaving it
+    behind a jobware URL nothing downstream can read."""
+    try:
+        resp = requests.get(apply_url, headers=_JW_HTML_HEADERS, timeout=15)
+        resp.raise_for_status()
+    except Exception as exc:
+        log.warning("jobware: EXTERN redirect unresolved (%s) — %s",
+                    apply_url[:70], exc)
+        return None
+    m = _JW_REDIRECT_RE.search(resp.text)
+    if not m:
+        log.warning("jobware: no redirect target in %s", apply_url[:70])
+    return m.group(1) if m else None
+
+
+def jw_apply_url(job: dict) -> str | None:
+    """Storable apply link for one API job record, or None when the advert is
+    the only instruction (ANZEIGE)."""
+    info = job.get("apply") or {}
+    url = str(info.get("url") or "").strip()
+    if not url:
+        return None
+    if str(info.get("type") or "").upper() == "EXTERN":
+        return _jw_resolve_extern(url) or url
+    return url                                   # EMAIL_CLIENT: mailto:…
+
+
 def scrape_jobware(
     conn,
     keywords: list[str],
@@ -961,6 +1004,7 @@ def scrape_jobware(
                     "fetched_at":  utcnow(),
                     "expires_at":  expiry(45),
                     "status":      "un-scored",
+                    "apply_url":   jw_apply_url(job),
                 }
 
                 _warn_empty_jd(record)

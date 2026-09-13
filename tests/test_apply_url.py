@@ -11,7 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from utils.apply_url import plausible_apply_url  # noqa: E402
+from utils.apply_url import account_wall_url, plausible_apply_url  # noqa: E402
 
 
 class PlausibleApplyUrlTest(unittest.TestCase):
@@ -52,6 +52,33 @@ class PlausibleApplyUrlTest(unittest.TestCase):
             "https://example.de/impressum",
         ):
             self.assertFalse(plausible_apply_url(url), url)
+
+    def test_account_walls_are_not_apply_links(self):
+        # jobware bounces anonymous job views here and the page really does
+        # render E-Mail/Vorname/Nachname/Telefonnummer — it looked like a form
+        # and got stored as the apply link for five rows (2026-09-13)
+        for url in (
+            "https://www.jobware.de/account/login?redirect=%2Fjob%2Fdata-eng.html",
+            "https://example.com/login",
+            "https://example.de/anmelden",
+            "https://example.com/users/sign-up",
+            "https://example.de/registrierung/",
+        ):
+            self.assertTrue(account_wall_url(url), url)
+            self.assertFalse(plausible_apply_url(url), url)
+
+    def test_a_posting_whose_slug_says_login_is_not_a_wall(self):
+        # the wall lives in a path SEGMENT; "Login Engineer" is a job title
+        for url in (
+            "https://example.com/de/jobs/login-engineer-m-w-d.123.html",
+            "https://example.com/jobs/single-sign-on-specialist",
+        ):
+            self.assertFalse(account_wall_url(url), url)
+            self.assertTrue(plausible_apply_url(url), url)
+
+    def test_mailto_survives_the_wall_check(self):
+        # 14 of 16 jobware postings apply by mail
+        self.assertTrue(plausible_apply_url("mailto:bewerbung@aconium.eu"))
 
     def test_non_http_rejected(self):
         for url in ("", None, "javascript:void(0)", "ftp://x/apply"):

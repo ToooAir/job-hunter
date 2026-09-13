@@ -114,6 +114,26 @@ class TestVerdictOf(unittest.TestCase):
         r["controls"]["password"] = 1
         self.assertEqual(verdict_of(r, None), "account-wall")
 
+    def test_sign_in_landing_is_a_wall_even_with_a_full_field_tree(self):
+        # jobware signs in with Apple/magic-link, so controls["password"] is 0
+        # and its wall asks name/email/phone — a clean apply signature. Before
+        # 2026-09-13 that graded "ok" and the login URL became the apply link.
+        r = report(final_url="https://www.jobware.de/account/login"
+                             "?redirect=%2Fjob%2Fdata-engineer.2049663605.html")
+        tree = {"fields": fields("email", "text", "text", "tel")}
+        self.assertTrue(_has_apply_signature(tree["fields"]))   # the old trap
+        self.assertEqual(verdict_of(r, tree), "account-wall")
+
+    def test_gone_still_beats_a_sign_in_landing(self):
+        # same precedence the password branch already had
+        r = report(final_url="https://example.com/account/login",
+                   gone_signal="redirected-to-homepage")
+        self.assertEqual(verdict_of(r, {"fields": []}), "gone")
+
+    def test_a_posting_slug_saying_login_still_grades_normally(self):
+        r = report(final_url="https://example.com/jobs/login-engineer-m-w-d")
+        self.assertEqual(verdict_of(r, {"fields": fields("file", "text")}), "ok")
+
     def test_shadow_only(self):
         r = report()
         r["controls"].update(shadow=4, light=0)
