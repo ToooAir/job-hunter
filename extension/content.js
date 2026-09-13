@@ -788,6 +788,15 @@ async function runProfileFill() {
       const have = normalize(collapse(fieldLabel(el)) + " " + (el.value || ""));
       ok = wants.some((w) => new RegExp("(^| )" + escapeRe(w) + "( |$)").test(have));
       if (ok) setNativeChecked(el, true);
+    } else if ((el.type || "").toLowerCase() === "checkbox") {
+      // The radio hazard above, one step worse: a ticked checkbox submits its
+      // `value` ("70702" for a Teamtailor location), so setNativeValue would
+      // rewrite the payload invisibly — the page still reads "Berlin" while the
+      // POST carries "Hamburg, Germany", the server can't resolve it and the
+      // whole form is replaced by Turbo's "Content missing" (Tibber,
+      // 2026-09-13). Only the `check` action may touch a checkbox.
+      ok = false;
+      reviewNotes.push((f.label || f.name) + " → tick it yourself if it applies");
     } else if (isAriaCombobox(el)) {
       // react-select-style dropdown (every Greenhouse job-boards select): a
       // plain setNativeValue only types the FILTER text, and the widget wipes
@@ -802,7 +811,10 @@ async function runProfileFill() {
       ok = true;
     }
     if (ok) filled++;
-    if (f.needs_review) reviewNotes.push((f.label || f.name) + " → confirm the dropdown");
+    if (f.needs_review) {
+      reviewNotes.push((f.label || f.name) + " → " +
+                       (f.review_note || "confirm the dropdown"));
+    }
   }
 
   // CV upload: only into inputs whose label says resume/CV — a cover-letter or

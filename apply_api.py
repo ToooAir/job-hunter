@@ -205,6 +205,21 @@ def _coerce_number(value: str) -> str | None:
     return num.replace(",", ".")
 
 
+# A bare Yes/No fact answers the question it was WRITTEN for ("do you require
+# visa sponsorship?" → "No"). A form asking the inverse ("are you authorised to
+# work WITHOUT visa sponsorship?") matches the very same alias and is handed the
+# very same "No" — the opposite answer, ticked in silence (Tibber/Teamtailor,
+# 2026-09-13). Leaving such a field blank forfeits a screening question, so the
+# fill stands; it goes out flagged instead, so the human reads that one line.
+_YES_NO_RE = re.compile(r"^(yes|no|ja|nein)\b", re.I)
+_NEGATED_RE = re.compile(r"\b(without|not|never|ohne|nicht|kein|keine|keinen)\b", re.I)
+
+
+def _polarity_risk(value: str, label: str) -> bool:
+    """True when a Yes/No fact lands on a negatively phrased question."""
+    return bool(_YES_NO_RE.match(value.strip()) and _NEGATED_RE.search(label))
+
+
 def _resolve_option(value: str, options: list[str] | None,
                     synonyms: tuple[str, ...] = ()) -> tuple[str, bool]:
     """Map a profile value onto a <select>'s real option text. `synonyms`
@@ -332,8 +347,15 @@ def fill_plan(req: FillPlanRequest):
                           "source": "profile:consent", "needs_review": False})
             continue
         match = profile.match_field(label)
-        if match is None and f.name:
-            match = profile.match_field(f.name)       # fall back to the input name
+        if match is None and f.name and f.type not in ("checkbox", "radio"):
+            # The name fallback exists for label-less inputs (join-style
+            # `cards[uuid][f0]`). It must never run for a checkbox/radio: there
+            # the `name` is the GROUP ("candidate[location_ids][]") while the
+            # label is one OPTION ("Berlin"), so a fact matched off the group
+            # name gets written into a single option — and for a checkbox that
+            # means overwriting the value it submits (Teamtailor locations,
+            # 2026-09-13: "70702" became "Hamburg, Germany" and the POST died).
+            match = profile.match_field(f.name)
         if match is None:
             unmatched.append(ident)                   # no fact → leave blank
             unmatched_fields.append(f)
@@ -360,6 +382,10 @@ def fill_plan(req: FillPlanRequest):
                 # "Männlich", "Deutschland" for "Germany") — radios match their
                 # label against these, comboboxes retype them as filter text
                 extra["synonyms"] = list(match.option_aliases)
+        if _polarity_risk(match.value, label):
+            needs_review = True
+            extra["review_note"] = ("negated question — check this answer is "
+                                    "the right way round")
         fills.append({**ident, "action": action, "value": value, **extra,
                       "source": f"profile:{match.key}", "needs_review": needs_review})
 

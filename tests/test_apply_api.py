@@ -145,6 +145,12 @@ PROFILE_FIXTURE = {
                            "aliases": ["earliest start date"]},
         # concrete German-format date VALUE, no date_value spec (the dob shape)
         "birth_date": {"value": "25.09.1997", "aliases": ["birthdate"]},
+        # generic alias that a checkbox GROUP name can contain
+        # ("candidate[location_ids][]")
+        "current_location": {"value": "Hamburg, Germany",
+                             "aliases": ["current location", "location"]},
+        # bare Yes/No fact — the polarity-inversion shape
+        "requires_sponsorship": {"value": "No", "aliases": ["visa sponsorship"]},
     },
     "consents": {"auto_accept_aliases": ["i agree to the terms"]},
     "never_fill": ["date of birth / geburtsdatum", "gender"],
@@ -361,6 +367,51 @@ class FillPlanTest(unittest.TestCase):
         # facts without option_aliases don't grow a synonyms key
         text = self._plan([{"label": "First Name", "name": "fn", "type": "text"}])
         self.assertNotIn("synonyms", text["fills"][0])
+
+    def test_checkbox_group_name_never_matches_a_fact(self):
+        # Teamtailor: label is the OPTION ("Berlin"), name is the GROUP. The
+        # name carries "location", so the name fallback used to hand back
+        # "Hamburg, Germany" — and the client wrote it over the checkbox's
+        # submit value ("70702"), killing the application POST (2026-09-13).
+        plan = self._plan([{"label": "Berlin", "name": "candidate[location_ids][]",
+                            "type": "checkbox"}])
+        self.assertEqual(plan["fills"], [])
+        self.assertEqual(len(plan["unmatched"]), 1)
+
+    def test_radio_group_name_never_matches_a_fact(self):
+        plan = self._plan([{"label": "Yes", "name": "answers[3][location_choice]",
+                            "type": "radio"}])
+        self.assertEqual(plan["fills"], [])
+
+    def test_name_fallback_still_works_for_text_inputs(self):
+        # the label-less-input rescue this guard must not undo
+        plan = self._plan([{"label": "", "name": "current-location", "type": "text"}])
+        self.assertEqual(plan["fills"][0]["value"], "Hamburg, Germany")
+
+    def test_negated_question_still_fills_but_is_flagged(self):
+        # "do you REQUIRE sponsorship?" → "No"; this form asks the inverse, so
+        # the same "No" means the opposite. Fill it (a blank screening answer
+        # costs the application) but never silently.
+        plan = self._plan([{"label": "Are you authorised to work without visa "
+                                     "sponsorship?", "name": "q", "type": "radio"}])
+        fill = plan["fills"][0]
+        self.assertEqual(fill["value"], "No")
+        self.assertTrue(fill["needs_review"])
+        self.assertIn("negated", fill["review_note"])
+
+    def test_plainly_phrased_question_is_not_flagged(self):
+        plan = self._plan([{"label": "Do you require visa sponsorship?",
+                            "name": "q", "type": "radio"}])
+        fill = plan["fills"][0]
+        self.assertEqual(fill["value"], "No")
+        self.assertFalse(fill["needs_review"])
+        self.assertNotIn("review_note", fill)
+
+    def test_polarity_guard_ignores_non_boolean_facts(self):
+        # "notice period" style prose must not trip the Yes/No prefix test
+        plan = self._plan([{"label": "Country you do not wish to relocate to",
+                            "name": "c", "type": "text"}])
+        self.assertFalse(plan["fills"][0]["needs_review"])
 
     def test_labelless_unmatched_stat_keeps_diagnostics(self):
         # 15/27 of the first real entries logged as '' — unlearnable; the stat
