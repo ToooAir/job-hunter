@@ -99,6 +99,65 @@ class ReviewPageTest(unittest.TestCase):
         self.assertTrue(labels[0].startswith("🔴"), labels)
         self.assertNotIn("🔴", labels[1])
 
+    def _scored_job(self, jid, score, title, company):
+        self.conn.execute(
+            "INSERT INTO jobs (id, company, title, url, source, raw_jd_text,"
+            " fetched_at, status, match_score, fit_grade)"
+            " VALUES (?, ?, ?, ?, 'test', ?, '2026-06-12T08:00:00', 'scored', ?, ?)",
+            (jid, company, title, f"https://example.com/{jid}", f"jd {jid}",
+             score, "A" if score >= 78 else "B"))
+        self.conn.commit()
+
+    def _order_of(self, *titles):
+        """Positions of each title among the rendered cards, in queue order."""
+        labels = [e.label for e in self._run().expander]
+        return [next(i for i, lb in enumerate(labels) if t in lb) for t in titles]
+
+    def test_waiting_time_outweighs_a_small_score_gap(self):
+        """The old key ignored age entirely below the stale line: a draft one
+        day from rotting sat under a same-day draft scoring two points higher.
+        Age now ramps instead of jumping, so four days of waiting beat ten
+        points of match."""
+        self._scored_job("job-old", 70, "Aged Engineer", "Alpha GmbH")
+        self._scored_job("job-new", 80, "Fresh Engineer", "Beta GmbH")
+        self._age(self._draft("job-old", tier=2), DRAFT_STALE_DAYS)
+        self._age(self._draft("job-new", tier=2), 0)
+        aged, fresh = self._order_of("Aged Engineer", "Fresh Engineer")
+        self.assertLess(aged, fresh)
+
+    def test_score_still_leads_at_equal_age(self):
+        """...but the ramp must not swamp the match score, or the queue just
+        turns into a different single-factor sort."""
+        self._scored_job("job-low", 70, "Weak Match", "Alpha GmbH")
+        self._scored_job("job-high", 80, "Strong Match", "Beta GmbH")
+        self._age(self._draft("job-low", tier=2), 2)
+        self._age(self._draft("job-high", tier=2), 2)
+        high, low = self._order_of("Strong Match", "Weak Match")
+        self.assertLess(high, low)
+
+    def test_friction_no_longer_outranks_a_much_better_match(self):
+        """Friction used to be the first key, so a mediocre Tier 2 draft buried
+        every Tier 3 — including the best matches in the queue. It is now a
+        cost in score points, big enough to break near-ties and no bigger."""
+        self._scored_job("job-board", 92, "Top Match", "Alpha GmbH")
+        self._scored_job("job-easy", 74, "Easy Form", "Beta GmbH")
+        self._age(self._draft("job-board", tier=3, channel="external-board"), 0)
+        self._age(self._draft("job-easy", tier=2), 0)
+        top, easy = self._order_of("Top Match", "Easy Form")
+        self.assertLess(top, easy)
+
+    def test_suspicious_liveness_sinks_below_its_live_twin(self):
+        """Same work, less payoff: the sweep already doubts the posting is
+        live, so it should not hold a slot above an identical live draft."""
+        self._scored_job("job-live", 80, "Live Posting", "Alpha GmbH")
+        self._scored_job("job-doubt", 80, "Doubtful Posting", "Beta GmbH")
+        # the doubtful one is inserted first: with the old key it tied on
+        # friction and score, and insert order alone put it on top
+        self._age(self._draft("job-doubt", tier=2, liveness="suspicious"), 5)
+        self._age(self._draft("job-live", tier=2, liveness="live"), 5)
+        live, doubt = self._order_of("Live Posting", "Doubtful Posting")
+        self.assertLess(live, doubt)
+
     def test_oldest_draft_metric(self):
         sid = self._draft("job-a")
         self._age(sid, 9)

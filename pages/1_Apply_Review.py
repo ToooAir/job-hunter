@@ -41,6 +41,9 @@ _STRINGS = {
         "age_days": "{n} 天前生成", "age_stale": "🔴 {n} 天前生成",
         "oldest_draft": "最舊草稿", "days_unit": "{n} 天",
         "stale_hint": "{n} 張草稿放超過 {d} 天了 — 職缺會過期，先投這些。",
+        "sort_note": "排序 = 匹配分數 + 等待天數（3 天後每天 +3，上限 14 天）"
+                     " − 手動成本（Tier 3 −6～−10） − 存活疑慮（−12）。",
+        "sort_rest": "以下未滿 {d} 天，依上述優先度排序。",
         "verifier_pass": "verifier 通過(全確定性,無生成內容需查)",
         "verifier_cleared": "✓ verifier 已獨立查核生成內容的事實(無捏造／洩漏／薪資・簽證一致)。"
                             "你只需判斷:語氣像不像你、適不適合這家公司 — 不必重查事實。",
@@ -95,6 +98,9 @@ _STRINGS = {
         "age_days": "{n}d old", "age_stale": "🔴 {n}d old",
         "oldest_draft": "Oldest draft", "days_unit": "{n}d",
         "stale_hint": "{n} draft(s) have been sitting for more than {d} days — postings expire, send these first.",
+        "sort_note": "Order = match score + days waiting (+3/day after 3, capped at 14)"
+                     " − manual cost (Tier 3 −6…−10) − liveness doubt (−12).",
+        "sort_rest": "Below: under {d} days old, ordered by the same priority.",
         "verifier_pass": "verifier passed (fully deterministic, nothing generated to audit)",
         "verifier_cleared": "✓ Verifier independently checked the generated content "
                             "(no fabrication / leak / salary or visa mismatch). Your call "
@@ -242,6 +248,36 @@ def _friction(snap: dict) -> tuple[int, str]:
     if not manual and has_fills:
         return 2, T("friction_painful")    # captcha: filled, human just presses
     return 3, T("friction_account")        # board / account wall: fully manual
+
+
+# ── review order ───────────────────────────────────────────────────────────────
+# One number per draft instead of nested buckets. The old key was lexicographic
+# — friction rank, then match score, with a hard >7d override — and it decided
+# almost nothing: nearly every draft lands in the same friction bucket and the
+# scores are quantised onto a handful of values, so most of the queue came out
+# in insert order, which reads as a lottery. These weights are the trade-off,
+# expressed in match-score points, between what a draft is worth and what it
+# still costs to send.
+_URGENCY_GRACE_DAYS = 3      # a fresh posting rarely vanishes: no pressure yet
+_URGENCY_PER_DAY = 3.0       # after that, four days of waiting ≈ one grade step
+_URGENCY_CAP_DAYS = 14       # past the stale line the draft is pinned on top anyway
+_FRICTION_COST = (0.0, 0.0, 6.0, 10.0)   # indexed by the _friction() rank
+_SUSPICIOUS_COST = 12.0      # the sweep doubts this posting is still alive
+
+
+def _priority(snap: dict) -> float:
+    """How much this draft has earned the next slot of the human's attention.
+
+    Value (match score) plus rot pressure, minus what it still costs to send:
+    every term is continuous, so age and score trade off instead of one of them
+    silently owning the order."""
+    score = snap["job"].get("match_score") or 0
+    age = draft_age_days(snap.get("created_at")) or 0
+    urgency = _URGENCY_PER_DAY * max(
+        0, min(age, _URGENCY_CAP_DAYS) - _URGENCY_GRACE_DAYS)
+    cost = _FRICTION_COST[_friction(snap)[0]]
+    doubt = _SUSPICIOUS_COST if snap.get("liveness") == "suspicious" else 0.0
+    return score + urgency - cost - doubt
 
 
 # Sources whose value the human must actually read before approving. Everything
@@ -712,18 +748,24 @@ elif tier_choice == "Tier 3":
 if not drafts:
     st.info(T("empty"))
 else:
-    # Stale drafts (older than DRAFT_STALE_DAYS) float to the top, oldest
-    # first: they rot, and the friction/score order buried them for weeks.
-    # Everything else keeps that order — friction first (least manual work
-    # left), then match score — which surfaces high-value, low-effort drafts.
+    # Stale drafts (older than DRAFT_STALE_DAYS) stay pinned on top — they rot,
+    # and the banner above promises they come first. Both groups are then
+    # ordered by _priority(); ties break by age, oldest first, so an equal pair
+    # never swaps places between reruns.
     def _order(d):
         age = draft_age_days(d.get("created_at")) or 0
-        stale = age > DRAFT_STALE_DAYS
-        return (0 if stale else 1,
-                -age if stale else 0,
-                _friction(d)[0],
-                -(d["job"].get("match_score") or 0))
+        return (0 if age > DRAFT_STALE_DAYS else 1,
+                -_priority(d),
+                d.get("created_at") or "")
     drafts.sort(key=_order)
+    stale_n = sum(1 for d in drafts
+                  if (draft_age_days(d.get("created_at")) or 0) > DRAFT_STALE_DAYS)
+    # the order is a judgement call, so say what it is: a queue whose reasoning
+    # is invisible reads as random, and then it gets ignored
+    st.caption(T("sort_note"))
     applied_idx = _applied_lookup(conn)
-    for snap in drafts:
+    for i, snap in enumerate(drafts):
+        if stale_n and i == stale_n:
+            st.divider()
+            st.caption(T("sort_rest").format(d=DRAFT_STALE_DAYS))
         _draft_card(conn, snap, applied_idx)
