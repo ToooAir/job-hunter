@@ -11,7 +11,7 @@ step and report it — never commit failing code, never deploy an unbuilt image.
 ## Steps
 
 1. **Test.** Run the full suite inside the container image with the repo
-   mounted (host Python lacks langgraph/httpx/streamlit):
+   mounted (host Python lacks httpx/streamlit/playwright):
 
    ```bash
    docker run --rm -v "$PWD":/app -w /app -v "$PWD"/config:/app/config:ro \
