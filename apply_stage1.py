@@ -37,7 +37,7 @@ from urllib.parse import urljoin, urlparse
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from utils.apply_graph import build_graph  # noqa: E402
+from utils.apply_graph import run_apply  # noqa: E402
 from utils.apply_url import account_wall_url, plausible_apply_url  # noqa: E402
 from utils.apply_queue import (  # noqa: E402
     DEFAULT_DB_PATH, build_queue, is_addressable, topup_budget,
@@ -394,7 +394,6 @@ def main() -> None:
     conn.close()
 
     from utils.apply_llm import CALL_STATS
-    graph = build_graph()
     config = {"configurable": {
         "profile": profile,
         "db_path": args.db,
@@ -407,7 +406,7 @@ def main() -> None:
     for i, state in enumerate(states, 1):
         job = state["job"]
         try:
-            final = graph.invoke(state, config=config)
+            final = run_apply(state, config)
             results.append(final)
             vr = final.get("verifier_report")
             print(f"  [B {i}/{len(states)}] tier={final.get('tier')} "
