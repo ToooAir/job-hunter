@@ -1,16 +1,16 @@
-"""apply_graph.py — per-job LangGraph pipeline for Stage 1 draft generation.
+"""apply_graph.py — per-job pipeline for Stage 1 draft generation.
 
 Step 4 architecture is two passes (orchestrated by apply_stage1.py):
   Pass A (browser, container headless) verifies the apply page is alive and
   classifies it (verdict), then closes — no browser is held open while LLM
   calls run.
-  Pass B runs this graph once per job:
+  Pass B runs this chain once per job:
 
-      START ──(verdict ok/captcha?)──► gen_content ─► verify
-        │                                               │
-        └────────────► assign_tier ◄────────────────────┘
-                           │
-                       save_draft ─► END
+      run_apply ──(verdict ok/captcha?)──► gen_content ─► verify
+        │                                                   │
+        └──────────────► assign_tier ◄──────────────────────┘
+                              │
+                          save_draft
 
 The field-mapping chain (map_deterministic → map_llm → map_agentic) was
 retired 2026-07-02: its selector-replay payload is superseded by the
@@ -25,6 +25,13 @@ Jobs whose verdict is junk (external-board, no-form, nav-error, email-only,
 shadow-only, account-wall) skip straight to tier assignment: tier plus an
 answer sheet are all we can produce for them.
 
+This was a LangGraph StateGraph until 2026-09-21. The topology is one
+branch and a straight line, so the framework bought nothing but a way to
+express it indirectly — and an unpinned framework sitting on the
+draft-generation path is the same upgrade hazard that already cost this repo
+a lockstep streamlit/starlette pin. Each step still returns a partial state
+that is merged into the whole, exactly as the graph merged it.
+
 Runtime dependencies arrive via config["configurable"]:
   profile      CandidateProfile (required for verifying/saving)
   db_path      jobs.db path (save_draft)
@@ -36,8 +43,6 @@ Runtime dependencies arrive via config["configurable"]:
 from __future__ import annotations
 
 from typing import TypedDict
-
-from langgraph.graph import END, START, StateGraph
 
 
 class ApplyState(TypedDict, total=False):
@@ -65,14 +70,6 @@ class ApplyState(TypedDict, total=False):
     tier: int
     notes: list[str]
     snapshot_id: int                # set by save_draft (unless dry run)
-
-
-NODE_ORDER = (
-    "gen_content",
-    "verify",
-    "assign_tier",
-    "save_draft",
-)
 
 
 def _cfg(config) -> dict:
@@ -189,35 +186,21 @@ def save_draft(state: ApplyState, config) -> dict:
     return {"snapshot_id": snapshot_id}
 
 
-def _route_entry(state: ApplyState) -> str:
-    """Content + verification run for real apply pages ('ok', or 'captcha' —
-    human presses the button). Junk verdicts (weak-form = search bars,
-    external-board, no-form, …) skip straight to tier assignment."""
-    return "gen" if state.get("verdict") in (None, "", "ok", "captcha") else "tier"
+CONTENT_VERDICTS = (None, "", "ok", "captcha")
 
 
-def build_graph(overrides: dict | None = None):
-    """Compile the per-job graph.
+def run_apply(state: ApplyState, config) -> ApplyState:
+    """Run Pass B for one job and return the finished state.
 
-    `overrides` swaps node implementations by name — used by routing tests
-    (recorder nodes) and available for future special-case handling.
+    The input state is not mutated; each step's partial result is merged in.
     """
-    impl = {name: globals()[name] for name in NODE_ORDER}
-    if overrides:
-        unknown = set(overrides) - set(NODE_ORDER)
-        if unknown:
-            raise ValueError(f"unknown node override(s): {sorted(unknown)}")
-        impl.update(overrides)
-
-    g = StateGraph(ApplyState)
-    for name in NODE_ORDER:
-        g.add_node(name, impl[name])
-    g.add_conditional_edges(
-        START, _route_entry,
-        {"gen": "gen_content", "tier": "assign_tier"},
-    )
-    g.add_edge("gen_content", "verify")
-    g.add_edge("verify", "assign_tier")
-    g.add_edge("assign_tier", "save_draft")
-    g.add_edge("save_draft", END)
-    return g.compile()
+    state = dict(state)
+    # Content + verification run for real apply pages ('ok', or 'captcha' —
+    # human presses the button). Junk verdicts (weak-form = search bars,
+    # external-board, no-form, …) skip straight to tier assignment.
+    if state.get("verdict") in CONTENT_VERDICTS:
+        state |= gen_content(state, config)
+        state |= verify(state, config)
+    state |= assign_tier(state, config)
+    state |= save_draft(state, config)
+    return state

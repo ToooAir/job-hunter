@@ -1,8 +1,10 @@
-"""Tests for the Stage 1 per-job graph (utils/apply_graph.py).
+"""Tests for the Stage 1 per-job chain (utils/apply_graph.py).
 
-Topology tests inject recorder nodes via build_graph(overrides=...);
-the end-to-end test runs the real node bodies with a fake LLM client and
-dry_run config (no DB, no network). Fictional Max Mustermann data only.
+Every test runs the real node bodies with a fake LLM client and dry_run
+config (no DB, no network) — routing included: a verdict that must skip the
+content chain proves it by making no LLM call at all, which is what the
+recorder-node topology tests used to assert indirectly. Fictional Max
+Mustermann data only.
 """
 
 import json
@@ -13,22 +15,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tests.test_apply_llm import FakeClient  # noqa: E402
+from utils.apply_graph import run_apply  # noqa: E402
 from utils.profile_loader import CandidateProfile  # noqa: E402
-
-try:
-    import langgraph  # noqa: F401
-    HAS_LANGGRAPH = True
-except ImportError:
-    HAS_LANGGRAPH = False
-
-if HAS_LANGGRAPH:
-    from utils.apply_graph import NODE_ORDER, ApplyState, build_graph
-
-
-FIELDS_SAMPLE = [
-    {"selector": '[name="first_name"]', "kind": "text", "label": "Vorname *"},
-    {"selector": '[name="cv"]', "kind": "file", "label": "Lebenslauf"},
-]
 
 PROFILE = CandidateProfile({
     "meta": {"cv_path": "candidate_kb/cv/cv.pdf"},
@@ -43,54 +31,6 @@ def config_for(client):
                              "client": client, "model": "m"}}
 
 
-def _recorders(seen: list):
-    """One recorder per node; save_draft keeps its (state, config) arity."""
-
-    def rec(name):
-        def node(state: ApplyState) -> dict:
-            seen.append(name)
-            return {}
-        return node
-
-    def rec_save(state: ApplyState, config) -> dict:
-        seen.append("save_draft")
-        return {}
-
-    impl = {name: rec(name) for name in NODE_ORDER if name != "save_draft"}
-    impl["save_draft"] = rec_save
-    return impl
-
-
-@unittest.skipUnless(HAS_LANGGRAPH, "langgraph not installed (container-only dep)")
-class TestGraphWiring(unittest.TestCase):
-    def test_graph_compiles_with_default_nodes(self):
-        app = build_graph()
-        self.assertIsNotNone(app)
-
-    def test_ok_verdict_visits_full_chain_in_order(self):
-        seen = []
-        app = build_graph(overrides=_recorders(seen))
-        app.invoke({"job": {"id": "j1"}, "verdict": "ok", "fields": FIELDS_SAMPLE})
-        self.assertEqual(seen, list(NODE_ORDER))
-
-    def test_junk_verdict_skips_content_chain(self):
-        seen = []
-        app = build_graph(overrides=_recorders(seen))
-        app.invoke({"job": {"id": "j2"}, "verdict": "external-board", "fields": []})
-        self.assertEqual(seen, ["assign_tier", "save_draft"])
-
-    def test_captcha_still_gets_content_chain(self):
-        seen = []
-        app = build_graph(overrides=_recorders(seen))
-        app.invoke({"job": {"id": "j3"}, "verdict": "captcha", "fields": FIELDS_SAMPLE})
-        self.assertEqual(seen, list(NODE_ORDER))
-
-    def test_unknown_override_rejected(self):
-        with self.assertRaises(ValueError):
-            build_graph(overrides={"not_a_node": lambda s: {}})
-
-
-@unittest.skipUnless(HAS_LANGGRAPH, "langgraph not installed (container-only dep)")
 class TestEndToEndDryRun(unittest.TestCase):
     """Real node bodies, fake LLM, dry_run — the full Pass B for one job."""
 
@@ -109,11 +49,10 @@ class TestEndToEndDryRun(unittest.TestCase):
         client = FakeClient([
             json.dumps({"pass": True, "issues": []}),  # verifier audits the CL
         ])
-        app = build_graph()
-        out = app.invoke(
+        out = run_apply(
             {"job": self.JOB, "verdict": "ok", "fields": self.FIELDS,
              "apply_url": "https://example.com/apply"},
-            config=config_for(client),
+            config_for(client),
         )
         self.assertNotIn("actions", out)  # no fill payload is generated anymore
         self.assertEqual(out["tier"], 2)
@@ -124,28 +63,42 @@ class TestEndToEndDryRun(unittest.TestCase):
 
     def test_weak_form_fields_skip_mapping_chain(self):
         client = FakeClient([])  # junk field table must not reach the LLM
-        app = build_graph()
-        out = app.invoke(
+        out = run_apply(
             {"job": {**self.JOB, "id": "j11"}, "verdict": "weak-form",
              "fields": [{"selector": "#q", "kind": "text", "label": "Find a role"}]},
-            config=config_for(client),
+            config_for(client),
         )
         self.assertEqual(out["tier"], 3)
         self.assertEqual(client.calls, [])
 
     def test_no_fields_job_gets_tier3_without_llm_calls(self):
         client = FakeClient([])  # raises if any LLM call happens
-        app = build_graph()
-        out = app.invoke(
+        out = run_apply(
             {"job": {**self.JOB, "id": "j10"}, "verdict": "external-board",
              "fields": []},
-            config=config_for(client),
+            config_for(client),
         )
         self.assertEqual(out["tier"], 3)
         self.assertEqual(client.calls, [])
+        # routing, stated as behaviour: the content chain never ran, so it
+        # left neither a carried cover letter nor a verifier report behind
+        self.assertNotIn("cover_letter", out)
+        self.assertNotIn("verifier_report", out)
+
+    def test_captcha_still_gets_the_content_chain(self):
+        """captcha reads like a junk verdict but is not one — the page is real,
+        the human just presses the button, so the draft is still worth
+        generating and auditing."""
+        client = FakeClient([json.dumps({"pass": True, "issues": []})])
+        out = run_apply(
+            {"job": {**self.JOB, "id": "j12"}, "verdict": "captcha",
+             "fields": self.FIELDS},
+            config_for(client),
+        )
+        self.assertEqual(out["cover_letter"], "I build backends.")
+        self.assertTrue(out["verifier_report"]["pass"])
 
 
-@unittest.skipUnless(HAS_LANGGRAPH, "langgraph not installed (container-only dep)")
 class TestSaveDraftStatus(unittest.TestCase):
     """Every saved draft starts in review — there is no auto-submission path."""
 

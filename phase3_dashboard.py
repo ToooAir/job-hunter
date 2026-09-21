@@ -10,13 +10,13 @@ from pathlib import Path
 from urllib.parse import quote as url_quote
 
 import pandas as pd
-import pyperclip
 import streamlit as st
 import yaml
 
 from utils.llm import daily_budget as llm_daily_budget
 from utils.db import (
     init_db, upsert_job, update_status, set_follow_up, set_notes,
+    fetch_job_by_id,
     add_interview_record, get_interview_records, delete_interview_record,
     get_company_applications, auto_expire_stale_jobs, auto_ghost_stale_applications,
     get_focus, set_focus,
@@ -227,8 +227,6 @@ STRINGS: dict[str, dict[str, str]] = {
         "ghosted_revive_hint": "This job was auto-ghosted. If you received an interview invite, click below.",
         "rescore_btn":        "🔄 Re-score",
         "rescore_spinner":    "Scoring…",
-        "copied_ok":          "Copied ✓",
-        "copy_docker_msg":    "No clipboard in Docker — please select and copy the cover letter text manually.",
         "iv1_btn":            "📞 Interview Invite",
         "iv1_spinner":        "Generating interview brief…",
         "reject_btn":         "❌ Rejected",
@@ -483,8 +481,6 @@ STRINGS: dict[str, dict[str, str]] = {
         "ghosted_revive_hint": "此職缺已被自動標記為無聲卡。若收到面試邀請，請點擊下方按鈕。",
         "rescore_btn":        "🔄 重新評分",
         "rescore_spinner":    "評分中…",
-        "copied_ok":          "已複製 ✓",
-        "copy_docker_msg":    "Docker 環境無剪貼簿，請手動選取 Cover Letter 文字後複製。",
         "iv1_btn":            "📞 面試邀約",
         "iv1_spinner":        "正在生成面試準備單…",
         "reject_btn":         "❌ 已拒絕",
@@ -811,11 +807,6 @@ def fetch_application_log(conn) -> list[dict]:
         LIMIT 60
     """).fetchall()
     return [dict(r) for r in rows]
-
-
-def fetch_job_detail(conn, job_id: str) -> dict | None:
-    row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
-    return dict(row) if row else None
 
 
 @st.cache_data(ttl=60)
@@ -1511,7 +1502,7 @@ with right:
     if "selected_idx" not in st.session_state or not selected_job_id:
         st.info(T("select_prompt"))
     else:
-        job = fetch_job_detail(conn, selected_job_id)
+        job = fetch_job_by_id(conn, selected_job_id)
         if job is None:
             st.warning(T("not_found"))
         else:
@@ -1651,12 +1642,14 @@ with right:
                         set_focus(conn, snap["id"] if snap else None, job["id"])
                         st.toast(T("focus_set").format(job["company"]))
                 with btn_cols[1]:
-                    if st.button(T("copy_cl_btn"), use_container_width=True, key=f"copy_{job['id']}"):
-                        try:
-                            pyperclip.copy(_cl_draft)
-                            st.success(T("copied_ok"))
-                        except Exception:
-                            st.info(T("copy_docker_msg"))
+                    # pyperclip until 2026-09-21: it reached for the *server's*
+                    # clipboard, which a container does not have, so the copy
+                    # raised every single time and this button only ever showed
+                    # its own failure notice. st.code ships a copy button that
+                    # runs in the browser, where the clipboard actually is.
+                    with st.popover(T("copy_cl_btn"), use_container_width=True,
+                                    key=f"copy_{job['id']}"):
+                        st.code(_cl_draft, language=None, wrap_lines=True)
                 with btn_cols[2]:
                     if st.button(T("apply_btn"), use_container_width=True, type="primary", key=f"apply_{job['id']}"):
                         from utils.snapshot_io import reconcile_applied_job
