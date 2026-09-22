@@ -271,6 +271,19 @@ class ReviewPageTest(unittest.TestCase):
         self.assertIn("Zeugnisse", notice)
         self.assertIn("Anschreiben", notice)
 
+    def test_email_only_draft_hands_over_address_subject_and_jd(self):
+        # No form and no page: the card has to carry what the human would
+        # otherwise have to dig out — who to write to, a subject, and the JD.
+        self._draft("job-a", tier=3, channel="email-only",
+                    apply_url="mailto:jobs@example.com", verifier_report={})
+        at = self._run()
+        blocks = [str(c.value) for c in at.code]
+        self.assertIn("jobs@example.com", blocks)
+        self.assertIn("Bewerbung als Backend Engineer", blocks)
+        self.assertNotIn("jd job-a", blocks)          # JD is read only on demand
+        at.toggle(key="jd_1").set_value(True).run()
+        self.assertIn("jd job-a", [str(c.value) for c in at.code])
+
     def _book(self, job_id, status, applied_at):
         self.conn.execute("UPDATE jobs SET status = ?, applied_at = ? WHERE id = ?",
                           (status, applied_at, job_id))

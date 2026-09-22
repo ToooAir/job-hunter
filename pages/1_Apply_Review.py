@@ -58,6 +58,11 @@ _STRINGS = {
         "auto_filled": "個 profile 欄位(確定性,複製即可)",
         "tab_cl": "Cover Letter", "tab_qa": "自訂問答",
         "tab_sheet": "小抄(點右上複製)",
+        "tab_jd": "職缺描述(JD)",
+        "jd_missing": "(這筆沒有存下 JD 文字)",
+        "email_hint": "email 投遞:信件內容就用下面的 Cover Letter,"
+                      "附上 CV(表單要檔案時另存 CL 的 PDF 一起寄)。",
+        "email_to": "收件人", "email_subject": "主旨",
         "cl_flagged": "這封 cover letter 被標記的疑慮(送出前請確認)",
         "cl_download_pdf": "⬇️ 下載 PDF(表單要上傳檔案時用)",
         "cl_from_scoring": "此 CL 取自評分階段草稿(未經 apply verifier 查核,送出前請自審)",
@@ -117,6 +122,11 @@ _STRINGS = {
         "auto_filled": "profile fields (deterministic, just copy)",
         "tab_cl": "Cover Letter", "tab_qa": "Custom Q&A",
         "tab_sheet": "Answer sheet (copy top-right)",
+        "tab_jd": "Job description (JD)",
+        "jd_missing": "(no JD text stored for this posting)",
+        "email_hint": "Email application: the cover letter below is the body — "
+                      "attach your CV (and the CL PDF if a file is wanted).",
+        "email_to": "To", "email_subject": "Subject",
         "cl_flagged": "Flags on this cover letter (confirm before submitting)",
         "cl_download_pdf": "⬇️ Download PDF (for forms that require a file upload)",
         "cl_from_scoring": "This letter is the scoring-stage draft (not apply-verifier checked — review before sending)",
@@ -494,6 +504,44 @@ def _sheet_tab(snap: dict, payload: dict) -> None:
         st.code(snap["cover_letter"], language=None)
 
 
+def _jd_section(conn, snap: dict) -> None:
+    """The posting itself, read on demand. The queue never showed it, and the
+    drafts that need it most — email-only, no-form, nav-error — have no usable
+    page left to click through to. Read lazily: the JD is the fattest column
+    in the row and most cards are never opened."""
+    pref_key = f"jd_pref_{snap['id']}"
+    show = st.toggle(T("tab_jd"), key=f"jd_{snap['id']}",
+                     value=st.session_state.get(pref_key, False))
+    st.session_state[pref_key] = show
+    if not show:
+        return
+    row = conn.execute("SELECT COALESCE(translated_jd_text, raw_jd_text) AS jd"
+                       " FROM jobs WHERE id = ?", (snap["job_id"],)).fetchone()
+    st.code((row["jd"] if row else "") or T("jd_missing"),
+            language=None, wrap_lines=True, height=360)
+
+
+def _email_section(conn, snap: dict) -> None:
+    """email-only: no form and no page — the application IS an email, and its
+    body is the cover letter already on this card. The only missing pieces are
+    the address and a subject line, and both are deterministic, so nothing
+    here is generated. Subject language follows the posting's."""
+    if (snap.get("channel") or "") != "email-only":
+        return
+    to = (snap.get("apply_url") or "").removeprefix("mailto:").split("?")[0]
+    row = conn.execute("SELECT jd_language_req FROM jobs WHERE id = ?",
+                       (snap["job_id"],)).fetchone()
+    title = snap["job"].get("title") or ""
+    subject = (f"Application: {title}"
+               if (row and row["jd_language_req"]) == "en_required"
+               else f"Bewerbung als {title}")
+    st.info(f"✉️ {T('email_hint')}")
+    st.caption(T("email_to"))
+    st.code(to, language=None)
+    st.caption(T("email_subject"))
+    st.code(subject, language=None)
+
+
 def _liveness_caption(snap: dict) -> None:
     """Show how recently the draft was confirmed live, and a warning if the
     liveness sweep flagged it suspicious — so a glance over the queue tells you
@@ -619,6 +667,8 @@ def _draft_card(conn, snap: dict, applied_idx: dict) -> None:
         _liveness_caption(snap)
         _verifier_block(snap.get("verifier_report"))
         _doc_notice(payload)  # documents to attach by hand, before anything else
+        _email_section(conn, snap)   # how to send it, when there is no form
+        _jd_section(conn, snap)      # what the posting actually asked for
 
         # One scannable card, ordered by how much judgment each part needs:
         # flagged fills first, then generated free text (voice/fit), then the
