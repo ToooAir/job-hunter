@@ -145,6 +145,15 @@ class UpsertPopulatesAliasesTest(unittest.TestCase):
         self.assertTrue(upsert_job(self.conn, rec))
         self.assertEqual(self._aliases_of("j2"), "hand-set")
 
+    def test_junk_placeholder_company_is_not_stored(self):
+        # "Postaladdress" is WeAreDevelopers' schema.org parse failure, not an
+        # employer — storing it addresses the cover letter to nobody and
+        # collapses every such posting into one company for the dedup gate.
+        rec = self._record(id="j3", url="https://x/j3", company="Postaladdress")
+        self.assertFalse(upsert_job(self.conn, rec))
+        self.assertIsNone(self.conn.execute(
+            "SELECT id FROM jobs WHERE id = 'j3'").fetchone())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+import re
 import sqlite3
 import os
 from datetime import datetime, timedelta, timezone
@@ -195,12 +196,30 @@ def init_db(db_path: str) -> sqlite3.Connection:
     return conn
 
 
+# Aggregated feeds sometimes file a posting under a schema.org property name
+# instead of the employer: WeAreDevelopers' /ext/ listings put 40 rows under
+# "Postaladdress" (among them alcemy, Lemon Markets and Quantum Systems). One
+# junk employer poisons every downstream reader at once — the cover letter
+# opens "the role at Postaladdress", the queue's dedup gate sees one company
+# where there are forty (so a real re-apply draws no warning), and the review
+# card cannot say who is being applied to. The real name is not recoverable
+# from the row either: the apply URL's slug runs the title into the company
+# with no boundary, and those titles do not even match the target posting. So
+# the row is dropped at the gate rather than stored under a lie.
+_JUNK_COMPANY_RE = re.compile(r"^postal\s*address\b", re.I)
+
+
 def upsert_job(conn: sqlite3.Connection, job: dict) -> bool:
     """Insert job; return True if newly inserted, False if already existed.
 
     Cross-source dedup: if the same JD text (first 500 chars) already exists
     under a different URL, skip insertion and log a warning.
     """
+    if _JUNK_COMPANY_RE.match((job.get("company") or "").strip()):
+        log.warning("junk company skipped: %s | company=%r",
+                    job.get("url", ""), job.get("company"))
+        return False
+
     jd_hash = _jd_hash(job.get("raw_jd_text", ""))
     # Mine brand aliases from the JD once, here at the single ingest choke point
     # (every scraper funnels through upsert_job). Keep a caller-supplied value.
