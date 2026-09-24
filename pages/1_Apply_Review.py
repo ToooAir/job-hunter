@@ -674,10 +674,14 @@ def _draft_card(conn, snap: dict, applied_idx: dict) -> None:
         # flagged fills first, then generated free text (voice/fit), then the
         # deterministic fills and answer sheet collapsed out of the way. The
         # human copies this onto the real form; flagged fields + cover letter
-        # are editable so the copy reflects any fix. Tier 3 is read-only sheet.
+        # are editable so the copy reflects any fix. Tier 3 has no fillable
+        # fields, so its sheet stays read-only — but its LETTER is editable
+        # like every other: Tier 3 is exactly where the human sends the letter
+        # by hand, so a wrong line there (a junk company name, an overstated
+        # claim) was previously uncorrectable, download included.
         editable = tier != 3
         field_edits = _fills_section(snap, payload, editable=editable)
-        cl_new = _cover_letter_section(snap, editable=editable)
+        cl_new = _cover_letter_section(snap, editable=True)
         _qa_section(snap)
         # Default closed for every tier: the extension + Answer Panel cover the
         # common path, so the sheet is opt-in even on Tier 3 (open it when
@@ -703,17 +707,15 @@ def _draft_card(conn, snap: dict, applied_idx: dict) -> None:
         # Save persists edits so the answer sheet shows the corrected text to
         # copy; Mark submitted books the application after the human applied.
         cols = st.columns([1, 1, 1, 2])
-        if editable and cols[0].button(
-                T("save_edits"), key=f"save_{snap['id']}"):
+        if cols[0].button(T("save_edits"), key=f"save_{snap['id']}"):
             edit_snapshot(conn, snap["id"], cover_letter=cl_new,
                           action_values=field_edits)
             st.session_state["keep_open"] = snap["id"]
             st.rerun()
         if cols[1].button(T("mark_submitted"), key=f"submit_{snap['id']}",
                           type="primary"):
-            if editable:
-                edit_snapshot(conn, snap["id"], cover_letter=cl_new,
-                              action_values=field_edits)
+            edit_snapshot(conn, snap["id"], cover_letter=cl_new,
+                          action_values=field_edits)
             mark_submitted(conn, snap["id"], note="marked submitted in review")
             st.rerun()
         # Structured reason first (stable slug, machine-bucketable — 26 of 136

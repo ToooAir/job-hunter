@@ -176,11 +176,9 @@ class ReviewPageTest(unittest.TestCase):
         self.assertTrue(any("unsupported claim" in str(e.value) for e in at.error))
         # an unflagged letter collapses by default (the extension's 📄 button
         # serves the same stored text); the toggle opens it for hand-copying
-        body = "".join(str(c.value) for c in at.code)
-        self.assertNotIn("Dear team", body)
+        self.assertFalse([a for a in at.text_area if a.key == f"cl_{sid_b}"])
         at.toggle(key=f"cl_show_{sid_b}").set_value(True).run()
-        body = "".join(str(c.value) for c in at.code)
-        self.assertIn("Dear team", body)
+        self.assertIn("Dear team", at.text_area(key=f"cl_{sid_b}").value)
 
     def test_mark_submitted_books_job_applied(self):
         sid = self._draft("job-a", tier=2)
@@ -197,15 +195,20 @@ class ReviewPageTest(unittest.TestCase):
             "SELECT status FROM jobs WHERE id=?", ("job-a",)).fetchone()
         self.assertEqual(job["status"], "applied")
 
-    def test_tier3_draft_has_no_save_button_but_can_mark_submitted(self):
-        # Tier 3 is the read-only copy-paste path: no in-place editing, but the
-        # human still books it submitted after applying manually.
+    def test_tier3_letter_is_editable_and_the_edit_survives_save(self):
+        # Tier 3 has no fillable fields, but it is exactly where the human
+        # sends the letter by hand — a wrong line there (a junk company name)
+        # has to be fixable before it is copied or downloaded.
         sid = self._draft("job-b", tier=3)
         at = self._run()
-        keys = {b.key for b in at.button}
-        self.assertNotIn(f"save_{sid}", keys)
-        self.assertIn(f"submit_{sid}", keys)
-        self.assertIn(f"abandon_{sid}", keys)
+        self.assertIn(f"submit_{sid}", {b.key for b in at.button})
+        at.toggle(key=f"cl_show_{sid}").set_value(True).run()
+        at.text_area(key=f"cl_{sid}").set_value("Fixed letter.").run()
+        at.button(key=f"save_{sid}").click().run()
+        self.assertFalse(at.exception, at.exception)
+        self.assertEqual(self.conn.execute(
+            "SELECT cover_letter FROM application_snapshots WHERE id=?",
+            (sid,)).fetchone()["cover_letter"], "Fixed letter.")
 
     def test_abandon_button_releases_job(self):
         sid = self._draft("job-a", tier=2)
