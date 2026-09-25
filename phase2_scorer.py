@@ -443,6 +443,31 @@ def _batch_embed(texts: list[str], client, batch_size: int = 16) -> list[list[fl
     return vectors
 
 
+def kb_context_all(qdrant_path: str) -> str:
+    """Every KB chunk, no ranking and no embedding call.
+
+    The interview brief needs the whole background in one prompt — role fit,
+    evaluation practice, privacy work, answers to past interview questions — and
+    ranked retrieval kept vetoing the chunk that held the answer. Measured against
+    the Tesla AI-engineer JD: the two strongest evaluation chunks scored 0.266 and
+    0.313, both under the 0.35 relevance floor that (rightly) protects batch
+    scoring from building context out of noise. Raising top_k did not help, because
+    the floor, not the limit, was doing the dropping.
+
+    ponytail: fine while the KB is ~14 chunks of ~400 chars. If it outgrows the
+    prompt, rank again with a floor of its own rather than raising top_k.
+    """
+    from qdrant_client import QdrantClient
+
+    points, _ = QdrantClient(path=qdrant_path).scroll(
+        collection_name=COLLECTION, limit=1000, with_payload=True)
+    points.sort(key=lambda p: (p.payload.get("source", ""),
+                               p.payload.get("chunk_index", 0)))
+    return append_voice("\n---\n".join(
+        f"[來源: {p.payload.get('source', 'unknown')}]\n{p.payload.get('text', '')}"
+        for p in points))
+
+
 def retrieve_context(
     jd_text: str,
     qdrant_path: str,
@@ -1274,15 +1299,7 @@ def generate_brief_for_job(
         else "(候選人背景資料未載入 — 請先執行 utils.kb_loader)"
     )
     context = (
-        # The whole background, not the closest 3 chunks: one sheet has to answer
-        # role fit, evaluation practice, infra and past interview questions at
-        # once, and top-3 JD similarity kept dropping the chunk that held the
-        # answer — the Tesla brief said there was no GitHub Actions evidence
-        # while VisaFlow's chunk names it. ~12 chunks in the KB, and the
-        # relevance floor in _qdrant_query still drops what does not fit.
-        retrieve_context(effective_jd, qdrant_path, top_k=20)
-        if check_kb_ready(qdrant_path)
-        else no_kb_msg
+        kb_context_all(qdrant_path) if check_kb_ready(qdrant_path) else no_kb_msg
     )
 
     s = _BRIEF_SECTIONS.get(lang, _BRIEF_SECTIONS["en"])
