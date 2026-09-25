@@ -1274,7 +1274,13 @@ def generate_brief_for_job(
         else "(候選人背景資料未載入 — 請先執行 utils.kb_loader)"
     )
     context = (
-        retrieve_context(effective_jd, qdrant_path, top_k=3)
+        # The whole background, not the closest 3 chunks: one sheet has to answer
+        # role fit, evaluation practice, infra and past interview questions at
+        # once, and top-3 JD similarity kept dropping the chunk that held the
+        # answer — the Tesla brief said there was no GitHub Actions evidence
+        # while VisaFlow's chunk names it. ~12 chunks in the KB, and the
+        # relevance floor in _qdrant_query still drops what does not fit.
+        retrieve_context(effective_jd, qdrant_path, top_k=20)
         if check_kb_ready(qdrant_path)
         else no_kb_msg
     )
