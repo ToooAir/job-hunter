@@ -654,43 +654,24 @@ BA_MAX_CONSECUTIVE_FAILURES = 3
 # public BA detail page, so `apply_url == url` marks a walled posting.
 
 
-# BA's TLS handshake drops at random (ssl.SSLEOFError: UNEXPECTED_EOF_WHILE
-# READING), and one failure used to abandon the whole keyword: the caller breaks
-# out of its page loop on a None. A 2026-09-30 probe of 10 keywords needed 4
-# attempts to get all 10 through, 3 attempts for 8 of them — and the two that
-# needed the retries were "Backend Engineer" and "KI-Entwickler", so runs were
-# silently dropping entire keywords with nothing in the log but "? Treffern".
-# Only the transport is retried; an empty body and the maintenance page both
-# mean the endpoint is down, where retrying is waste.
-#
-# ponytail: a plain counter, not urllib3's Retry, because the failure has to be
-# testable without reaching into requests' error taxonomy. Raise it if the logs
-# start showing calls that exhaust all four.
-BA_GET_ATTEMPTS = 4
-
-
 def _ba_safe_get(url: str, params: dict) -> dict | None:
-    for attempt in range(1, BA_GET_ATTEMPTS + 1):
-        try:
-            resp = requests.get(url, params=params, headers=BA_HEADERS, timeout=15)
-            resp.raise_for_status()
-            if not resp.content:
-                log.warning("BA GET empty body (status=%d): %s %s", resp.status_code, url, params)
-                return None
-            # A maintenance page is a 200 with HTML, so raise_for_status never fires
-            # and .json() fails with an opaque "Expecting value: line 1 column 1".
-            if b"Wartungsarbeiten" in resp.content[:600]:
-                log.warning("BA is serving its maintenance page (HTTP 200, HTML) — endpoint down")
-                return None
-            data = resp.json()
-            time.sleep(0.4)  # politeness delay between *working* calls only
-            return data
-        except Exception as exc:
-            log.warning("BA GET failed (attempt %d/%d): %s %s — %s",
-                        attempt, BA_GET_ATTEMPTS, url, params, exc)
-            if attempt < BA_GET_ATTEMPTS:
-                time.sleep(attempt)  # 1s, 2s, 3s — the handshake usually recovers
-    return None
+    try:
+        resp = requests.get(url, params=params, headers=BA_HEADERS, timeout=15)
+        resp.raise_for_status()
+        if not resp.content:
+            log.warning("BA GET empty body (status=%d): %s %s", resp.status_code, url, params)
+            return None
+        # A maintenance page is a 200 with HTML, so raise_for_status never fires
+        # and .json() fails with an opaque "Expecting value: line 1 column 1".
+        if b"Wartungsarbeiten" in resp.content[:600]:
+            log.warning("BA is serving its maintenance page (HTTP 200, HTML) — endpoint down")
+            return None
+        data = resp.json()
+        time.sleep(0.4)  # politeness delay between *working* calls only
+        return data
+    except Exception as exc:
+        log.warning("BA GET failed: %s %s — %s", url, params, exc)
+        return None
 
 
 def _ba_detail(refnr: str) -> dict | None:
