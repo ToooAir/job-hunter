@@ -433,7 +433,21 @@ def dedup_gate(job: dict, ctx: DedupContext) -> tuple[str, str]:
                              f"(job {ctx.batch_titles[(company, title)]})")
 
     verdict, reason = "ok", ""
-    if job.get("jd_hash") and job["jd_hash"] in ctx.applied_jd_hashes:
+    if staffing and title and (company, title) in ctx.batch_titles:
+        # One agency, identical title, twice in one batch: in practice one
+        # posting reaching us through two sources, not two end clients. jd_hash
+        # cannot see it — the two renderings differ (bundesagentur carries the
+        # agency's own blurb, jobware does not), and that hash needs chars
+        # 50-550 byte-identical. Measured 2026-10-11: after the gate, this was
+        # the only (company, title) duplicate still reaching the queue, Brunel
+        # NL Würzburg's "Software Engineer Web Applications" at 78 and 72.
+        # A warn rather than the block the non-staffing path uses: an agency
+        # genuinely can front two clients under one title, and a wrong block
+        # hides a real shot.
+        verdict, reason = "warn", (f"same title already in batch "
+                                   f"(job {ctx.batch_titles[(company, title)]}) — "
+                                   f"likely one posting via two sources")
+    elif job.get("jd_hash") and job["jd_hash"] in ctx.applied_jd_hashes:
         verdict, reason = "warn", f"same JD applied as job {ctx.applied_jd_hashes[job['jd_hash']]}"
     elif staffing and (company in ctx.pipeline_companies or company in ctx.in_flight):
         verdict, reason = "warn", "staffing/consultancy — distinct end client, human decides"

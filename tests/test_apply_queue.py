@@ -640,6 +640,41 @@ class DedupGateTest(QueueTestBase):
         self.assertEqual(result["over_budget"][0]["dedup"], "warn")
         self.assertIn("batch", result["over_budget"][0]["dedup_reason"])
 
+    def test_warn_same_title_twice_from_one_agency(self):
+        """One posting reaching us through two sources, at a staffing firm.
+
+        The non-staffing path blocks a same-company same-title variant, but that
+        whole branch is skipped for agencies — on the grounds that an agency
+        fronts many end clients, which is true of different titles and not of an
+        identical one. jd_hash cannot catch it either: bundesagentur renders the
+        agency's own blurb ahead of the advert and jobware does not, so chars
+        50-550 differ. Measured 2026-10-11, this was the only (company, title)
+        duplicate still reaching the queue after the gate.
+        """
+        make_job(self.conn, "ba", company="Brunel GmbH NL Würzburg", source="bundesagentur",
+                 title="Software Engineer Web Applications (w/m/d)", score=78)
+        make_job(self.conn, "jw", company="Brunel GmbH NL Würzburg", source="jobware",
+                 title="Software Engineer Web Applications (w/m/d)", score=72)
+        result = build_queue(self.conn, now=NOW)
+
+        shown = (result["queue"] or []) + (result["over_budget"] or [])
+        self.assertEqual({j["id"] for j in shown}, {"ba", "jw"})   # never hidden
+        second = next(j for j in shown if j["id"] == "jw")
+        self.assertEqual(second["dedup"], "warn")
+        self.assertIn("one posting via two sources", second["dedup_reason"])
+
+    def test_two_different_roles_at_one_agency_are_not_called_duplicates(self):
+        """The exemption's real purpose: distinct end clients must stay visible
+        without being labelled a duplicate of each other."""
+        make_job(self.conn, "r1", company="Brunel GmbH", title="Backend Engineer", score=80)
+        make_job(self.conn, "r2", company="Brunel GmbH", title="Data Engineer", score=78)
+        result = build_queue(self.conn, now=NOW)
+
+        shown = (result["queue"] or []) + (result["over_budget"] or [])
+        self.assertEqual({j["id"] for j in shown}, {"r1", "r2"})
+        for job in shown:
+            self.assertNotIn("one posting via two sources", job["dedup_reason"])
+
     def test_gate_unit_block_beats_warn(self):
         ctx = DedupContext({"acme": "applied"}, {}, {"h1": "other"})
         verdict, _ = dedup_gate(
