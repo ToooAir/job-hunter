@@ -97,3 +97,48 @@ class JobwareApplyUrlTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class JobwareJdSourceTest(unittest.TestCase):
+    """The listing API's `task` field is the Aufgaben half and nothing else —
+    there is no requirements field in that payload. Scoring it alone hid every
+    knock-out criterion: measured 2026-10-11, 531 jobware rows outscored their
+    own full-text twin from another source, 211 of those twins had been zeroed
+    by the German-language gate, and 11 were applied to. Real example: Schmitt
+    GmbH's task was 554B with no "Go" and no "Deutsch"; the iframe was 2,380B
+    and carried "Sehr gute Kenntnisse in Go (Golang)" and "Sehr gute Deutsch-
+    und Englischkenntnisse".
+    """
+
+    TASK = "- Entwicklung von Backend-Komponenten\n- Aufbau von CI/CD-Pipelines"
+    IFRAME = (TASK + "\nIhr Profil:\n- Sehr gute Kenntnisse in Go (Golang) und Python"
+                     "\n- Sehr gute Deutsch- und Englischkenntnisse in Wort und Schrift")
+
+    def _ingest(self, job_extra):
+        job = {"id": "2065370335",
+               "url": "software-engineer-m-w-d-064576288", "title": "Software Engineer (m/w/d)",
+               "location": "Erlangen (DE)", "advertiser": {"name": "Schmitt GmbH"},
+               "apply": {"type": "EMAIL_CLIENT", "url": "mailto:x@schmitt.de"},
+               **job_extra}
+        captured = []
+        with mock.patch.object(ing, "_jw_safe_get", return_value=[job]), \
+             mock.patch.object(ing, "_jw_iframe_jd", side_effect=lambda u: self.IFRAME if u else ""), \
+             mock.patch.object(ing, "_url_in_db", return_value=False), \
+             mock.patch.object(ing, "time"), \
+             mock.patch.object(ing, "upsert_job",
+                               side_effect=lambda c, rec: captured.append(rec) or True):
+            ing.scrape_jobware(conn=mock.Mock(), keywords=["Software Engineer"],
+                               locations=["Erlangen"], radius_km=50, include_remote=False)
+        return captured
+
+    def test_the_knockout_criteria_reach_the_record(self):
+        rec = self._ingest({"task": self.TASK,
+                            "resourceUrlWithTracking": "https://www.jobware.de/embed/1"})[0]
+        self.assertIn("Golang", rec["raw_jd_text"])
+        self.assertIn("Deutsch- und Englischkenntnisse", rec["raw_jd_text"])
+
+    def test_task_is_the_fallback_not_the_source(self):
+        """No iframe URL → the half-advert is better than nothing, but it must
+        not be what we take while an iframe is on offer."""
+        rec = self._ingest({"task": self.TASK, "resourceUrlWithTracking": ""})[0]
+        self.assertEqual(rec["raw_jd_text"], self.TASK)

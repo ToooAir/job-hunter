@@ -978,11 +978,16 @@ def scrape_jobware(
                     skipped += 1
                     continue
 
-                raw_jd: str = job.get("task") or ""
-                if not raw_jd:
-                    resource_url: str = job.get("resourceUrlWithTracking", "")
-                    if resource_url:
-                        raw_jd = _jw_iframe_jd(resource_url)
+                # `task` is literally the Aufgaben half. The listing API carries no
+                # requirements field at all, so the language requirement, the core
+                # language and any Arbeitnehmerüberlassung notice exist only in the
+                # iframe — reading `task` first scored half an advert. Measured
+                # 2026-10-11: 531 jobware rows outscored their own full-text twin from
+                # another source, 211 of those twins had been zeroed by the German
+                # gate, and 11 of them were applied to. One extra GET per *new*
+                # posting; _url_in_db above already skipped the known ones.
+                raw_jd: str = (_jw_iframe_jd(job.get("resourceUrlWithTracking", ""))
+                               or job.get("task") or "")
 
                 if not raw_jd:
                     log.warning("jobware: empty JD for %r (%s)", job.get("title"), job_url)
