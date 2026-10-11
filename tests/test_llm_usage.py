@@ -13,6 +13,7 @@ import os
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -277,7 +278,11 @@ class ScorerBudgetAbortTest(unittest.TestCase):
             "  fetched_at, location, status) VALUES (?,?,?,?,?,?,?,?,?)",
             ("budget-1", "Acme", "Backend Engineer", "https://example.com/budget-1",
              "lever", "We are looking for a backend engineer. " * 20,
-             "2026-09-05T08:00:00", "Hamburg, Germany", "un-scored"),
+             # Not a literal: lever's TTL is 30 days, so a hardcoded date turns
+             # this row 'expired' once it ages past it and the assertion below
+             # stops testing the budget abort at all.
+             datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"),
+             "Hamburg, Germany", "un-scored"),
         )
         conn.commit()
         conn.close()
