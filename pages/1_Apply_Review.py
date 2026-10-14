@@ -81,6 +81,8 @@ _STRINGS = {
         "verified_ago": "已驗證可投(約 {} 天前)",
         "verified_today": "今天已驗證可投",
         "liveness_suspect": "可疑:重驗時不是乾淨的申請表(帳號牆/captcha/弱表單)——投前自行確認職缺還在",
+        "liveness_gone": "已下架:來源職缺頁回報不存在(ats_scan)——除非你確認申請頁還開著,否則直接放棄",
+        "gone_rest": "以下是來源已下架的草稿,排在最後。",
         "never_verified": "尚未重驗失效",
         "set_focus": "我要投這筆",
         "focus_now": "🎯 投遞中:{} — {}({})— 插件答案面板以此職缺為根據",
@@ -147,6 +149,9 @@ _STRINGS = {
         "liveness_suspect": "suspect: not a clean application form on recheck "
                             "(account wall / captcha / weak form) — confirm the posting before applying",
         "never_verified": "not liveness-checked yet",
+        "liveness_gone": "taken down: the source listing reports the posting gone (ats_scan)"
+                         " — abandon unless you've confirmed the apply page is still open",
+        "gone_rest": "Below: drafts whose source listing is gone, kept last.",
         "set_focus": "applying to this one",
         "focus_now": "🎯 applying: {} — {} ({}) — the answer panel grounds on this job",
         "dup_same_job": "⛔ Duplicate: this job was booked applied on {} ({}) — abandon this draft",
@@ -273,6 +278,14 @@ _URGENCY_PER_DAY = 3.0       # after that, four days of waiting ≈ one grade st
 _URGENCY_CAP_DAYS = 14       # past the stale line the draft is pinned on top anyway
 _FRICTION_COST = (0.0, 0.0, 6.0, 10.0)   # indexed by the _friction() rank
 _SUSPICIOUS_COST = 12.0      # the sweep doubts this posting is still alive
+
+
+def _source_gone(snap: dict) -> bool:
+    """ats_scan saw the source listing taken down. The sweep keeps such drafts
+    (job boards expire listings while the apply page stays open), but the
+    ordinary -12 doubt lost to the stale pin: 2026-09-02..10-14, 18 of them were
+    still submitted from the top of the queue, 0 interviews."""
+    return (snap.get("job") or {}).get("ats") == "gone"
 
 
 def _priority(snap: dict) -> float:
@@ -553,7 +566,9 @@ def _liveness_caption(snap: dict) -> None:
             age = (datetime.now() - datetime.fromisoformat(checked.replace("Z", ""))).days
         except ValueError:
             age = None
-    if snap.get("liveness") == "suspicious":
+    if _source_gone(snap):
+        st.error(f"⛔ {T('liveness_gone')}")
+    elif snap.get("liveness") == "suspicious":
         suffix = f" ({T('verified_ago').format(age)})" if age is not None else ""
         # lead with the sweep's concrete evidence ("redirected off the
         # posting: …") so the reviewer can triage without opening the link
@@ -806,12 +821,15 @@ else:
     # never swaps places between reruns.
     def _order(d):
         age = draft_age_days(d.get("created_at")) or 0
+        if _source_gone(d):
+            return (2, -_priority(d), d.get("created_at") or "")
         return (0 if age > DRAFT_STALE_DAYS else 1,
                 -_priority(d),
                 d.get("created_at") or "")
     drafts.sort(key=_order)
-    stale_n = sum(1 for d in drafts
-                  if (draft_age_days(d.get("created_at")) or 0) > DRAFT_STALE_DAYS)
+    stale_n = sum(1 for d in drafts if not _source_gone(d)
+                  and (draft_age_days(d.get("created_at")) or 0) > DRAFT_STALE_DAYS)
+    gone_i = next((i for i, d in enumerate(drafts) if _source_gone(d)), None)
     # the order is a judgement call, so say what it is: a queue whose reasoning
     # is invisible reads as random, and then it gets ignored
     st.caption(T("sort_note"))
@@ -820,4 +838,7 @@ else:
         if stale_n and i == stale_n:
             st.divider()
             st.caption(T("sort_rest").format(d=DRAFT_STALE_DAYS))
+        if i == gone_i:
+            st.divider()
+            st.caption(T("gone_rest"))
         _draft_card(conn, snap, applied_idx)

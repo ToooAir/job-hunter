@@ -24,6 +24,7 @@ from utils.db import (  # noqa: E402
     draft_stock, init_db,
 )
 
+T_GONE = "已下架"
 PAGE = str(Path(__file__).resolve().parents[1] / "pages" / "1_Apply_Review.py")
 
 PAYLOAD = {"actions": [{"selector": "#fn", "kind": "text", "label": "Vorname",
@@ -157,6 +158,24 @@ class ReviewPageTest(unittest.TestCase):
         self._age(self._draft("job-live", tier=2, liveness="live"), 5)
         live, doubt = self._order_of("Live Posting", "Doubtful Posting")
         self.assertLess(live, doubt)
+
+    def test_source_gone_sinks_below_even_a_stale_pin(self):
+        """A gone draft is usually old, so the stale pin floated it to the top
+        and the -12 doubt never mattered: 18 known-gone drafts were submitted
+        2026-09-02..10-14. Gone now sits below everything, with its own error."""
+        self._scored_job("job-gone", 92, "Gone Posting", "Alpha GmbH")
+        self._scored_job("job-live", 70, "Live Posting", "Beta GmbH")
+        self.conn.execute("UPDATE jobs SET ats = 'gone' WHERE id = 'job-gone'")
+        self.conn.commit()
+        self._age(self._draft("job-gone", tier=2, liveness="suspicious"),
+                  DRAFT_STALE_DAYS + 5)
+        self._age(self._draft("job-live", tier=2, liveness="live"), 0)
+        live, gone = self._order_of("Live Posting", "Gone Posting")
+        self.assertLess(live, gone)
+        at = self._run()
+        self.assertTrue(any(T_GONE in str(e.value) for e in at.error))
+        # the stale banner says "apply these first" — it must not count it
+        self.assertFalse(at.warning)
 
     def test_oldest_draft_metric(self):
         sid = self._draft("job-a")

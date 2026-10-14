@@ -25,6 +25,8 @@ import json
 import re
 import sqlite3
 import sys
+import threading
+import time
 from html import unescape as html_unescape
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -74,6 +76,12 @@ HEADERS = {
 }
 TIMEOUT = 15
 MAX_WORKERS = 4
+# wearedevelopers 429s the .md twins when 4 workers hit it at once: 33/121 wad
+# rows came back fetch-error on 2026-10-14. One request at a time, spaced, and
+# one Retry-After-honouring retry; other hosts keep the parallel pool.
+_WAD_LOCK = threading.Lock()
+WAD_MD_SPACING_S = 1.0
+WAD_RETRY_AFTER_CAP_S = 30
 MAX_APPLY_LINKS = 3  # depth-2 fetches per job
 
 # Substring → ATS name. Order matters: first match wins.
@@ -308,8 +316,19 @@ def _resolve_wad_md(url, result):
     if not WAD_MD_RE.search(url):
         return False
     try:
-        r = requests.get(url.split("?")[0] + ".md",
-                         headers={**HEADERS, "Accept": "text/markdown"}, timeout=TIMEOUT)
+        with _WAD_LOCK:
+            for attempt in range(2):
+                time.sleep(WAD_MD_SPACING_S)
+                r = requests.get(url.split("?")[0] + ".md",
+                                 headers={**HEADERS, "Accept": "text/markdown"},
+                                 timeout=TIMEOUT)
+                if r.status_code != 429 or attempt:
+                    break
+                try:
+                    wait = float(r.headers.get("Retry-After", 10))
+                except (TypeError, ValueError):
+                    wait = 10.0
+                time.sleep(min(wait, WAD_RETRY_AFTER_CAP_S))
     except requests.RequestException as e:
         result.update(ats="fetch-error", evidence=f"WAD .md: {str(e)[:180]}")
         return True

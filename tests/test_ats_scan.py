@@ -206,13 +206,33 @@ class ResolveWadMdTest(unittest.TestCase):
 
     URL = "https://www.wearedevelopers.com/jobs/ext/1164541-python-developer-in-germany"
 
-    def _resolve(self, status, text="", url=None):
+    def _resolve(self, status, text="", url=None, responses=None):
         from unittest import mock
-        fake = mock.Mock(status_code=status, text=text)
+        fakes = responses or [mock.Mock(status_code=status, text=text, headers={})]
         result = {"ats": "unknown", "evidence": ""}
-        with mock.patch("ats_scan.requests.get", return_value=fake) as get:
+        with mock.patch("ats_scan.requests.get", side_effect=fakes) as get, \
+                mock.patch("ats_scan.time.sleep") as self.sleep:
             handled = resolve_wad(url or self.URL, result)
         return handled, result, get
+
+    def test_429_waits_retry_after_then_classifies(self):
+        """4 parallel workers drew 429 on 27% of wad rows (2026-10-14) — an
+        unverified row that then got applied to like a live one."""
+        from unittest import mock
+        _, res, get = self._resolve(None, responses=[
+            mock.Mock(status_code=429, text="", headers={"Retry-After": "7"}),
+            mock.Mock(status_code=200, headers={},
+                      text="- **Apply:** https://boards.greenhouse.io/acme/jobs/1\n")])
+        self.assertEqual(get.call_count, 2)
+        self.assertIn(mock.call(7.0), self.sleep.call_args_list)
+        self.assertEqual(res["ats"], "greenhouse")
+
+    def test_second_429_gives_up_as_fetch_error(self):
+        from unittest import mock
+        _, res, get = self._resolve(None, responses=[
+            mock.Mock(status_code=429, text="", headers={}) for _ in range(2)])
+        self.assertEqual(get.call_count, 2)
+        self.assertEqual(res["ats"], "fetch-error")
 
     def test_fetches_the_markdown_twin(self):
         _, _, get = self._resolve(200, "- **Apply:** https://x.example/apply\n")

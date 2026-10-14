@@ -634,16 +634,22 @@ def draft_age_days(created_at: str | None, now: datetime | None = None) -> int |
 
 
 def draft_stock(conn: sqlite3.Connection, now: datetime | None = None) -> dict:
-    """How many drafts are waiting, how old the oldest is, how many are stale."""
+    """How many drafts are waiting, how old the oldest is, how many are stale.
+
+    'stale' drives the "apply these first" banners, so it leaves out drafts
+    whose source listing ats_scan saw taken down — urging those first is how
+    dead postings got submitted."""
     rows = conn.execute(
-        "SELECT created_at FROM application_snapshots WHERE status = 'draft'"
+        "SELECT s.created_at, j.ats FROM application_snapshots s"
+        " LEFT JOIN jobs j ON j.id = s.job_id WHERE s.status = 'draft'"
     ).fetchall()
-    ages = [a for a in (draft_age_days(r["created_at"], now) for r in rows)
-            if a is not None]
+    ages = [(a, r["ats"]) for r in rows
+            if (a := draft_age_days(r["created_at"], now)) is not None]
     return {
         "count":       len(rows),
-        "oldest_days": max(ages) if ages else None,
-        "stale":       sum(1 for a in ages if a > DRAFT_STALE_DAYS),
+        "oldest_days": max(a for a, _ in ages) if ages else None,
+        "stale":       sum(1 for a, ats in ages
+                           if a > DRAFT_STALE_DAYS and ats != "gone"),
     }
 
 
