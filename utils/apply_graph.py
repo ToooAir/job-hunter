@@ -65,6 +65,7 @@ class ApplyState(TypedDict, total=False):
     custom_qa: list[dict]           # {question, answer, source}
     cover_letter: str               # reused from jobs.cover_letter_draft
     kb_context: str                 # RAG context retrieved once per job
+    email_contact: tuple            # (name, 'Frau'|'Herr'|'') verified against the JD
 
     # ── checks & result ────────────────────────────────────────────────
     verifier_report: dict           # {pass, issues, llm_checked}
@@ -116,16 +117,18 @@ def gen_email(state: ApplyState, config) -> dict:
     from utils.apply_llm import write_email_body
     cfg = _cfg(config)
     kb_context, note = _retrieve_kb(cfg, state["job"])
-    body = write_email_body(state["job"], kb_context,
-                            client=cfg.get("client"), model=cfg.get("model"))
+    body, contact, title = write_email_body(
+        state["job"], kb_context, client=cfg.get("client"), model=cfg.get("model"))
     notes = list(state.get("notes") or []) + ([note] if note else [])
-    return {"cover_letter": body, "kb_context": kb_context, "notes": notes}
+    return {"cover_letter": body, "kb_context": kb_context, "notes": notes,
+            "email_contact": (contact, title)}
 
 
 def wrap_email(state: ApplyState, config) -> dict:
     from utils.apply_llm import wrap_email as _wrap
+    contact, title = state.get("email_contact") or ("", "")
     return {"cover_letter": _wrap(state.get("cover_letter") or "", state["job"],
-                                  _cfg(config)["profile"])}
+                                  _cfg(config)["profile"], contact, title)}
 
 
 def verify(state: ApplyState, config) -> dict:

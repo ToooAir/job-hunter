@@ -52,8 +52,9 @@ class TestEmailOnly(unittest.TestCase):
            "cover_letter_draft": "Form letter."}
     BODY = "Your note on supportability stood out.\n\nMy CV is attached."
 
-    def _run(self, **job):
-        client = FakeClient([self.BODY, json.dumps({"pass": True, "issues": []})])
+    def _run(self, contact=None, **job):
+        client = FakeClient([json.dumps({"body": self.BODY, "contact_name": contact}),
+                             json.dumps({"pass": True, "issues": []})])
         cfg = {"configurable": {"profile": EMAIL_PROFILE, "dry_run": True,
                                 "client": client, "model": "m"}}
         out = run_apply({"job": {**self.JOB, **job}, "verdict": "email-only",
@@ -83,6 +84,11 @@ class TestEmailOnly(unittest.TestCase):
         self.assertIn("Niveau A2", email)
         self.assertIn(self.BODY, email)
 
+    def test_jd_contact_flows_into_the_greeting(self):
+        out, _ = self._run(contact="Viktoria Iwanowa", jd_german=1,
+                           raw_jd_text="Viktoria Iwanowa\nRecruiting Managerin")
+        self.assertTrue(out["cover_letter"].startswith("Guten Tag Viktoria Iwanowa,"))
+
     def test_english_posting_and_deterministic_signature(self):
         out, _ = self._run(jd_german=0)
         email = out["cover_letter"]
@@ -90,6 +96,48 @@ class TestEmailOnly(unittest.TestCase):
         self.assertTrue(email.endswith("Kind regards,\nMax Mustermann\n"
                                        "max.mustermann@example.com\n"
                                        "github.com/maxmustermann"))   # no phone: skipped
+
+
+class TestEmailContact(unittest.TestCase):
+    """Greeting names the JD's contact. The LLM only proposes the name; the
+    title comes from the JD's own Frau/Herr, never from a first name."""
+
+    JD = "Bist Du neugierig geworden?\nViktoria Iwanowa\nRecruiting Managerin\n"
+
+    def test_name_must_appear_in_the_jd(self):
+        from utils.apply_llm import find_contact
+        self.assertEqual(find_contact("Anna Beispiel", self.JD), ("", ""))
+        self.assertEqual(find_contact("Viktoria Iwanowa", self.JD),
+                         ("Viktoria Iwanowa", ""))
+
+    def test_title_only_from_the_jd_text(self):
+        from utils.apply_llm import find_contact
+        jd = "Bewerben Sie sich telefonisch bei Herr Schulze oder per Email"
+        self.assertEqual(find_contact("Schulze", jd), ("Schulze", "Herr"))
+        self.assertEqual(find_contact("Erika Muster", "Ihre Ansprechpartnerin: Frau Erika Muster"),
+                         ("Erika Muster", "Frau"))
+        # a lone surname without a title would read "Guten Tag Schulze"
+        self.assertEqual(find_contact("Schulze", "Kontakt: Schulze"), ("", ""))
+
+    def test_greetings(self):
+        from utils.apply_llm import email_greeting
+        self.assertTrue(email_greeting(True, "A2", "Erika Muster", "Frau")
+                        .startswith("Sehr geehrte Frau Muster,"))
+        self.assertTrue(email_greeting(True, "A2", "Max Schulze", "Herr")
+                        .startswith("Sehr geehrter Herr Schulze,"))
+        self.assertTrue(email_greeting(True, "A2", "Viktoria Iwanowa", "")
+                        .startswith("Guten Tag Viktoria Iwanowa,"))
+        self.assertEqual(email_greeting(False, "A2", "Erika Muster", "Frau"),
+                         "Dear Ms. Muster,\n\n")
+        self.assertEqual(email_greeting(False, "A2", "Viktoria Iwanowa", ""),
+                         "Dear Viktoria Iwanowa,\n\n")
+        self.assertEqual(email_greeting(False, "A2"), "Dear Hiring Team,\n\n")
+
+    def test_contact_block_at_the_end_survives_the_prompt_cut(self):
+        from utils.apply_llm import _jd_for_prompt
+        cut = _jd_for_prompt("x" * 9000 + self.JD)
+        self.assertLessEqual(len(cut), 6000 + 10)
+        self.assertIn("Viktoria Iwanowa", cut)
 
 
 class TestEndToEndDryRun(unittest.TestCase):

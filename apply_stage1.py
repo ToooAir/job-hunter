@@ -311,7 +311,7 @@ def enrich_jobs(conn, queue: list[dict]) -> list[dict]:
         # the email greeting switches language on this; a rule-gated German
         # posting is never translated, so the flag alone misses it
         extra["jd_german"] = bool(extra.pop("translated", False)
-                                  or _detect_german(extra.pop("raw_jd_text", "") or ""))
+                                  or _detect_german(extra.get("raw_jd_text") or ""))
         out.append({**job, **extra})
     return out
 
