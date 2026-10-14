@@ -298,14 +298,21 @@ def refresh_liveness(conn, states: list[dict]) -> None:
 
 def enrich_jobs(conn, queue: list[dict]) -> list[dict]:
     """Queue rows + the columns Pass B needs (JD text, reused cover letter)."""
+    from phase2_scorer import _detect_german
     out = []
     for job in queue:
         row = conn.execute(
             "SELECT COALESCE(translated_jd_text, raw_jd_text) AS description, "
+            "       translated_jd_text IS NOT NULL AS translated, raw_jd_text, "
             "       cover_letter_draft FROM jobs WHERE id = ?",
             (job["id"],),
         ).fetchone()
-        out.append({**job, **(dict(row) if row else {})})
+        extra = dict(row) if row else {}
+        # the email greeting switches language on this; a rule-gated German
+        # posting is never translated, so the flag alone misses it
+        extra["jd_german"] = bool(extra.pop("translated", False)
+                                  or _detect_german(extra.pop("raw_jd_text", "") or ""))
+        out.append({**job, **extra})
     return out
 
 

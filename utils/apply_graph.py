@@ -21,9 +21,10 @@ human (the cover letter below is their raw material). The mapper modules
 (field_mapper, agentic_mapper, the mapping half of apply_llm) and the
 agentic spike tools were deleted with it — git history keeps them.
 
-Jobs whose verdict is junk (external-board, no-form, nav-error, email-only,
+Jobs whose verdict is junk (external-board, no-form, nav-error,
 shadow-only, account-wall) skip straight to tier assignment: tier plus an
-answer sheet are all we can produce for them.
+answer sheet are all we can produce for them. email-only is the exception:
+the application is an email, so gen_email writes one and verify audits it.
 
 This was a LangGraph StateGraph until 2026-09-21. The topology is one
 branch and a straight line, so the framework bought nothing but a way to
@@ -105,6 +106,26 @@ def gen_content(state: ApplyState, config) -> dict:
     with the retired mapping chain (see module docstring)."""
     cl = (state["job"].get("cover_letter_draft") or "").strip()
     return {"cover_letter": cl}
+
+
+def gen_email(state: ApplyState, config) -> dict:
+    """email-only: the application IS an email, so write one instead of
+    carrying the form cover letter (which mailed as-is read as unsendable).
+    The KB context is kept so verify audits the email against the same
+    background it was written from."""
+    from utils.apply_llm import write_email_body
+    cfg = _cfg(config)
+    kb_context, note = _retrieve_kb(cfg, state["job"])
+    body = write_email_body(state["job"], kb_context,
+                            client=cfg.get("client"), model=cfg.get("model"))
+    notes = list(state.get("notes") or []) + ([note] if note else [])
+    return {"cover_letter": body, "kb_context": kb_context, "notes": notes}
+
+
+def wrap_email(state: ApplyState, config) -> dict:
+    from utils.apply_llm import wrap_email as _wrap
+    return {"cover_letter": _wrap(state.get("cover_letter") or "", state["job"],
+                                  _cfg(config)["profile"])}
 
 
 def verify(state: ApplyState, config) -> dict:
@@ -201,6 +222,10 @@ def run_apply(state: ApplyState, config) -> ApplyState:
     if state.get("verdict") in CONTENT_VERDICTS:
         state |= gen_content(state, config)
         state |= verify(state, config)
+    elif state.get("verdict") == "email-only":
+        state |= gen_email(state, config)
+        state |= verify(state, config)   # audits the generated body only
+        state |= wrap_email(state, config)
     state |= assign_tier(state, config)
     state |= save_draft(state, config)
     return state

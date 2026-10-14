@@ -897,6 +897,30 @@ def score_single_job(
 
 # ── Cover Letter Regenerator ──────────────────────────────────────────────────
 
+# Register + grounding rules shared by every free-text generator that speaks
+# for the candidate (cover letter regenerate, application email).
+GROUNDING_RULES = """Register: vary sentence length; do not open consecutive sentences with "I". Banned
+stock phrases: "aligns with", "I bring expertise in", "demonstrates a commitment
+to", "eager to contribute", "I am confident that", "resonates with", "proven track
+record", "leverage". Do not stack skills into a three-item list ("Python, GCP, and
+SQL") — name a skill where it did something.
+Ground every claim in the candidate background above — no invented facts, numbers, or
+achievements it does not support. State a concrete result ONLY when the background
+contains it; otherwise describe the achievement without a fabricated metric. No
+embellishment, no superlatives the background does not support.
+Skill claims follow the same rule: write "expertise in", "experience with", or "a
+background in" X only when the candidate background shows X. Vocabulary that appears
+only in the job description (a technology, a data scale, a cloud vendor) may describe
+the company or the role — never the candidate. Where the JD demands something the
+background lacks, express interest or name an adjacent strength from the background;
+never assert experience the background does not show. This applies to every paragraph
+— motivation and closing included, not just the achievements.
+Residence: do not mention visa, residence permit, sponsorship, relocation, or
+start date anywhere in the letter, even when the background states them — the
+CV and the application form carry that fact.
+"""
+
+
 TONE_INSTRUCTIONS: dict[str, str] = {
     "formal": (
         "Tone: formal and professional, suitable for a traditional corporate environment. "
@@ -956,26 +980,7 @@ from there, in that register — not from the JD. Use it as raw material, not a
 template: rephrase for this role rather than reusing the same sentences everywhere.
 Reasoning about a fact the background contains is grounded and wanted — what an
 achievement changed, why a problem was hard. Asserting a NEW fact is not.
-Register: vary sentence length; do not open consecutive sentences with "I". Banned
-stock phrases: "aligns with", "I bring expertise in", "demonstrates a commitment
-to", "eager to contribute", "I am confident that", "resonates with", "proven track
-record", "leverage". Do not stack skills into a three-item list ("Python, GCP, and
-SQL") — name a skill where it did something.
-Ground every claim in the candidate background above — no invented facts, numbers, or
-achievements it does not support. State a concrete result ONLY when the background
-contains it; otherwise describe the achievement without a fabricated metric. No
-embellishment, no superlatives the background does not support.
-Skill claims follow the same rule: write "expertise in", "experience with", or "a
-background in" X only when the candidate background shows X. Vocabulary that appears
-only in the job description (a technology, a data scale, a cloud vendor) may describe
-the company or the role — never the candidate. Where the JD demands something the
-background lacks, express interest or name an adjacent strength from the background;
-never assert experience the background does not show. This applies to every paragraph
-— motivation and closing included, not just the achievements.
-Residence: do not mention visa, residence permit, sponsorship, relocation, or
-start date anywhere in the letter, even when the background states them — the
-CV and the application form carry that fact.
-Vocabulary scoping, per paragraph:
+{GROUNDING_RULES}Vocabulary scoping, per paragraph:
 - Para 1: name the role, then why the company's domain interests the candidate (JD
   terms allowed here, describing THEIR work). End with what the candidate brings,
   drawn ONLY from the background — no JD term in that sentence.

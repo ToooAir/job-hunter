@@ -31,6 +31,67 @@ def config_for(client):
                              "client": client, "model": "m"}}
 
 
+EMAIL_PROFILE = CandidateProfile({
+    "meta": {"cv_path": "candidate_kb/cv/cv.pdf"},
+    "fields": {
+        "full_name": {"value": "Max Mustermann", "aliases": ["name"]},
+        "email": {"value": "max.mustermann@example.com", "aliases": ["email"]},
+        "github": {"value": "github.com/maxmustermann", "aliases": ["github"]},
+        "german_level": {"value": "A2", "aliases": ["deutsch"]},
+    },
+})
+
+
+class TestEmailOnly(unittest.TestCase):
+    """email-only used to skip content entirely: the reviewer got the form
+    cover letter to mail as-is, unverified (2026-10-14: wrong company name and
+    an invented AI angle went out). It now gets a real email, audited."""
+
+    JOB = {"id": "e1", "title": "Backend Engineer", "company": "Mustermann GmbH",
+           "ats": "unknown", "dedup": "ok", "description": "Wir suchen ...",
+           "cover_letter_draft": "Form letter."}
+    BODY = "Your note on supportability stood out.\n\nMy CV is attached."
+
+    def _run(self, **job):
+        client = FakeClient([self.BODY, json.dumps({"pass": True, "issues": []})])
+        cfg = {"configurable": {"profile": EMAIL_PROFILE, "dry_run": True,
+                                "client": client, "model": "m"}}
+        out = run_apply({"job": {**self.JOB, **job}, "verdict": "email-only",
+                         "fields": [], "apply_url": "mailto:hr@example.com"}, cfg)
+        return out, client
+
+    def test_writes_and_verifies_an_email(self):
+        out, client = self._run(jd_german=1)
+        self.assertEqual(len(client.calls), 2)          # body + verifier
+        self.assertEqual(out["tier"], 3)
+        self.assertNotIn("Form letter", out["cover_letter"])
+        self.assertTrue(out["verifier_report"]["pass"])
+        # the verifier sees only the generated body: our German opener and the
+        # signature must not be audited as claims (it flagged the opener live)
+        audited = json.dumps(client.calls[1]["messages"], ensure_ascii=False)
+        self.assertNotIn("Sehr geehrte", audited)
+        self.assertNotIn("Kind regards", audited)
+        system = client.calls[0]["messages"][0]["content"]
+        self.assertIn("do not mention visa", system)    # shared CL rule rides along
+        # live run volunteered "no completed CS degree" / "not three years"
+        self.assertIn("Never raise degrees", system)
+
+    def test_german_posting_opens_in_german_then_switches(self):
+        out, _ = self._run(jd_german=1)
+        email = out["cover_letter"]
+        self.assertTrue(email.startswith("Sehr geehrte Damen und Herren,"))
+        self.assertIn("Niveau A2", email)
+        self.assertIn(self.BODY, email)
+
+    def test_english_posting_and_deterministic_signature(self):
+        out, _ = self._run(jd_german=0)
+        email = out["cover_letter"]
+        self.assertTrue(email.startswith("Dear Hiring Team,"))
+        self.assertTrue(email.endswith("Kind regards,\nMax Mustermann\n"
+                                       "max.mustermann@example.com\n"
+                                       "github.com/maxmustermann"))   # no phone: skipped
+
+
 class TestEndToEndDryRun(unittest.TestCase):
     """Real node bodies, fake LLM, dry_run — the full Pass B for one job."""
 

@@ -60,8 +60,8 @@ _STRINGS = {
         "tab_sheet": "小抄(點右上複製)",
         "tab_jd": "職缺描述(JD)",
         "jd_missing": "(這筆沒有存下 JD 文字)",
-        "email_hint": "email 投遞:信件內容就用下面的 Cover Letter,"
-                      "附上 CV(表單要檔案時另存 CL 的 PDF 一起寄)。",
+        "email_hint": "email 投遞:下面的 Cover Letter 就是整封信(含問候與署名),"
+                      "複製貼上、附上 CV 即可寄出。",
         "email_to": "收件人", "email_subject": "主旨",
         "cl_flagged": "這封 cover letter 被標記的疑慮(送出前請確認)",
         "cl_download_pdf": "⬇️ 下載 PDF(表單要上傳檔案時用)",
@@ -126,8 +126,8 @@ _STRINGS = {
         "tab_sheet": "Answer sheet (copy top-right)",
         "tab_jd": "Job description (JD)",
         "jd_missing": "(no JD text stored for this posting)",
-        "email_hint": "Email application: the cover letter below is the body — "
-                      "attach your CV (and the CL PDF if a file is wanted).",
+        "email_hint": "Email application: the cover letter below is the whole email "
+                      "(greeting and signature included) — paste it and attach your CV.",
         "email_to": "To", "email_subject": "Subject",
         "cl_flagged": "Flags on this cover letter (confirm before submitting)",
         "cl_download_pdf": "⬇️ Download PDF (for forms that require a file upload)",
@@ -548,6 +548,11 @@ def _email_section(conn, snap: dict) -> None:
     subject = (f"Application: {title}"
                if (row and row["jd_language_req"]) == "en_required"
                else f"Bewerbung als {title}")
+    # Tier 3 drafts carry the profile answer sheet; the name tells the
+    # recruiter whose mail this is before they open it
+    name = ((snap.get("form_payload") or {}).get("answer_sheet") or {}).get("full_name")
+    if name:
+        subject += f" – {name}"
     st.info(f"✉️ {T('email_hint')}")
     st.caption(T("email_to"))
     st.code(to, language=None)
