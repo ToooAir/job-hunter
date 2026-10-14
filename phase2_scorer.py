@@ -972,11 +972,9 @@ the company or the role — never the candidate. Where the JD demands something 
 background lacks, express interest or name an adjacent strength from the background;
 never assert experience the background does not show. This applies to every paragraph
 — motivation and closing included, not just the achievements.
-Residence: when the background states where the candidate lives and that no
-sponsorship or relocation is needed, say so in ONE clause (Para 1's closing
-sentence or Para 3) — already in Germany, can start immediately, no visa
-sponsorship required. It is a fact from the background, not a JD term; never
-invent permit details beyond what the background states.
+Residence: do not mention visa, residence permit, sponsorship, relocation, or
+start date anywhere in the letter, even when the background states them — the
+CV and the application form carry that fact.
 Vocabulary scoping, per paragraph:
 - Para 1: name the role, then why the company's domain interests the candidate (JD
   terms allowed here, describing THEIR work). End with what the candidate brings,
