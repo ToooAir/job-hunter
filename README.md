@@ -316,11 +316,15 @@ Controls which keywords and locations each scraper uses. For Greenhouse and Leve
 
 ### `candidate_kb/`
 
-Three Markdown files that form your RAG knowledge base:
+Markdown files that form your RAG knowledge base (every `*.md` here is indexed):
 
 - `resume_bullets.md` — work history in STAR format with measurable outcomes
 - `projects.md` — key projects with tech stack and concrete results
 - `visa_status.md` — work authorisation, availability, location
+- `career_log.md` (optional) — dated wins logged as they happen, so fresh material reaches cover letters
+- `stories.md` (optional) — STAR stories for behavioural questions; the interview brief maps likely questions to them
+
+`scripts/skill_gaps.py` reads recent scored postings against this KB and writes a skill-gap heatmap and a project-first learning plan to `data/skill_gaps.md`.
 
 After editing any of these, rebuild the knowledge base:
 ```bash

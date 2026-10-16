@@ -1,0 +1,14 @@
+# Career Log
+# Copy this file to career_log.md. Add a dated line the day something worth
+# remembering happens (a feature shipped, a hard bug fixed, feedback received),
+# while the numbers and details are still fresh.
+# One "## " block per project and month, NO blank lines inside a block.
+# After editing, rebuild the KB:
+#   docker exec job-hunter-pipeline-1 python -m utils.kb_loader
+
+## 2026-10 | <Project or Company>
+- 2026-10-14: <what you did> — <concrete outcome, with a number if there is one>
+- 2026-10-03: <what you did> — <concrete outcome>
+
+## 2026-09 | <Project or Company>
+- 2026-09-21: <what you did> — <concrete outcome>

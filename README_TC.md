@@ -297,11 +297,15 @@ docker compose exec pipeline python phase2_scorer.py --rescore --budget 5
 
 ### `candidate_kb/`
 
-三個構成 RAG 知識庫的 Markdown 檔案：
+構成 RAG 知識庫的 Markdown 檔案（此目錄下所有 `*.md` 都會被索引）：
 
 - `resume_bullets.md` — 以 STAR 格式撰寫的工作經歷，需有具體成果數字
 - `projects.md` — 重要專案，含技術堆疊與具體成效
 - `visa_status.md` — 工作許可、可上班日期、偏好地點
+- `career_log.md`（選用）— 隨時記下的帶日期成果，讓新素材進到求職信
+- `stories.md`（選用）— 行為題用的 STAR 故事；面試準備單會把可能的行為題對應到這些故事
+
+`scripts/skill_gaps.py` 會拿近期評分過的職缺比對知識庫，把技能落差熱圖與以專案為主的學習計畫寫到 `data/skill_gaps.md`。
 
 修改後重建知識庫：
 ```bash

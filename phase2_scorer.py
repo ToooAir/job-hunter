@@ -1063,6 +1063,13 @@ _BRIEF_SECTIONS = {
                         "For each, 2–3 sentences of a suggested answer grounded in the candidate "
                         "background above. If the background gives no basis for an answer, say so "
                         "plainly instead of inventing one.)",
+        # Story bank — only when candidate_kb/stories.md is in the background
+        "stories_sec":  "### Behavioural Questions & Your Stories",
+        "stories_sec_h": "(3 behavioural questions this interviewer is likely to ask given the "
+                         "role and company. For each, name the story from stories.md that fits "
+                         "best by its title, plus one sentence on which part of it to stress for "
+                         "this role. If no story fits a question, say so plainly — that is a "
+                         "story worth writing before the interview.)",
         # Submission evidence (appended deterministically — never LLM-generated)
         "subm_title":   "## 📋 What You Actually Submitted",
         "subm_meta":    "Submitted",
@@ -1102,6 +1109,11 @@ _BRIEF_SECTIONS = {
         "past_sec":     "### 曾被問過的題目：建議答法",
         "past_sec_h":   "（從上面挑出這位面試官可能重問的題，每題用 2–3 句給出建議答法，"
                         "且必須以上方候選人背景為依據。若背景資料裡找不到依據，就直說沒有依據，不要編。）",
+        # 故事庫——只在候選人背景含 stories.md 時出現
+        "stories_sec":  "### 行為題：用哪個故事",
+        "stories_sec_h": "（依職位與公司，列出面試官最可能問的 3 個行為題。每題指出 stories.md "
+                         "裡最適合的故事標題，再用一句話說明對這個職位要強調故事的哪一段。"
+                         "若沒有故事對得上，就直說沒有——那就是面試前該補寫的故事。）",
         # 投遞存證（確定性附加，永不經 LLM 生成）
         "subm_title":   "## 📋 你當時實際提交的內容",
         "subm_meta":    "投遞時間",
@@ -1312,6 +1324,8 @@ def generate_brief_for_job(
         f"{_sanitize_jd(past)}\n</document>\n" if past else ""
     )
     past_out = f"\n\n{s['past_sec']}\n{s['past_sec_h']}" if past else ""
+    if "[來源: stories.md]" in context:
+        past_out += f"\n\n{s['stories_sec']}\n{s['stories_sec_h']}"
     prompt = BRIEF_PROMPT_TEMPLATE.format(
         intro=s["intro"],
         inj=s["inj"],

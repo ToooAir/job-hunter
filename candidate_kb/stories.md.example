@@ -1,0 +1,28 @@
+# Stories
+# Copy this file to stories.md and fill in your own stories.
+# One story = one "## " block with NO blank lines inside (kb_loader splits on
+# blank lines, so a blank line would cut the story in half).
+# The interview brief maps likely behavioural questions to these titles; the
+# cover letter and form answers may draw on them too, so keep them factual.
+# Practise each one out loud until it takes about two minutes.
+
+## Fixing a production incident under pressure | <Company> | <Year>
+- Question types: hardest bug, working under pressure, ownership
+- Situation: <what broke, who was affected, the stakes>
+- Task: <what you were responsible for>
+- Action: <what you did, step by step, including the dead ends>
+- Result: <measurable outcome; what you changed so it cannot happen again>
+
+## Disagreeing with a technical decision | <Company> | <Year>
+- Question types: conflict, influencing without authority, receiving feedback
+- Situation: <...>
+- Task: <...>
+- Action: <...>
+- Result: <...>
+
+## Learning something new fast | <Company / Project> | <Year>
+- Question types: learning, ambiguity, a gap in your experience
+- Situation: <...>
+- Task: <...>
+- Action: <...>
+- Result: <...>

@@ -177,5 +177,45 @@ class PastInterviewBlockTest(unittest.TestCase):
         self.assertEqual([r["interview_date"] for r in rows], ["2026-07-01", "2026-05-01"])
 
 
+class StoryBankSectionTest(unittest.TestCase):
+    """The behavioural-story section is asked for only when stories.md is in
+    the background — without it the model would invent story titles."""
+
+    def _prompt(self, context):
+        from types import SimpleNamespace
+        from unittest import mock
+        import phase2_scorer as ps
+        tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        tmp.close()
+        sent = {}
+
+        def fake_chat(client, **kw):
+            sent["prompt"] = kw["messages"][0]["content"]
+            return SimpleNamespace(choices=[SimpleNamespace(
+                message=SimpleNamespace(content="brief"))])
+
+        job = {"id": "j1", "company": "Musterfirma", "title": "Backend Engineer",
+               "location": "Hamburg", "raw_jd_text": "Python APIs.",
+               "cover_letter_draft": None}
+        with mock.patch.object(ps, "fetch_job_by_id", return_value=job), \
+             mock.patch.object(ps, "check_kb_ready", return_value=True), \
+             mock.patch.object(ps, "kb_context_all", return_value=context), \
+             mock.patch.object(ps, "make_client"), \
+             mock.patch.object(ps, "rate_limit"), \
+             mock.patch.object(ps, "set_interview_brief"), \
+             mock.patch.object(ps, "chat_completion", side_effect=fake_chat):
+            ps.generate_brief_for_job("j1", db_path=tmp.name)
+        Path(tmp.name).unlink(missing_ok=True)
+        return sent["prompt"]
+
+    def test_no_stories_no_section(self):
+        prompt = self._prompt("[來源: projects.md]\nBuilt an API.")
+        self.assertNotIn("Behavioural Questions & Your Stories", prompt)
+
+    def test_stories_add_section(self):
+        prompt = self._prompt("[來源: stories.md]\n[Stories: Fixing an outage] ...")
+        self.assertIn("Behavioural Questions & Your Stories", prompt)
+
+
 if __name__ == "__main__":
     unittest.main()
