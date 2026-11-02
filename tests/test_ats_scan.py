@@ -435,3 +435,64 @@ class ResolveBundesagenturTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(HAS_DEPS, "ats_scan deps not installed on this host")
+class WadDownstreamRecheckTest(unittest.TestCase):
+    """WAD drops its /ext/ mirror while the original board keeps the posting
+    open: 6 of 11 'gone' wad drafts were live downstream (2026-11-02)."""
+
+    JOB = {"id": "j1", "source": "wearedevelopers", "company": "Acme", "title": "T",
+           "fit_grade": "A", "match_score": 80,
+           "url": "https://www.wearedevelopers.com/jobs/ext/3848773-senior-data-engineer",
+           "apply_url": "https://www.adzuna.de/details/5934352584"}
+
+    def _resolve(self, downstream, job=None):
+        from unittest import mock
+        wad = mock.Mock(status_code=410, text="", headers={})
+        with mock.patch("ats_scan.requests.get", side_effect=[wad, downstream]) as get, \
+                mock.patch("ats_scan.time.sleep"):
+            res = resolve_one(dict(job or self.JOB))
+        return res, get
+
+    def test_live_downstream_overturns_wad_gone(self):
+        from unittest import mock
+        res, _ = self._resolve(mock.Mock(
+            status_code=200, url=self.JOB["apply_url"],
+            text="<h1>Auf diesen Job bewerben</h1>" + "<p>Aufgaben</p>" * 200))
+        self.assertEqual(res["ats"], "unknown-external")
+        self.assertEqual(res["evidence"], self.JOB["apply_url"])
+
+    def test_empty_spa_shell_cannot_refute_gone(self):
+        # careerjet / Workday answer 200 with a near-empty shell either way
+        from unittest import mock
+        res, _ = self._resolve(mock.Mock(
+            status_code=200, url=self.JOB["apply_url"],
+            text="<html><script>" + "x" * 5000 + "</script><title>Careerjet</title></html>"))
+        self.assertEqual(res["ats"], "gone")
+        self.assertIn("empty shell", res["evidence"])
+
+    def test_dead_downstream_stays_gone(self):
+        from unittest import mock
+        res, _ = self._resolve(mock.Mock(status_code=410, url=self.JOB["apply_url"], text=""))
+        self.assertEqual(res["ats"], "gone")
+
+    def test_bot_wall_cannot_refute_gone(self):
+        from unittest import mock
+        res, _ = self._resolve(mock.Mock(status_code=403, url=self.JOB["apply_url"], text=""))
+        self.assertEqual(res["ats"], "gone")
+
+    def test_downstream_redirect_to_search_stays_gone(self):
+        from unittest import mock
+        job = {**self.JOB, "apply_url":
+               "https://www.careerboard.com/de/en/find-jobs-in-Germany/-8198524D56D9F66EDB/"}
+        res, _ = self._resolve(mock.Mock(
+            status_code=200, text="<html>search</html>",
+            url="https://www.careerboard.com/de/en/search-jobs-in-Germany/AI-DATA"), job)
+        self.assertEqual(res["ats"], "gone")
+
+    def test_no_apply_url_skips_recheck(self):
+        from unittest import mock
+        res, get = self._resolve(mock.Mock(), {**self.JOB, "apply_url": None})
+        self.assertEqual(res["ats"], "gone")
+        self.assertEqual(get.call_count, 1)

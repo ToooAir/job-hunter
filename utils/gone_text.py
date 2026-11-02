@@ -61,12 +61,16 @@ def redirect_off_posting(orig_url: str, final_url: str | None) -> bool:
     return orig_path != final_path and slug.lower() not in final_url.lower()
 
 
+def visible_text(html: str | None) -> str:
+    """Text a visitor would see: scripts, styles and tags dropped."""
+    return _TAG_RE.sub(" ", _SCRIPT_STYLE_RE.sub(" ", html or ""))
+
+
 def soft_gone(html: str | None) -> str | None:
     """The matched gone-phrase when a raw HTTP body says the posting is over,
     else None. Only text a visitor would see counts — scripts, styles and
     comments are dropped so i18n bundles on live pages can't false-positive."""
     if not html:
         return None
-    text = _TAG_RE.sub(" ", _SCRIPT_STYLE_RE.sub(" ", html))
-    m = GONE_TEXT_RE.search(text)
+    m = GONE_TEXT_RE.search(visible_text(html))
     return m.group(0) if m else None
