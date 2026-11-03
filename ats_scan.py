@@ -49,7 +49,7 @@ from utils.ats_harvest import (  # noqa: E402
     normalize_greenhouse_apply_url,
 )
 from utils.db import expire_gone_scored_jobs, init_db, set_job_ats  # noqa: E402
-from utils.gone_text import redirect_off_posting, soft_gone, visible_text  # noqa: E402
+from utils.gone_text import redirect_off_posting, soft_gone  # noqa: E402
 
 ROOT = Path(__file__).parent
 DB_PATH = ROOT / "data" / "jobs.db"
@@ -82,7 +82,6 @@ MAX_WORKERS = 4
 _WAD_LOCK = threading.Lock()
 WAD_MD_SPACING_S = 1.0
 WAD_RETRY_AFTER_CAP_S = 30
-DOWNSTREAM_MIN_TEXT = 1000  # chars; live boards measured 2.5k-11k, shells 1-245
 MAX_APPLY_LINKS = 3  # depth-2 fetches per job
 
 # Substring → ATS name. Order matters: first match wins.
@@ -464,13 +463,27 @@ def resolve_bundesagentur(job, result):
     return True
 
 
+_TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.I | re.S)
+_WORD_RE = re.compile(r"[^\W\d_]{3,}")
+_TITLE_NOISE = {"m/w/d", "all", "genders", "gender", "senior", "junior", "and", "und"}
+
+
+def _title_names_job(html, job_title):
+    """Most of the job title's words (≥60%) appear in the page's <title>."""
+    m = _TITLE_RE.search(html or "")
+    page = html_unescape(m.group(1)).casefold() if m else ""
+    words = {w for w in _WORD_RE.findall((job_title or "").casefold())
+             if w not in _TITLE_NOISE}
+    return bool(words) and sum(w in page for w in words) >= 0.6 * len(words)
+
+
 def _recheck_wad_downstream(job, result):
     """WAD /ext/ postings mirror another board, and WAD drops its mirror while
     the original keeps taking applications: of 11 'gone' wad drafts checked by
     hand on 2026-11-02, 6 downstream pages were live. So WAD's 410 alone is not
     a takedown — the apply_url the human actually uses gets the last word. Only
-    a live 200 with real page text overturns it; a bot wall (401/403), an
-    error or an empty SPA shell can't refute it."""
+    a 200 whose <title> names this job overturns it; a bot wall (401/403), an
+    error, or a page about something else can't refute it."""
     apply_url = (job.get("apply_url") or "").strip()
     if not apply_url or "wearedevelopers.com" in apply_url:
         return
@@ -487,10 +500,12 @@ def _recheck_wad_downstream(job, result):
     if soft_gone(r.text) or redirect_off_posting(apply_url, r.url):
         result["evidence"] += "; downstream gone too"
         return
-    # SPA/bot-check shells (careerjet, Workday, Ashby board root) answer 200
-    # with almost no text for live and dead postings alike: not evidence.
-    if len(" ".join(visible_text(r.text).split())) < DOWNSTREAM_MIN_TEXT:
-        result["evidence"] += "; downstream is an empty shell"
+    # A 200 alone proves nothing: SPA shells (careerjet, Workday, Ashby board
+    # root), search pages (careers.db.com), a listing on another host
+    # (bluum.de/jobs) and a different ad (Stepstone) all answer 200 for a dead
+    # posting. Live boards put the job's title in <title>; those don't.
+    if not _title_names_job(r.text, job.get("title")):
+        result["evidence"] += "; downstream page is not this job"
         return
     _classify_wad_apply(apply_url, result, "WAD gone, downstream live")
 

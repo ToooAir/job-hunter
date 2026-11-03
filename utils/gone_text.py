@@ -15,13 +15,14 @@ i18n bundles that contain every one of these phrases as translation strings.
 """
 
 import re
+from html import unescape
 from urllib.parse import urlparse
 
 # Wording that means the posting itself is gone (not just form-less).
 GONE_TEXT_RE = re.compile(
     r"nicht\s+mehr\s+(?:verfügbar|aktiv|online|vakant)|bereits\s+besetzt|"
     r"stelle\s+(?:ist|wurde)\s+(?:besetzt|deaktiviert|geschlossen)|"
-    r"(?:anzeige|stellenanzeige)\s+(?:ist\s+)?abgelaufen|"
+    r"(?:anzeigen?|stellenanzeigen?)\s+(?:ist\s+)?abgelaufen|"
     r"no\s+longer\s+(?:available|active|accepting)|"
     r"position\s+has\s+been\s+filled|job\s+(?:has\s+)?expired|"
     r"vacancy\s+(?:is\s+)?closed|this\s+job\s+is\s+no\s+longer|"
@@ -62,8 +63,9 @@ def redirect_off_posting(orig_url: str, final_url: str | None) -> bool:
 
 
 def visible_text(html: str | None) -> str:
-    """Text a visitor would see: scripts, styles and tags dropped."""
-    return _TAG_RE.sub(" ", _SCRIPT_STYLE_RE.sub(" ", html or ""))
+    """Text a visitor would see: scripts, styles and tags dropped, entities
+    decoded ("nicht mehr verf&uuml;gbar" slipped past the regex)."""
+    return unescape(_TAG_RE.sub(" ", _SCRIPT_STYLE_RE.sub(" ", html or "")))
 
 
 def soft_gone(html: str | None) -> str | None:

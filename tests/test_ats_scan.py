@@ -442,8 +442,8 @@ class WadDownstreamRecheckTest(unittest.TestCase):
     """WAD drops its /ext/ mirror while the original board keeps the posting
     open: 6 of 11 'gone' wad drafts were live downstream (2026-11-02)."""
 
-    JOB = {"id": "j1", "source": "wearedevelopers", "company": "Acme", "title": "T",
-           "fit_grade": "A", "match_score": 80,
+    JOB = {"id": "j1", "source": "wearedevelopers", "company": "Acme",
+           "title": "Senior Data Platform Engineer", "fit_grade": "A", "match_score": 80,
            "url": "https://www.wearedevelopers.com/jobs/ext/3848773-senior-data-engineer",
            "apply_url": "https://www.adzuna.de/details/5934352584"}
 
@@ -459,18 +459,29 @@ class WadDownstreamRecheckTest(unittest.TestCase):
         from unittest import mock
         res, _ = self._resolve(mock.Mock(
             status_code=200, url=self.JOB["apply_url"],
-            text="<h1>Auf diesen Job bewerben</h1>" + "<p>Aufgaben</p>" * 200))
+            text="<title>Senior Data Platform Engineer (m/w/d) - adzuna.de</title>"
+                 "<h1>Auf diesen Job bewerben</h1>"))
         self.assertEqual(res["ats"], "unknown-external")
         self.assertEqual(res["evidence"], self.JOB["apply_url"])
 
-    def test_empty_spa_shell_cannot_refute_gone(self):
-        # careerjet / Workday answer 200 with a near-empty shell either way
+    def test_page_about_something_else_cannot_refute_gone(self):
+        # careerjet shell, careers.db.com search page, Stepstone showing
+        # another ad: all 200, none of them is this job
+        from unittest import mock
+        for title in ("Careerjet", "Search Roles – Deutsche Bank Careers",
+                      "Product Designer / Design Engineer (w/m/d) | Stepstone"):
+            res, _ = self._resolve(mock.Mock(status_code=200, url=self.JOB["apply_url"],
+                                             text=f"<title>{title}</title>"))
+            self.assertEqual(res["ats"], "gone", title)
+            self.assertIn("not this job", res["evidence"])
+
+    def test_entity_encoded_expiry_notice_stays_gone(self):
         from unittest import mock
         res, _ = self._resolve(mock.Mock(
             status_code=200, url=self.JOB["apply_url"],
-            text="<html><script>" + "x" * 5000 + "</script><title>Careerjet</title></html>"))
+            text="<title>Senior Data Platform Engineer</title>"
+                 "<p>Stellenanzeigen ist abgelaufen. Nicht mehr verf&uuml;gbar!</p>"))
         self.assertEqual(res["ats"], "gone")
-        self.assertIn("empty shell", res["evidence"])
 
     def test_dead_downstream_stays_gone(self):
         from unittest import mock
