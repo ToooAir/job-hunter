@@ -8,6 +8,7 @@ import os
 import sys
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -16,10 +17,12 @@ from utils.db import create_application_snapshot, init_db  # noqa: E402
 from utils.draft_liveness import (  # noqa: E402
     apply_result,
     browser_queue,
+    browser_sweep_overdue,
     classify_browser,
     record_browser_report,
     classify_http,
     liveness_from_verdict,
+    mark_browser_sweep,
     sweep_drafts,
 )
 
@@ -340,12 +343,20 @@ class BrowserStageTest(unittest.TestCase):
             self.assertEqual([d["snapshot_id"] for d in browser_queue(conn)], [sid])
             self.assertNotIn(mail, [d["snapshot_id"] for d in browser_queue(conn)])
 
+            # heartbeat: overdue until a sweep is stamped, and again once it ages
+            self.assertEqual(browser_sweep_overdue(conn), float("inf"))
+            mark_browser_sweep(conn, now="2026-11-10T08:00:00")
+            self.assertIsNone(browser_sweep_overdue(conn, now=datetime(2026, 11, 11, 8)))
+            self.assertEqual(browser_sweep_overdue(conn, now=datetime(2026, 11, 13, 8)), 3.0)
+
             dead = dict(status=200, final_url=self.URL, title="",
                         text="This job is no longer available")
             self.assertEqual(record_browser_report(conn, sid, dry_run=True, **dead)[0], "dead")
             self.assertEqual(len(browser_queue(conn)), 1)  # dry run wrote nothing
             self.assertEqual(record_browser_report(conn, sid, **dead)[0], "dead")
             self.assertEqual(browser_queue(conn), [])  # abandoned
+            # nothing left to sweep → nothing to warn about, however old
+            self.assertIsNone(browser_sweep_overdue(conn, now=datetime(2027, 1, 1)))
             self.assertIsNone(record_browser_report(conn, sid, **dead))
             conn.close()
 

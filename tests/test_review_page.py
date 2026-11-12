@@ -19,6 +19,7 @@ try:
 except ImportError:
     HAS_STREAMLIT = False
 
+from utils.draft_liveness import mark_browser_sweep  # noqa: E402
 from utils.db import (  # noqa: E402
     DRAFT_STALE_DAYS, create_application_snapshot, draft_age_days,
     draft_stock, init_db,
@@ -51,6 +52,7 @@ class ReviewPageTest(unittest.TestCase):
                  f"https://example.com/{jid}", "test", f"jd {jid}",
                  "2026-06-12T08:00:00"))
         self.conn.commit()
+        mark_browser_sweep(self.conn)  # healthy baseline: the sweep just ran
 
     def tearDown(self):
         self.conn.close()
@@ -176,6 +178,14 @@ class ReviewPageTest(unittest.TestCase):
         self.assertTrue(any(T_GONE in str(e.value) for e in at.error))
         # the stale banner says "apply these first" — it must not count it
         self.assertFalse(at.warning)
+
+    def test_warns_when_the_browser_sweep_stopped_running(self):
+        self._draft("job-a")
+        self.assertFalse(self._run().warning)
+        self.conn.execute("UPDATE app_state SET updated_at = '2026-01-01T00:00:00'"
+                          " WHERE key = 'browser_sweep'")
+        self.conn.commit()
+        self.assertTrue(self._run().warning)
 
     def test_oldest_draft_metric(self):
         sid = self._draft("job-a")

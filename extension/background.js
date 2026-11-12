@@ -94,18 +94,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       // (the dashboard's ✅ button has no snapshot to advance either)
       const r = await api("/focus/submitted", { method: "POST" });
       sendResponse(r.ok === false ? r : { ok: true, data: await r.json() });
-    } else if (msg.type === "liveness-queue") {
-      // options-page sweep: drafts the server could not verify on its own
-      const r = await api("/liveness-queue");
-      sendResponse(r.ok === false ? r : { ok: true, data: await r.json() });
-    } else if (msg.type === "liveness-report") {
-      // what the real browser saw on one draft's page; the server judges it
-      const r = await api("/liveness-report", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(msg.report),
-      });
-      sendResponse(r.ok === false ? r : { ok: true, data: await r.json() });
+    } else if (msg.type === "sweep") {
+      // options page "Sweep now" — runs on after the reply; progress is in storage
+      if (sweeping) return sendResponse({ ok: false, error: "a sweep is already running" });
+      runSweep(!!msg.dry_run);
+      sendResponse({ ok: true });
     } else if (msg.type === "fill-plan") {
       // snapshot-free: send live-extracted fields, get back which map to a fact
       const r = await api("/fill-plan", {
@@ -164,4 +157,118 @@ chrome.action.onClicked.addListener(async (tab) => {
       }
     }
   }
+});
+
+// ── draft liveness sweep ─────────────────────────────────────────────────────
+// Opens each pending draft the server could not verify in a background tab of
+// this browser (the human's logins, real rendering) and reports what it sees.
+// The extension only renders and reports; the verdict is the server's
+// (utils/draft_liveness.py).
+const HOST_GAP_MS = 8000;  // per-site pacing: a human opening tabs, not a crawler
+const LOAD_TIMEOUT_MS = 25000;
+const RENDER_WAIT_MS = 4000;  // SPAs paint the "expired" notice after load
+const SWEEP_EVERY_MS = 20 * 3600 * 1000;  // "daily", tolerant of when Chrome is open
+const SWEEP_ALARM = "liveness-sweep";
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const hostOf = (url) => { try { return new URL(url).host; } catch (_e) { return ""; } };
+
+function tabLoaded(tabId) {
+  return new Promise((resolve) => {
+    const done = () => {
+      chrome.tabs.onUpdated.removeListener(onUpd);
+      resolve();
+    };
+    const onUpd = (id, info) => { if (id === tabId && info.status === "complete") done(); };
+    chrome.tabs.onUpdated.addListener(onUpd);
+    setTimeout(done, LOAD_TIMEOUT_MS);
+  });
+}
+
+// What the page looks like in this browser. A tab we cannot read (error page,
+// blocked scheme) reports empty — the server flags that, never kills on it.
+async function observe(url) {
+  const tab = await chrome.tabs.create({ url, active: false });
+  try {
+    await tabLoaded(tab.id);
+    await sleep(RENDER_WAIT_MS);
+    const [res] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => ({
+        status: (performance.getEntriesByType("navigation")[0] || {}).responseStatus || null,
+        final_url: location.href,
+        title: document.title,
+        text: (document.body ? document.body.innerText : "").slice(0, 20000),
+      }),
+    });
+    return res.result;
+  } catch (_e) {
+    return { status: null, final_url: "", title: "", text: "" };
+  } finally {
+    chrome.tabs.remove(tab.id).catch(() => {});
+  }
+}
+
+// ponytail: the worker can still be recycled mid-sweep (the waits here are all
+// under its 30 s idle limit, but Chrome gives no guarantee). Every draft is
+// reported as soon as it is seen, so a cut-off run loses nothing — the rest is
+// picked up by the next run. Move to an offscreen document if that bites.
+let sweeping = false;
+
+async function runSweep(dry_run) {
+  if (sweeping) return;
+  sweeping = true;
+  const run = { started: new Date().toLocaleString(), dry_run, lines: [], done: false };
+  const log = (line) => {
+    run.lines.push(line);
+    return chrome.storage.local.set({ sweepRun: run });
+  };
+  try {
+    const q = await api("/liveness-queue");
+    if (q.ok === false) return await log("error: " + q.error);
+    const queue = await q.json();
+    await log(queue.length + " drafts to check");
+    const nextOk = {};  // host → earliest time we may hit it again
+    const tally = {};
+    while (queue.length) {
+      // take the draft whose site has rested longest, so sites interleave
+      const at = (d) => nextOk[hostOf(d.apply_url)] || 0;
+      const d = queue.reduce((a, b) => (at(b) < at(a) ? b : a));
+      queue.splice(queue.indexOf(d), 1);
+      await sleep(Math.max(0, at(d) - Date.now()));
+      nextOk[hostOf(d.apply_url)] = Date.now() + HOST_GAP_MS;
+      const seen = await observe(d.apply_url);
+      const r = await api("/liveness-report", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ snapshot_id: d.snapshot_id, dry_run, ...seen }),
+      });
+      const res = r.ok === false ? { liveness: "error", note: r.error } : await r.json();
+      tally[res.liveness] = (tally[res.liveness] || 0) + 1;
+      await log(`#${d.snapshot_id} ${d.company} — ${res.liveness}: ${res.note}`);
+    }
+    // a dry run or an unreachable sidecar does not count as today's sweep
+    if (!dry_run) {
+      await chrome.storage.local.set({ sweepLastRun: Date.now() });
+      // heartbeat for the review page's "sweep has not run" warning
+      const hb = await api("/liveness-swept", { method: "POST" });
+      if (hb.ok === false) await log("heartbeat failed: " + hb.error);
+    }
+    await log("done: " + JSON.stringify(tally));
+  } finally {
+    sweeping = false;
+    run.done = true;
+    await chrome.storage.local.set({ sweepRun: run });
+  }
+}
+
+// Hourly tick, daily sweep: an alarm set for "24 h from now" would never fire
+// in a browser that is restarted every day; the timestamp survives restarts.
+chrome.alarms.get(SWEEP_ALARM).then((a) => {
+  if (!a) chrome.alarms.create(SWEEP_ALARM, { delayInMinutes: 5, periodInMinutes: 60 });
+});
+chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name !== SWEEP_ALARM) return;
+  const { sweepLastRun = 0 } = await chrome.storage.local.get("sweepLastRun");
+  if (Date.now() - sweepLastRun >= SWEEP_EVERY_MS) await runSweep(false);
 });

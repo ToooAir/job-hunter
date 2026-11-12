@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "job-hunter autofill",
-  "version": "0.8.1",
+  "version": "0.9.1",
   "description": "Fills profile facts into any application form and answers its open questions from the candidate's background (copy-paste, human-reviewed), backed by the local apply_api sidecar.",
-  "permissions": ["storage", "activeTab", "scripting", "webNavigation", "clipboardWrite"],
+  "permissions": ["storage", "activeTab", "scripting", "webNavigation", "clipboardWrite", "alarms"],
   "host_permissions": [
     "http://127.0.0.1:8531/*",
     "<all_urls>",

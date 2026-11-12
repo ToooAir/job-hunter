@@ -41,7 +41,8 @@ from pydantic import BaseModel
 from utils.apply_llm import _chat_json, _sanitize, build_profile_facts
 from utils.db import (_now_local_iso, clear_focus, get_focus, init_db,
                       update_status)
-from utils.draft_liveness import browser_queue, record_browser_report
+from utils.draft_liveness import (browser_queue, mark_browser_sweep,
+                                   record_browser_report)
 from utils.profile_loader import load_profile
 from utils.snapshot_io import (append_custom_qa, get_snapshot, mark_submitted,
                                reconcile_applied_job)
@@ -313,6 +314,18 @@ def liveness_report(req: LivenessReport):
     if res is None:
         raise HTTPException(status_code=409, detail="not a pending draft")
     return {"liveness": res[0], "note": res[1]}
+
+
+@app.post("/liveness-swept", dependencies=[Depends(require_token)])
+def liveness_swept():
+    """The extension finished a real sweep — the heartbeat behind the review
+    page's "browser sweep has not run for N days" warning."""
+    conn = _conn()
+    try:
+        mark_browser_sweep(conn)
+    finally:
+        conn.close()
+    return {"ok": True}
 
 
 @app.get("/focus", dependencies=[Depends(require_token)])

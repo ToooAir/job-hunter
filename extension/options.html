@@ -33,10 +33,11 @@
   <h3>Draft liveness sweep</h3>
   <p class="hint">Opens each pending draft the server could not verify in a
     background tab of this browser (your logins, real rendering) and reports
-    what it sees. Paced per site; keep this page open while it runs.</p>
+    what it sees. Runs by itself once a day while Chrome is open; the button
+    starts one now. Below: the latest run.</p>
   <label class="check"><input id="dry" type="checkbox" checked />
     Dry run — show verdicts, change nothing</label>
-  <button id="sweep">Sweep</button>
+  <button id="sweep">Sweep now</button>
   <pre id="sweep-out"></pre>
 
   <script src="options.js"></script>

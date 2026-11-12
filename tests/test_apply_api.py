@@ -131,6 +131,9 @@ class ApplyApiTest(unittest.TestCase):
         self.assertEqual(row["status"], "abandoned")
         r = self.client.post("/liveness-report", headers=self._auth(), json=body)
         self.assertEqual(r.status_code, 409)
+        self.assertTrue(self.client.post("/liveness-swept", headers=self._auth()).json()["ok"])
+        self.assertIsNotNone(self.conn.execute(
+            "SELECT 1 FROM app_state WHERE key='browser_sweep'").fetchone())
 
     def test_submitted_books_job_and_is_idempotent(self):
         r = self.client.post(f"/snapshot/{self.sid}/submitted", headers=self._auth())

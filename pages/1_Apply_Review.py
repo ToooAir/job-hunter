@@ -20,6 +20,7 @@ from dotenv import load_dotenv
 
 from utils.db import (DRAFT_STALE_DAYS, draft_age_days, draft_stock,
                       get_focus, init_db, set_focus)
+from utils.draft_liveness import browser_sweep_overdue
 from utils.snapshot_io import (
     abandon_snapshot,
     edit_snapshot,
@@ -84,6 +85,10 @@ _STRINGS = {
         "liveness_gone": "已下架:來源職缺頁回報不存在(ats_scan)——除非你確認申請頁還開著,否則直接放棄",
         "gone_rest": "以下是來源已下架的草稿,排在最後。",
         "never_verified": "尚未重驗失效",
+        "browser_sweep_never": "瀏覽器 sweep 從未跑完過——聚合板草稿只驗到「頁面載得出來」。"
+                               "確認 Chrome 套件已啟用,或到套件 options 頁按 Sweep now。",
+        "browser_sweep_stale": "瀏覽器 sweep 已 {} 天沒跑完——下面的「已驗證」可能過期。"
+                               "確認 Chrome 套件已啟用,或到套件 options 頁按 Sweep now。",
         "set_focus": "我要投這筆",
         "focus_now": "🎯 投遞中:{} — {}({})— 插件答案面板以此職缺為根據",
         "dup_same_job": "⛔ 重複投遞:這個職缺已於 {} 投遞入帳({})——這份草稿請放棄",
@@ -149,6 +154,12 @@ _STRINGS = {
         "liveness_suspect": "suspect: not a clean application form on recheck "
                             "(account wall / captcha / weak form) — confirm the posting before applying",
         "never_verified": "not liveness-checked yet",
+        "browser_sweep_never": "The browser sweep has never completed — board drafts are only "
+                               "checked as far as 'the page loads'. Check the Chrome extension "
+                               "is enabled, or press Sweep now on its options page.",
+        "browser_sweep_stale": "The browser sweep has not completed for {} days — 'verified' "
+                               "below may be stale. Check the Chrome extension is enabled, or "
+                               "press Sweep now on its options page.",
         "liveness_gone": "taken down: the source listing reports the posting gone (ats_scan)"
                          " — abandon unless you've confirmed the apply page is still open",
         "gone_rest": "Below: drafts whose source listing is gone, kept last.",
@@ -771,6 +782,11 @@ def _draft_card(conn, snap: dict, applied_idx: dict) -> None:
 conn = get_conn()
 st.title(T("title"))
 st.caption(T("intro"))
+
+_sweep_overdue = browser_sweep_overdue(conn)
+if _sweep_overdue is not None:
+    st.warning("⚠️ " + (T("browser_sweep_never") if _sweep_overdue == float("inf")
+                        else T("browser_sweep_stale").format(int(_sweep_overdue))))
 
 
 # The extension books submissions through apply_api, outside this page's

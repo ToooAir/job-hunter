@@ -172,6 +172,36 @@ def record_browser_report(conn, snapshot_id: int, status: int | None,
     return liveness, note
 
 
+# The extension stamps each completed (non-dry) sweep, so the review page can
+# say when the browser stage silently stopped: Chrome closed for days, the
+# extension disabled, the sidecar unreachable. A stamp, not an inference from
+# per-draft notes — an empty queue is still a sweep that ran.
+BROWSER_SWEEP_KEY = "browser_sweep"
+BROWSER_SWEEP_STALE_H = 48
+
+
+def mark_browser_sweep(conn, now: str | None = None) -> None:
+    conn.execute(
+        "INSERT INTO app_state (key, value, updated_at) VALUES (?, '', ?) "
+        "ON CONFLICT(key) DO UPDATE SET updated_at=excluded.updated_at",
+        (BROWSER_SWEEP_KEY, now or datetime.now().strftime("%Y-%m-%dT%H:%M:%S")))
+    conn.commit()
+
+
+def browser_sweep_overdue(conn, now: datetime | None = None) -> float | None:
+    """Days since the last completed browser sweep when it is overdue AND there
+    are drafts waiting for one; None when all is well. Never swept = inf."""
+    if not browser_queue(conn):
+        return None
+    row = conn.execute("SELECT updated_at FROM app_state WHERE key = ?",
+                       (BROWSER_SWEEP_KEY,)).fetchone()
+    if row is None:
+        return float("inf")
+    age = (now or datetime.now()) - datetime.fromisoformat(row["updated_at"])
+    hours = age.total_seconds() / 3600
+    return hours / 24 if hours > BROWSER_SWEEP_STALE_H else None
+
+
 # ── persistence ──────────────────────────────────────────────────────────────
 def apply_result(conn, snapshot_id: int, job_id: str, liveness: str,
                  now: str | None = None, note: str = "") -> str:
