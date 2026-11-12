@@ -32,7 +32,7 @@ $("test").addEventListener("click", async () => {
 // Runs here, not in the service worker: MV3 kills an idle worker after ~30 s,
 // and this loop spends most of its time waiting. The extension only renders
 // and reports; the verdict is the server's (utils/draft_liveness.py).
-const HOST_GAP_MS = 30000;  // per-site pacing — we browse as the logged-in human
+const HOST_GAP_MS = 8000;  // per-site pacing: a human opening tabs, not a crawler
 const LOAD_TIMEOUT_MS = 25000;
 const RENDER_WAIT_MS = 4000;  // SPAs paint the "expired" notice after load
 
