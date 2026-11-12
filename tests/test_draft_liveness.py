@@ -15,6 +15,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from utils.db import create_application_snapshot, init_db  # noqa: E402
 from utils.draft_liveness import (  # noqa: E402
     apply_result,
+    browser_queue,
+    classify_browser,
+    record_browser_report,
     classify_http,
     liveness_from_verdict,
     sweep_drafts,
@@ -296,6 +299,55 @@ class SweepTest(unittest.TestCase):
         n = self.conn.execute(
             "SELECT COUNT(*) c FROM application_snapshots WHERE status='abandoned'").fetchone()["c"]
         self.assertEqual(n, 0)
+
+
+class BrowserStageTest(unittest.TestCase):
+    """Stage C: the extension reports a page rendered in the human's browser."""
+    URL = "https://board.example/jobs/backend-engineer-123456"
+    JOB = "Senior Backend Engineer (m/w/d)"
+
+    def _c(self, status=200, final=None, title="", text=""):
+        return classify_browser(self.URL, self.JOB, status, final or self.URL,
+                                title, text)[0]
+
+    def test_takedown_notice_or_404_is_dead(self):
+        self.assertEqual(self._c(404), "dead")
+        self.assertEqual(self._c(text="Diese Stellenanzeige ist abgelaufen."), "dead")
+
+    def test_page_naming_the_job_is_live(self):
+        self.assertEqual(self._c(title="Backend Engineer – Mustermann GmbH"), "live")
+        # responseStatus is unavailable on some navigations: no status, no penalty
+        self.assertEqual(self._c(status=None, text="Backend Engineer wanted"), "live")
+
+    def test_walls_shells_and_redirects_are_only_flagged(self):
+        self.assertEqual(self._c(text="Sign in to continue"), "suspicious")
+        self.assertEqual(self._c(status=None), "suspicious")  # unreadable tab
+        self.assertEqual(self._c(status=403, title="Backend Engineer"), "suspicious")
+        self.assertEqual(self._c(final="https://board.example/jobs/all",
+                                 title="Backend Engineer jobs"), "suspicious")
+
+    def test_queue_report_roundtrip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = init_db(str(Path(tmp) / "t.db"))
+            conn.execute(
+                "INSERT INTO jobs (id, company, title, url, source, raw_jd_text,"
+                " fetched_at, status) VALUES ('ja', 'Mustermann GmbH', ?, ?, 't',"
+                " 'jd', '2026-06-10T08:00:00', 'scored')", (self.JOB, self.URL))
+            sid = create_application_snapshot(conn, "ja", status="draft", tier=3,
+                                              apply_url=self.URL)
+            mail = create_application_snapshot(conn, "ja", status="draft", tier=3,
+                                               apply_url="mailto:jobs@example.com")
+            self.assertEqual([d["snapshot_id"] for d in browser_queue(conn)], [sid])
+            self.assertNotIn(mail, [d["snapshot_id"] for d in browser_queue(conn)])
+
+            dead = dict(status=200, final_url=self.URL, title="",
+                        text="This job is no longer available")
+            self.assertEqual(record_browser_report(conn, sid, dry_run=True, **dead)[0], "dead")
+            self.assertEqual(len(browser_queue(conn)), 1)  # dry run wrote nothing
+            self.assertEqual(record_browser_report(conn, sid, **dead)[0], "dead")
+            self.assertEqual(browser_queue(conn), [])  # abandoned
+            self.assertIsNone(record_browser_report(conn, sid, **dead))
+            conn.close()
 
 
 if __name__ == "__main__":

@@ -115,6 +115,23 @@ class ApplyApiTest(unittest.TestCase):
         self.assertTrue(r.content.startswith(b"%PDF"))
         self.assertEqual(self.client.get("/cv").status_code, 401)
 
+    def test_liveness_sweep_queue_and_report(self):
+        # never swept yet → queued for the browser
+        self.assertEqual(len(self.client.get("/liveness-queue", headers=self._auth()).json()), 1)
+        body = {"snapshot_id": self.sid, "status": 200, "title": "",
+                "final_url": "https://job-boards.greenhouse.io/x/jobs/1",
+                "text": "This job is no longer available"}
+        r = self.client.post("/liveness-report", headers=self._auth(),
+                             json={**body, "dry_run": True})
+        self.assertEqual(r.json()["liveness"], "dead")
+        r = self.client.post("/liveness-report", headers=self._auth(), json=body)
+        self.assertEqual(r.json()["liveness"], "dead")
+        row = self.conn.execute("SELECT status FROM application_snapshots WHERE id=?",
+                                (self.sid,)).fetchone()
+        self.assertEqual(row["status"], "abandoned")
+        r = self.client.post("/liveness-report", headers=self._auth(), json=body)
+        self.assertEqual(r.status_code, 409)
+
     def test_submitted_books_job_and_is_idempotent(self):
         r = self.client.post(f"/snapshot/{self.sid}/submitted", headers=self._auth())
         self.assertEqual(r.status_code, 200)

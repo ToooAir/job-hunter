@@ -94,6 +94,18 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       // (the dashboard's ✅ button has no snapshot to advance either)
       const r = await api("/focus/submitted", { method: "POST" });
       sendResponse(r.ok === false ? r : { ok: true, data: await r.json() });
+    } else if (msg.type === "liveness-queue") {
+      // options-page sweep: drafts the server could not verify on its own
+      const r = await api("/liveness-queue");
+      sendResponse(r.ok === false ? r : { ok: true, data: await r.json() });
+    } else if (msg.type === "liveness-report") {
+      // what the real browser saw on one draft's page; the server judges it
+      const r = await api("/liveness-report", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(msg.report),
+      });
+      sendResponse(r.ok === false ? r : { ok: true, data: await r.json() });
     } else if (msg.type === "fill-plan") {
       // snapshot-free: send live-extracted fields, get back which map to a fact
       const r = await api("/fill-plan", {

@@ -20,6 +20,11 @@ Two stages (cost vs reliability, per user decision):
   B. headless confirm (only the rest) — the real liveness signal is whether the
      application FORM is still there, reusing Stage 1's extraction + verdict.
 
+  C. real browser (on demand, extension options → "Sweep") — the drafts A/B
+     could only judge by "the page loads" (boards, bot walls) are opened in the
+     human's own Chrome and reported back through apply_api; see
+     classify_browser.
+
 Conservative: only clear-dead is auto-withdrawn; account walls / captcha / weak
 forms / nav errors are 'suspicious' and merely flagged.
 
@@ -29,6 +34,7 @@ CLI:  python -m utils.draft_liveness [--dry-run] [--db PATH]
 import argparse
 import json
 import os
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -37,7 +43,7 @@ from urllib.parse import urlparse
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from utils.db import init_db, mark_expired  # noqa: E402
-from utils.gone_text import redirect_off_posting, soft_gone  # noqa: E402
+from utils.gone_text import GONE_TEXT_RE, redirect_off_posting, soft_gone  # noqa: E402
 from utils.snapshot_io import abandon_snapshot  # noqa: E402
 
 DEFAULT_DB_PATH = str(Path(__file__).resolve().parents[1] / "data" / "jobs.db")
@@ -98,6 +104,72 @@ def _has_actions(form_payload) -> bool:
         return bool(payload.get("actions"))
     except (ValueError, AttributeError):
         return False
+
+
+# ── real-browser stage (extension sweep) ─────────────────────────────────────
+# The extension opens the drafts the stages above could only judge by "the page
+# loads" in the human's own Chrome (logged in, real fingerprint, JS rendered)
+# and reports what it saw; the verdict stays here, next to the other stages.
+_WORD_RE = re.compile(r"[^\W\d_]{3,}")
+_TITLE_NOISE = {"all", "genders", "gender", "senior", "junior", "and", "und"}
+
+
+def _names_job(page: str, job_title: str | None) -> bool:
+    """Most of the job title's words (≥60%) appear on the page — ats_scan's
+    _title_names_job, over the rendered title + text instead of raw <title>."""
+    page = page.casefold()
+    words = {w for w in _WORD_RE.findall((job_title or "").casefold())
+             if w not in _TITLE_NOISE}
+    return bool(words) and sum(w in page for w in words) >= 0.6 * len(words)
+
+
+def classify_browser(orig_url: str, job_title: str | None, status: int | None,
+                     final_url: str | None, title: str, text: str) -> tuple[str, str]:
+    """(liveness, note) from a page rendered in the human's browser. Only a
+    404/410 or a takedown notice is dead; only a page that names this job is
+    live. Everything in between — login wall, captcha, an unrendered shell, a
+    redirect elsewhere — proves nothing and is flagged, never removed."""
+    if status in (404, 410):
+        return "dead", f"browser: http {status}"
+    gone = GONE_TEXT_RE.search(f"{title}\n{text}")
+    if gone:
+        return "dead", f"browser: soft-gone: {gone.group(0)[:60]}"
+    if redirect_off_posting(orig_url, final_url):
+        return "suspicious", f"browser: redirected off the posting: {final_url}"
+    if status is not None and status >= 400:
+        return "suspicious", f"browser: http {status}: page not verifiable"
+    if not _names_job(f"{title}\n{text}", job_title):
+        return "suspicious", "browser: page does not name this job (wall/captcha/shell?)"
+    return "live", "browser: page names the job"
+
+
+def browser_queue(conn) -> list[dict]:
+    """Pending drafts worth a real-browser look: everything with a page except
+    those whose application form the headless stage already confirmed."""
+    return [dict(r) for r in conn.execute(
+        "SELECT s.id AS snapshot_id, s.apply_url, j.company, j.title "
+        "FROM application_snapshots s JOIN jobs j ON j.id = s.job_id "
+        "WHERE s.status = 'draft' AND s.apply_url LIKE 'http%' "
+        "AND NOT (s.liveness = 'live' AND COALESCE(s.liveness_note, '') LIKE 'form %') "
+        "ORDER BY s.created_at, s.id")]
+
+
+def record_browser_report(conn, snapshot_id: int, status: int | None,
+                          final_url: str | None, title: str, text: str,
+                          dry_run: bool = False) -> tuple[str, str] | None:
+    """Classify one extension report and persist it like any sweep result.
+    None when the snapshot is no longer a pending draft."""
+    row = conn.execute(
+        "SELECT s.job_id, s.apply_url, j.title FROM application_snapshots s "
+        "JOIN jobs j ON j.id = s.job_id WHERE s.id = ? AND s.status = 'draft'",
+        (snapshot_id,)).fetchone()
+    if not row:
+        return None
+    liveness, note = classify_browser(row["apply_url"] or "", row["title"],
+                                      status, final_url, title, text)
+    if not dry_run:
+        apply_result(conn, snapshot_id, row["job_id"], liveness, note=note)
+    return liveness, note
 
 
 # ── persistence ──────────────────────────────────────────────────────────────
