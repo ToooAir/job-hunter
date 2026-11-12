@@ -41,6 +41,7 @@ from pydantic import BaseModel
 from utils.apply_llm import _chat_json, _sanitize, build_profile_facts
 from utils.db import (_now_local_iso, clear_focus, get_focus, init_db,
                       update_status)
+from utils.draft_liveness import browser_queue, record_browser_report
 from utils.profile_loader import load_profile
 from utils.snapshot_io import (append_custom_qa, get_snapshot, mark_submitted,
                                reconcile_applied_job)
@@ -275,6 +276,43 @@ def pending():
         return out
     finally:
         conn.close()
+
+
+class LivenessReport(BaseModel):
+    snapshot_id: int
+    status: int | None = None
+    final_url: str = ""
+    title: str = ""
+    text: str = ""
+    dry_run: bool = False
+
+
+@app.get("/liveness-queue", dependencies=[Depends(require_token)])
+def liveness_queue():
+    """Pending drafts the server-side sweep could not really verify (boards,
+    bot walls) — the extension opens each in the human's browser."""
+    conn = _conn()
+    try:
+        return browser_queue(conn)
+    finally:
+        conn.close()
+
+
+@app.post("/liveness-report", dependencies=[Depends(require_token)])
+def liveness_report(req: LivenessReport):
+    """What the extension saw on one draft's page → the sweep's verdict
+    (dead abandons the draft + expires the job, unless dry_run). 409 when the
+    snapshot stopped being a pending draft meanwhile."""
+    conn = _conn()
+    try:
+        res = record_browser_report(conn, req.snapshot_id, req.status or None,
+                                    req.final_url, req.title, req.text,
+                                    dry_run=req.dry_run)
+    finally:
+        conn.close()
+    if res is None:
+        raise HTTPException(status_code=409, detail="not a pending draft")
+    return {"liveness": res[0], "note": res[1]}
 
 
 @app.get("/focus", dependencies=[Depends(require_token)])

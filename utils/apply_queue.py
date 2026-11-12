@@ -255,9 +255,21 @@ def normalize_company(name: str) -> str:
     return "".join(c for c in norm if c.isalnum())
 
 
+# A parenthesised gender tag — (m/w/d), (gn), (all genders) — or a bare m/w/d.
+_GENDER_TAG_RE = re.compile(
+    r"\((?:\s*(?:[mwfdxnbi]|div|gn|all\s+genders?|alle\s+geschlechter)\s*[/|,*]?)+\)"
+    r"|\b[mwfd]\s*/\s*[mwfd]\s*/\s*[dxmw]\b", re.I)
+
+
 def _norm_title(title: str | None) -> str:
-    """Whitespace-collapsed lowercase title, for same-role comparisons."""
-    return re.sub(r"\s+", " ", (title or "").strip().lower())
+    """Squashed lowercase title for same-role comparisons: gender tags dropped,
+    then every non-alphanumeric character — the normalize_company treatment.
+    One role reaching us through two sources differs only cosmetically
+    ('Backend Developer' vs 'Backend Developer (m/f/x)', '–' vs '-',
+    'Engineer, Agents' vs 'Engineer (Agents)'); exact matching let 6 such
+    duplicates into review and 4 into a second submit (Sept–Oct 2026)."""
+    return "".join(c for c in _GENDER_TAG_RE.sub(" ", (title or "").lower())
+                   if c.isalnum())
 
 
 def _parse_dt(value: str | None) -> datetime | None:
@@ -431,6 +443,13 @@ def dedup_gate(job: dict, ctx: DedupContext) -> tuple[str, str]:
             # at the same company stays a warn below, not a block.
             return "block", (f"same-title variant in batch "
                              f"(job {ctx.batch_titles[(company, title)]})")
+
+    if staffing and title and (company, title) in ctx.pipeline_titles:
+        # Distinct clients under one title at one agency happen in a batch, but
+        # against an application already sent it was always the same posting
+        # via a second source: Brunel and Experis, abandoned as duplicates
+        # every time, never once submitted (2026-10).
+        return "block", "staffing: same title already applied"
 
     verdict, reason = "ok", ""
     if staffing and title and (company, title) in ctx.batch_titles:

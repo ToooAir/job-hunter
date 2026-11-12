@@ -503,17 +503,54 @@ class DedupGateTest(QueueTestBase):
         self.assertEqual(result["blocked"][0]["id"], "repost")
         self.assertIn("pipeline", result["blocked"][0]["dedup_reason"])
 
-    def test_staffing_company_in_pipeline_warns_even_same_title(self):
+    def test_staffing_company_in_pipeline_warns_on_other_title(self):
         # a recruitment agency fronts many end clients — a second posting there
-        # (even same title = different client) is a warn, never a company block
+        # is a warn, never a company block
         make_job(self.conn, "a1", company="ABALON Recruitment GmbH",
                  status="applied", title="Backend Developer")
         make_job(self.conn, "a2", company="ABALON Recruitment",
-                 title="Backend Developer")
+                 title="Data Engineer")
         result = build_queue(self.conn, now=NOW)
         self.assertEqual(self.queue_ids(result), ["a2"])
         self.assertEqual(result["queue"][0]["dedup"], "warn")
         self.assertIn("staffing", result["queue"][0]["dedup_reason"])
+
+    def test_staffing_same_title_already_applied_blocks(self):
+        # same agency, same title as an application already sent = the same
+        # posting via a second source (Brunel / Experis, 2026-10)
+        make_job(self.conn, "a1", company="Experis GmbH", status="applied",
+                 title="Software Engineer - Manufacturing Automation (gn)")
+        make_job(self.conn, "a2", company="Experis GmbH",
+                 title="Software Engineer – Manufacturing Automation (gn) ")
+        result = build_queue(self.conn, now=NOW)
+        self.assertEqual(self.queue_ids(result), [])
+        self.assertIn("same title already applied",
+                      result["blocked"][0]["dedup_reason"])
+
+    def test_cosmetic_title_variants_count_as_same_role(self):
+        for applied, repost in [
+                ("Backend Developer (m/f/x)", "Backend Developer"),
+                ("Senior Software Engineer (Agents)",
+                 "Senior Software Engineer, Agents (m/f/x)"),
+                ("Senior Full Stack Engineer (m/w/d)", "Senior Full Stack Engineer"),
+                ("Softwareentwickler (all genders)", "Softwareentwickler m/w/d")]:
+            with self.subTest(repost=repost):
+                self.conn.execute("DELETE FROM jobs")
+                make_job(self.conn, "applied", company="Acme", status="applied",
+                         title=applied)
+                make_job(self.conn, "repost", company="Acme", title=repost)
+                result = build_queue(self.conn, now=NOW)
+                self.assertEqual(self.queue_ids(result), [])
+
+    def test_seniority_and_city_still_distinguish_roles(self):
+        # "(Senior)" and a city suffix are not gender tags: sunday-natural's
+        # senior and non-senior AI/ML roles were both submitted on purpose
+        make_job(self.conn, "applied", company="Acme", status="applied",
+                 title="AI/ML Engineer (all genders)")
+        make_job(self.conn, "senior", company="Acme",
+                 title="(Senior) AI/ML Engineer (all genders)")
+        result = build_queue(self.conn, now=NOW)
+        self.assertEqual(self.queue_ids(result), ["senior"])
 
     def test_staffing_same_title_rejected_still_blocks(self):
         # a rejection is a rejection even for a staffing firm: the exact role

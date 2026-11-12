@@ -55,7 +55,8 @@ class SoftGoneTest(unittest.TestCase):
     def test_german_phrases_hit(self):
         for phrase in ("Diese Stelle ist nicht mehr verfügbar.",
                        "Die Stelle wurde bereits besetzt.",
-                       "Stellenanzeige abgelaufen"):
+                       "Stellenanzeige abgelaufen",
+                       "Dieser Job ist leider nicht mehr aktuell."):
             with self.subTest(phrase=phrase):
                 self.assertIsNotNone(soft_gone(f"<html><body>{phrase}</body></html>"))
 
