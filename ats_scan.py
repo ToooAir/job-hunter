@@ -477,6 +477,40 @@ def _title_names_job(html, job_title):
     return bool(words) and sum(w in page for w in words) >= 0.6 * len(words)
 
 
+def _downstream_url(job):
+    apply_url = (job.get("apply_url") or "").strip()
+    return "" if "wearedevelopers.com" in apply_url else apply_url
+
+
+def _get_downstream(apply_url):
+    with _WAD_LOCK:  # mostly one host (adzuna): keep it paced, not parallel
+        time.sleep(WAD_MD_SPACING_S)
+        return requests.get(apply_url, headers=HEADERS, timeout=TIMEOUT)
+
+
+def _confirm_wad_downstream(job, result):
+    """The reverse hole: WAD keeps its mirror up after the original board took
+    the posting down (DocuWare: adzuna 410 behind a live WAD page, drafted and
+    badged "verified live", 2026-11-03). Only clear negative evidence flips the
+    verdict — 404/410, a gone notice, a redirect off the posting. A bot wall or
+    a shell proves nothing either way, so WAD's 200 stands."""
+    apply_url = _downstream_url(job)
+    if not apply_url:
+        return
+    try:
+        r = _get_downstream(apply_url)
+    except requests.RequestException:
+        return
+    gone = None
+    if r.status_code in (404, 410):
+        gone = f"HTTP {r.status_code}"
+    elif r.status_code == 200:
+        gone = soft_gone(r.text) or (
+            "redirected off the posting" if redirect_off_posting(apply_url, r.url) else None)
+    if gone:
+        result.update(ats="gone", evidence=f"WAD live, downstream gone: {gone[:80]}")
+
+
 def _recheck_wad_downstream(job, result):
     """WAD /ext/ postings mirror another board, and WAD drops its mirror while
     the original keeps taking applications: of 11 'gone' wad drafts checked by
@@ -484,13 +518,11 @@ def _recheck_wad_downstream(job, result):
     a takedown — the apply_url the human actually uses gets the last word. Only
     a 200 whose <title> names this job overturns it; a bot wall (401/403), an
     error, or a page about something else can't refute it."""
-    apply_url = (job.get("apply_url") or "").strip()
-    if not apply_url or "wearedevelopers.com" in apply_url:
+    apply_url = _downstream_url(job)
+    if not apply_url:
         return
     try:
-        with _WAD_LOCK:  # mostly one host (adzuna): keep it paced, not parallel
-            time.sleep(WAD_MD_SPACING_S)
-            r = requests.get(apply_url, headers=HEADERS, timeout=TIMEOUT)
+        r = _get_downstream(apply_url)
     except requests.RequestException as e:
         result["evidence"] += f"; downstream unverifiable: {str(e)[:80]}"
         return
@@ -523,6 +555,8 @@ def resolve_one(job):
     if resolve_wad(url, result):
         if result["ats"] == "gone":
             _recheck_wad_downstream(job, result)
+        elif result["ats"] not in ("fetch-error", "unknown"):
+            _confirm_wad_downstream(job, result)
         return result
     if resolve_greenhouse(job, result):
         return result

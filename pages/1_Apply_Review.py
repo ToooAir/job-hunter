@@ -580,9 +580,11 @@ def _liveness_caption(snap: dict) -> None:
         note = snap.get("liveness_note")
         prefix = f"`{note}` — " if note else ""
         st.warning(f"⚠️ {prefix}{T('liveness_suspect')}{suffix}")
-    elif age is not None:
+    elif snap.get("liveness") == "live" and age is not None:
         st.caption("✓ " + (T("verified_today") if age <= 0 else T("verified_ago").format(age)))
-    elif checked is None:
+    else:
+        # ats_checked_at alone is the scan seeing the SOURCE listing, not this
+        # draft's page — that badged dead downstream pages "verified today"
         st.caption(T("never_verified"))
 
 

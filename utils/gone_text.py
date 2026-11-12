@@ -20,7 +20,7 @@ from urllib.parse import urlparse
 
 # Wording that means the posting itself is gone (not just form-less).
 GONE_TEXT_RE = re.compile(
-    r"nicht\s+mehr\s+(?:verfügbar|aktiv|online|vakant)|bereits\s+besetzt|"
+    r"nicht\s+mehr\s+(?:verfügbar|aktiv|aktuell|online|vakant)|bereits\s+besetzt|"
     r"stelle\s+(?:ist|wurde)\s+(?:besetzt|deaktiviert|geschlossen)|"
     r"(?:anzeigen?|stellenanzeigen?)\s+(?:ist\s+)?abgelaufen|"
     r"no\s+longer\s+(?:available|active|accepting)|"

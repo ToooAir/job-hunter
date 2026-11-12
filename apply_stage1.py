@@ -426,6 +426,22 @@ def main() -> None:
             print(f"  [B {i}/{len(states)}] FAILED {job['company'][:30]}: "
                   f"{str(exc)[:120]}", flush=True)
 
+    # The opening sweep ran before these drafts existed, so they would reach
+    # review unchecked until the next run (DocuWare, Legartis, Gather Health:
+    # dead downstream, badged live, 2026-11-03). Pass A just found their forms,
+    # so only the HTTP stage runs here — the headless confirm is stubbed "ok".
+    if results and not args.dry_run and not args.no_sweep:
+        from utils.draft_liveness import sweep_drafts
+        conn = init_db(args.db)
+        try:
+            t = sweep_drafts(conn, only_unchecked=True,
+                             headless_verdicts=lambda ds: ((d, "ok") for d in ds))
+        finally:
+            conn.close()
+        print(f"新草稿掃視:checked {t['checked']} → live {t['live']} / "
+              f"dead {t['dead']}(撤回+expired) / suspect {t['suspicious']}(標記)",
+              flush=True)
+
     # ── accounting ──────────────────────────────────────────────────────
     by_tier: dict = {}
     for r in results:

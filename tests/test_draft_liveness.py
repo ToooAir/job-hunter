@@ -239,6 +239,55 @@ class SweepTest(unittest.TestCase):
         self.assertIn("redirected off the posting", row["ln"])  # evidence for the reviewer
         self.assertEqual(row["js"], "scored")
 
+    def test_bot_walled_manual_draft_is_not_live(self):
+        # Gather Health 2026-11-03: Indeed answers 401 to every bot, so the
+        # page never loaded, yet the manual draft was recorded live
+        url = "https://www.indeed.com/viewjob?jk=c8f8759bb8b1306c"
+        self.conn.execute(
+            "INSERT INTO jobs (id, company, title, url, source, raw_jd_text,"
+            " fetched_at, status) VALUES (?,?,?,?,?,?,?, 'scored')",
+            ("ind", "Gather Health", "Eng", url, "t", "jd", "2026-06-10T08:00:00"))
+        sid = create_application_snapshot(
+            self.conn, "ind", status="draft", tier=3, apply_url=url,
+            form_payload={"actions": []})
+        self.conn.commit()
+        sweep_drafts(self.conn, http_get=lambda u: (401, u) if u == url else (200, u),
+                     headless_verdicts=lambda ds: ((d, "ok") for d in ds))
+        row = self.conn.execute("SELECT liveness lv, liveness_note ln, status ss "
+                                "FROM application_snapshots WHERE id=?", (sid,)).fetchone()
+        self.assertEqual((row["ss"], row["lv"]), ("draft", "suspicious"))
+        self.assertIn("401", row["ln"])
+
+    def test_email_only_draft_is_not_flagged(self):
+        # a mailto: apply_url has no page to load; it is not a bot wall
+        url = "mailto:jobs@example.com"
+        self.conn.execute(
+            "INSERT INTO jobs (id, company, title, url, source, raw_jd_text,"
+            " fetched_at, status) VALUES (?,?,?,?,?,?,?, 'scored')",
+            ("mail", "Acme", "Eng", url, "t", "jd", "2026-06-10T08:00:00"))
+        sid = create_application_snapshot(
+            self.conn, "mail", status="draft", tier=3, apply_url=url,
+            form_payload={"actions": []})
+        self.conn.commit()
+        sweep_drafts(self.conn, http_get=lambda u: (None, None, None) if u == url else (200, u),
+                     headless_verdicts=lambda ds: ((d, "ok") for d in ds))
+        row = self.conn.execute("SELECT liveness lv FROM application_snapshots WHERE id=?",
+                                (sid,)).fetchone()
+        self.assertEqual(row["lv"], "live")
+
+    def test_only_unchecked_skips_swept_drafts(self):
+        # Stage 1's closing sweep covers the drafts it just made, not the
+        # whole inventory the opening sweep already checked
+        self.conn.execute("UPDATE application_snapshots SET liveness='live' "
+                          "WHERE id != ?", (self.sid["dead404"],))
+        self.conn.commit()
+        seen = []
+        tally = sweep_drafts(self.conn, only_unchecked=True,
+                             http_get=lambda u: seen.append(u) or (410, u),
+                             headless_verdicts=lambda ds: iter(()))
+        self.assertEqual(seen, ["https://x.com/dead404"])
+        self.assertEqual(tally["dead"], 1)
+
     def test_dry_run_writes_nothing(self):
         tally = sweep_drafts(self.conn, http_get=lambda u: (404, u),
                              headless_verdicts=lambda ds: iter(()), dry_run=True)

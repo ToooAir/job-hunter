@@ -156,13 +156,16 @@ def _headless_verdicts(drafts):
 
 
 def sweep_drafts(conn, http_get=None, headless_verdicts=None,
-                 dry_run: bool = False, now: str | None = None) -> dict:
-    """Re-verify every pending draft. Returns a tally dict."""
+                 dry_run: bool = False, now: str | None = None,
+                 only_unchecked: bool = False) -> dict:
+    """Re-verify pending drafts (only never-swept ones with `only_unchecked`).
+    Returns a tally dict."""
     http_get = http_get or _default_http_get
     drafts = [dict(r) for r in conn.execute(
         "SELECT s.id AS sid, s.job_id, s.apply_url, s.form_payload, j.ats "
         "FROM application_snapshots s JOIN jobs j ON j.id = s.job_id "
-        "WHERE s.status = 'draft'")]
+        "WHERE s.status = 'draft'"
+        + (" AND s.liveness IS NULL" if only_unchecked else ""))]
     tally = {"checked": 0, "live": 0, "dead": 0, "suspicious": 0}
     needs_headless = []
 
@@ -195,7 +198,8 @@ def sweep_drafts(conn, http_get=None, headless_verdicts=None,
         # this was the manual Tier-3 blind spot ("page loads" passed as live
         # while the reviewer found a closed posting; 2026-07-08 review).
         gone_phrase = soft_gone(body)
-        if classify_http(url, status, final_url) == "dead":
+        http_verdict = classify_http(url, status, final_url)
+        if http_verdict == "dead":
             record(d, "dead", f"http {status}")
         elif gone_phrase:
             record(d, "dead", f"soft-gone: {gone_phrase[:60]}")
@@ -206,7 +210,14 @@ def sweep_drafts(conn, http_get=None, headless_verdicts=None,
         elif not _has_actions(d.get("form_payload")):
             # Manual Tier-3 draft: there was never a fillable form to lose, so the
             # page simply loading is liveness enough — don't run headless or flag it.
-            record(d, "live", "page loads (manual)")
+            # A bot wall (Indeed's 401, blocked even headless) never showed the
+            # page at all: that was badged live while Indeed said "expired"
+            # (Gather Health, 2026-11-03).
+            # mailto: email-only drafts have no page to load — nothing to verify.
+            if http_verdict == "unknown" and url.startswith("http"):
+                record(d, "suspicious", f"http {status}: page not verifiable")
+            else:
+                record(d, "live", "page loads (manual)")
         else:
             needs_headless.append(d)
 

@@ -483,6 +483,32 @@ class WadDownstreamRecheckTest(unittest.TestCase):
                  "<p>Stellenanzeigen ist abgelaufen. Nicht mehr verf&uuml;gbar!</p>"))
         self.assertEqual(res["ats"], "gone")
 
+    def _resolve_live_wad(self, downstream):
+        from unittest import mock
+        wad = mock.Mock(status_code=200, headers={},
+                        text=f"- **Apply:** {self.JOB['apply_url']}\n")
+        with mock.patch("ats_scan.requests.get", side_effect=[wad, downstream]), \
+                mock.patch("ats_scan.time.sleep"):
+            return resolve_one(dict(self.JOB))
+
+    def test_live_wad_with_dead_downstream_is_gone(self):
+        # DocuWare 2026-11-03: WAD mirror up, adzuna 410 "Seite nicht gefunden"
+        from unittest import mock
+        for down in (mock.Mock(status_code=410, url=self.JOB["apply_url"], text=""),
+                     mock.Mock(status_code=200, url=self.JOB["apply_url"],
+                               text="<h1>Seite nicht gefunden</h1>")):
+            res = self._resolve_live_wad(down)
+            self.assertEqual(res["ats"], "gone")
+            self.assertIn("downstream gone", res["evidence"])
+
+    def test_live_wad_survives_bot_wall_or_shell_downstream(self):
+        from unittest import mock
+        for down in (mock.Mock(status_code=403, url=self.JOB["apply_url"], text=""),
+                     mock.Mock(status_code=200, url=self.JOB["apply_url"],
+                               text="<title>Careerjet</title>")):
+            res = self._resolve_live_wad(down)
+            self.assertEqual(res["ats"], "unknown-external")
+
     def test_dead_downstream_stays_gone(self):
         from unittest import mock
         res, _ = self._resolve(mock.Mock(status_code=410, url=self.JOB["apply_url"], text=""))
